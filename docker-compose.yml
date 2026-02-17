@@ -1,0 +1,43 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:15
+    container_name: scheduler-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${DB_PORT}:5432"
+
+  api:
+    # Assuming you have a Dockerfile in the same directory. The imaage can be built from that Dockerfile.
+    build: . 
+    container_name: scheduler-api
+    depends_on:
+      - db
+    #This means:
+    # Start db before starting api
+    # Important note:
+    # It does NOT guarantee DB is ready.
+    # It only guarantees startup order.
+    ports:
+      - "${API_PORT}:8000"
+    environment:
+      DATABASE_URL: postgresql://admin:admin@db:5432/scheduler
+
+    # DATABASE_URL format:
+    # postgresql://<user>:<password>@<service_name>:<port>/<database_name>
+    #
+    # - "postgresql://" → specifies the database protocol/driver
+    # - "user:password" → authentication credentials (must match POSTGRES_* vars)
+    # - "service_name" → Docker internal DNS hostname (e.g., "db")
+    #                     Each service in docker-compose gets its own internal DNS name.
+    # - "port" → container's internal database port (Postgres default = 5432)
+    # - "database_name" → logical database inside the Postgres server
+    #
+    # Note:
+    # - Inside Docker network, services connect using the service name (e.g., "db"),
+    #   NOT localhost.
+    # - Docker automatically creates a private network where service names act like DNS.
