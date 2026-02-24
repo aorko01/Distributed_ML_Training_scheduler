@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional,Dict
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, Dict
 
 class JobCreate(BaseModel):
     script_path: str
@@ -10,5 +10,4 @@ class JobResponse(BaseModel):
     id: str
     status: str
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

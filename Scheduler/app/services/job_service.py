@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
-from app.jobs.models import Job, JobStatus
-from app.jobs.schemas import JobCreate
+from app.models.job_model import Job, JobStatus
+from app.schemas.job_schema import JobCreate
 
 def create_job(db: Session, job: JobCreate):
     db_job = Job(
