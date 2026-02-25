@@ -16,7 +16,7 @@ app = FastAPI(
 )
 
 # Create all tables (for development; in production use Alembic migrations)
-# Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine)
 
 # Include API routers
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
