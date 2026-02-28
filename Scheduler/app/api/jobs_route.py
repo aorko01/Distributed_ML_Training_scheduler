@@ -5,7 +5,7 @@ from app.schemas import job_schema
 from app.services import job_service
 
 
-router = APIRouter(prefix="/jobs", tags=["jobs"])
+router = APIRouter(tags=["jobs"])
 
 def get_db():
     db = SessionLocal()

@@ -1,20 +1,23 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from app.db.database import SessionLocal
-from app.schemas.worker_schema import WorkerInfo, WorkerResponse
-from app.services.worker_service import register_or_update_worker
+from fastapi import APIRouter, HTTPException
+from app.schemas.worker_schema import WorkerInfo
+from app.schemas.heartbeat_schema import HeartbeatSchema
+from app.services.worker_service import register_or_update_worker_service, process_heartbeat
 
-router = APIRouter()
+router = APIRouter(tags=["workers"])
 
-# Dependency to get DB session
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+@router.post("/register")
+async def register_worker(worker: WorkerInfo):
+    await register_or_update_worker_service(worker)
+    return {"status": "success", "worker_id": worker.worker_id}
 
-@router.post("/register", response_model=WorkerResponse)
-def register_worker(worker: WorkerInfo, db: Session = Depends(get_db)):
-    register_or_update_worker(db, worker)
-    return WorkerResponse(message="Worker registered successfully", worker_id=worker.worker_id)
+
+@router.post("/heartbeat")
+async def worker_heartbeat(data: HeartbeatSchema):
+    success = await process_heartbeat(
+        worker_id=data.worker_id,
+        available_vram=data.available_vram,
+        gpu_type=data.gpu_type
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Worker not registered")
+    return {"status": "success", "worker_id": data.worker_id}
