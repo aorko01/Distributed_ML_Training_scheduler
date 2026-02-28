@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from app.models.worker import Worker
+from app.models.worker_model import Worker
 
 def register_or_update_worker(db: Session, worker_info):
     # Check if worker exists
