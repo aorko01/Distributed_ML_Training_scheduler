@@ -1,13 +1,10 @@
 from sqlalchemy.orm import Session
 from app.models.job_model import Job, JobStatus
-from app.schemas.job_schema import JobCreate
 
-def create_job(db: Session, job: JobCreate):
+def create_job(db: Session, job_data: dict):
     db_job = Job(
-        script_path=job.script_path,
-        dataset_path=job.dataset_path,
-        config=job.config,
-        status=JobStatus.PENDING
+        script_path=job_data["script_path"],
+        config=job_data.get("config")
     )
     db.add(db_job)
     #Tells the session: “I want to insert this object into the database.”

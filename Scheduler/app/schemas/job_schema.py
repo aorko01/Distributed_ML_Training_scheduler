@@ -3,7 +3,6 @@ from typing import Optional, Dict
 
 class JobCreate(BaseModel):
     script_path: str
-    dataset_path: str
     config: Optional[Dict] = None
     
 class JobResponse(BaseModel):
