@@ -28,17 +28,17 @@ async def register_or_update_worker_service(worker_info):
         db.close()
 
 
-async def process_heartbeat(worker_id: str, available_vram: float, gpu_type: str):
+async def process_heartbeat( Heartbeat: HeartbeatSchema):
     """Handles heartbeat from worker and updates Redis"""
-    key = f"worker:{worker_id}"
+    key = f"worker:{Heartbeat.worker_id}"
 
     exists_in_redis = await redis_client.exists(key)
     if exists_in_redis:
         await redis_client.hset(
             key,
             mapping={
-                "available_vram": available_vram,
-                "gpu_type": gpu_type,
+                "available_vram": Heartbeat.available_vram,
+                "gpu_type": Heartbeat.gpu_type,
                 "last_heartbeat": int(time.time())
             }
         )
@@ -48,14 +48,14 @@ async def process_heartbeat(worker_id: str, available_vram: float, gpu_type: str
     # Worker not in Redis, check DB
     db = SessionLocal()
     try:
-        worker = db.query(Worker).filter(Worker.worker_id == worker_id).first()
+        worker = db.query(Worker).filter(Worker.worker_id == Heartbeat.worker_id).first()
         if not worker:
             return False
         await redis_client.hset(
             key,
             mapping={
-                "available_vram": available_vram,
-                "gpu_type": gpu_type,
+                "available_vram": Heartbeat.available_vram,
+                "gpu_type": Heartbeat.gpu_type,
                 "last_heartbeat": int(time.time())
             }
         )

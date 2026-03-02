@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, DateTime
+from sqlalchemy import Column, String, Integer, DateTime
 from sqlalchemy.sql import func
 from app.db.database import Base
 import uuid
@@ -10,6 +10,6 @@ class Worker(Base):
     mac_address = Column(String, unique=True, nullable=False)
     gpu_type = Column(String, nullable=False)
     num_gpus = Column(Integer, nullable=False)
-    total_vram = Column(Float, nullable=False)
+    total_vram = Column(Integer, nullable=False)
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_registered = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

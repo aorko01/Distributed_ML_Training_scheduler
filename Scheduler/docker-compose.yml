@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:15
@@ -34,6 +32,9 @@ services:
     # depends_on ensures startup order, NOT readiness
     ports:
       - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       # DATABASE_URL format:
       # postgresql://<user>:<password>@<service_name>:<port>/<database_name>

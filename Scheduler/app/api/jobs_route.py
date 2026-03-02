@@ -14,7 +14,7 @@ def get_db():
     finally:
         db.close()
         
-@router.post("/", response_model=job_schema.JobResponse)
+@router.post("/submit_job", response_model=job_schema.JobResponse)
 def submit_job(job: job_schema.JobCreate, db: Session = Depends(get_db)):
     return job_service.create_job(db, job)
 
