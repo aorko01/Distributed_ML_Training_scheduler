@@ -6,7 +6,7 @@ import enum
 
 
 class JobStatus(enum.Enum):
-    VRAM_NOT_CALCULATED = "VRAM_NOT_CALCULATED"
+    NOT_RUNNABLE = "NOT_RUNNABLE"
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
@@ -22,7 +22,7 @@ class Job(Base):
 
     status = Column(
         Enum(JobStatus),
-        default=JobStatus.VRAM_NOT_CALCULATED
+        default=JobStatus.NOT_RUNNABLE
     )
 
     # VRAM estimation

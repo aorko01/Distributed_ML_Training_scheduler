@@ -13,53 +13,96 @@ logging.basicConfig(
 )
 logger = logging.getLogger("image_builder")
 
+# Docker Hub credentials
 DOCKER_HUB_USERNAME = os.environ["DOCKER_HUB_USERNAME"]
-DOCKER_HUB_PASSWORD = os.environ["DOCKER_HUB_PASSWORD"]
+DOCKER_HUB_PASSWORD = os.environ.get("DOCKER_HUB_PASSWORD", "")  # Optional if already logged in
+
+# Directory to watch for new job uploads
 UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "/uploads")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
 PROCESSED_FILE = "/data/processed_jobs.json"
 
+# Default base image and mapping for cached common images
+BASE_IMAGE_DEFAULT = "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime"
 
+BASE_IMAGE_MAP = {
+    # Transformers / NLP
+    "transformers": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
+    "datasets": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
+    "accelerate": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
+    
+    # Vision
+    "opencv-python": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
+    "albumentations": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
+    "Pillow": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
+
+    # Training / logging
+    "wandb": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
+    "tensorboard": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
+    "hydra-core": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
+}
+
+# ----------------------
+# Job tracking functions
+# ----------------------
 def load_processed_jobs() -> set:
-    """Load the set of already-processed job IDs from disk."""
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, "r") as f:
             return set(json.load(f))
     return set()
 
-
 def save_processed_jobs(processed: set):
-    """Persist the set of processed job IDs to disk."""
     os.makedirs(os.path.dirname(PROCESSED_FILE), exist_ok=True)
     with open(PROCESSED_FILE, "w") as f:
         json.dump(list(processed), f)
 
-
+# ----------------------
+# Project detection
+# ----------------------
 def find_project_dir(extracted_dir: str) -> str | None:
-    """
-    Find the actual project directory inside the extracted folder.
-    Skips __MACOSX and other hidden/meta directories.
-    Returns the first valid project directory that contains files.
-    """
+    """Find actual project directory inside extracted folder."""
     for entry in sorted(os.listdir(extracted_dir)):
         if entry.startswith("__") or entry.startswith("."):
             continue
         candidate = os.path.join(extracted_dir, entry)
         if os.path.isdir(candidate):
             return candidate
-    # If no subdirectory found, the extracted dir itself is the project
     return extracted_dir
 
+# ----------------------
+# Requirements parsing
+# ----------------------
+def read_requirements(project_dir: str) -> list[str]:
+    req_file = os.path.join(project_dir, "requirements.txt")
+    if not os.path.exists(req_file):
+        return []
 
+    packages = []
+    with open(req_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            pkg = line.split("==")[0].strip()
+            packages.append(pkg)
+    return packages
+
+def select_base_image(project_dir: str) -> str:
+    packages = read_requirements(project_dir)
+    for pkg in packages:
+        if pkg in BASE_IMAGE_MAP:
+            return BASE_IMAGE_MAP[pkg]
+    return BASE_IMAGE_DEFAULT
+
+# ----------------------
+# Dockerfile generation
+# ----------------------
 def generate_dockerfile(project_dir: str) -> str:
-    """
-    Generate a Dockerfile string for the given project directory.
-    Looks for requirements.txt to install dependencies.
-    """
+    base_image = select_base_image(project_dir)
     has_requirements = os.path.exists(os.path.join(project_dir, "requirements.txt"))
 
     lines = [
-        "FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime",
+        f"FROM {base_image}",
         "",
         "WORKDIR /workspace",
         "",
@@ -77,27 +120,31 @@ def generate_dockerfile(project_dir: str) -> str:
         'CMD ["python"]',
     ]
 
+    logger.info("Selected base image: %s", base_image)
     return "\n".join(lines)
 
-
+# ----------------------
+# Docker login
+# ----------------------
 def docker_login(client: docker.DockerClient):
-    """Log in to Docker Hub."""
-    logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
-    client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
-    logger.info("Docker Hub login successful.")
+    """Login to Docker Hub if credentials are provided."""
+    if DOCKER_HUB_PASSWORD:
+        logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
+        client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
+        logger.info("Docker Hub login successful.")
+    else:
+        logger.info("No Docker Hub password provided, assuming already logged in.")
 
-
+# ----------------------
+# Build and push image
+# ----------------------
 def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -> bool:
-    """
-    Build a Docker image from the project directory and push it to Docker Hub.
-    Returns True on success, False on failure.
-    """
     image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
-    # Copy project files to a temporary writable directory for the build
+    # Temporary build directory
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
     try:
-        # Copy all project files into the build directory
+        # Copy project files
         for item in os.listdir(project_dir):
             src = os.path.join(project_dir, item)
             dst = os.path.join(build_dir, item)
@@ -106,10 +153,9 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
             else:
                 shutil.copy2(src, dst)
 
-        # Write a Dockerfile into the build directory
+        # Write Dockerfile
         dockerfile_content = generate_dockerfile(project_dir)
-        dockerfile_path = os.path.join(build_dir, "Dockerfile")
-        with open(dockerfile_path, "w") as f:
+        with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile_content)
 
         logger.info("Building image %s from %s ...", image_tag, build_dir)
@@ -132,9 +178,9 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
             logger.error("Unexpected build error for job %s: %s", job_id, e)
             return False
     finally:
-        # Clean up the temporary build directory
         shutil.rmtree(build_dir, ignore_errors=True)
 
+    # Push image
     logger.info("Pushing image %s to Docker Hub ...", image_tag)
     try:
         push_output = client.images.push(
@@ -157,16 +203,13 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
     logger.info("Successfully built and pushed %s", image_tag)
     return True
 
-
+# ----------------------
+# Scan uploads directory
+# ----------------------
 def scan_and_process():
-    """
-    Scan the uploads directory for new job folders.
-    Build and push an image for each unprocessed job.
-    """
     processed = load_processed_jobs()
     client = docker.from_env()
 
-    # Ensure we are logged in
     docker_login(client)
 
     if not os.path.isdir(UPLOADS_DIR):
@@ -179,11 +222,9 @@ def scan_and_process():
             continue
 
         job_id = entry
-
         if job_id in processed:
             continue
 
-        # Check that extraction has been done
         extracted_dir = os.path.join(job_dir, "extracted")
         if not os.path.isdir(extracted_dir):
             logger.info("Job %s has no extracted/ directory yet, skipping.", job_id)
@@ -208,7 +249,9 @@ def scan_and_process():
 
     logger.info("Scan complete. %d jobs processed so far.", len(processed))
 
-
+# ----------------------
+# Main loop
+# ----------------------
 def main():
     logger.info("Docker Image Builder service starting ...")
     logger.info("Watching directory: %s", UPLOADS_DIR)
@@ -222,7 +265,6 @@ def main():
             logger.error("Error during scan cycle: %s", e, exc_info=True)
 
         time.sleep(POLL_INTERVAL)
-
 
 if __name__ == "__main__":
     main()
