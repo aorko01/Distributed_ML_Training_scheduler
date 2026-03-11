@@ -4,46 +4,57 @@ import json
 import shutil
 import tempfile
 import logging
-import docker
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+import docker
+import requests
+from dotenv import load_dotenv
+
+# ----------------------
+# Load environment variables
+# ----------------------
+load_dotenv()  # loads variables from .env
+
+# Load scheduler base URL from .env
+SCHEDULER_BASE_URL = os.environ.get(
+    "SCHEDULER_API_URL",
+    "http://localhost:8000"
 )
-logger = logging.getLogger("image_builder")
+# Ensure the endpoint path is appended
+SCHEDULER_API_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_pending"
 
-# Docker Hub credentials
 DOCKER_HUB_USERNAME = os.environ["DOCKER_HUB_USERNAME"]
-DOCKER_HUB_PASSWORD = os.environ.get("DOCKER_HUB_PASSWORD", "")  # Optional if already logged in
+DOCKER_HUB_PASSWORD = os.environ.get("DOCKER_HUB_PASSWORD", "")
 
-# Directory to watch for new job uploads
 UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "/uploads")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
 PROCESSED_FILE = "/data/processed_jobs.json"
 
-# Default base image and mapping for cached common images
 BASE_IMAGE_DEFAULT = "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime"
 
 BASE_IMAGE_MAP = {
-    # Transformers / NLP
     "transformers": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
     "datasets": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
     "accelerate": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
-    
-    # Vision
     "opencv-python": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
     "albumentations": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
     "Pillow": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
-
-    # Training / logging
     "wandb": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
     "tensorboard": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
     "hydra-core": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
 }
 
 # ----------------------
-# Job tracking functions
+# Logging
+# ----------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("image_builder")
+
+# ----------------------
+# Job tracking
 # ----------------------
 def load_processed_jobs() -> set:
     if os.path.exists(PROCESSED_FILE):
@@ -60,7 +71,6 @@ def save_processed_jobs(processed: set):
 # Project detection
 # ----------------------
 def find_project_dir(extracted_dir: str) -> str | None:
-    """Find actual project directory inside extracted folder."""
     for entry in sorted(os.listdir(extracted_dir)):
         if entry.startswith("__") or entry.startswith("."):
             continue
@@ -127,7 +137,6 @@ def generate_dockerfile(project_dir: str) -> str:
 # Docker login
 # ----------------------
 def docker_login(client: docker.DockerClient):
-    """Login to Docker Hub if credentials are provided."""
     if DOCKER_HUB_PASSWORD:
         logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
         client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
@@ -141,10 +150,8 @@ def docker_login(client: docker.DockerClient):
 def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -> bool:
     image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
-    # Temporary build directory
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
     try:
-        # Copy project files
         for item in os.listdir(project_dir):
             src = os.path.join(project_dir, item)
             dst = os.path.join(build_dir, item)
@@ -153,18 +160,14 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
             else:
                 shutil.copy2(src, dst)
 
-        # Write Dockerfile
         dockerfile_content = generate_dockerfile(project_dir)
         with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile_content)
 
-        logger.info("Building image %s from %s ...", image_tag, build_dir)
+        logger.info("Building image %s ...", image_tag)
         try:
             image, build_logs = client.images.build(
-                path=build_dir,
-                tag=image_tag,
-                rm=True,
-                forcerm=True,
+                path=build_dir, tag=image_tag, rm=True, forcerm=True
             )
             for chunk in build_logs:
                 if "stream" in chunk:
@@ -181,7 +184,7 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
         shutil.rmtree(build_dir, ignore_errors=True)
 
     # Push image
-    logger.info("Pushing image %s to Docker Hub ...", image_tag)
+    logger.info("Pushing image %s ...", image_tag)
     try:
         push_output = client.images.push(
             repository=f"{DOCKER_HUB_USERNAME}/{job_id}",
@@ -204,12 +207,31 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
     return True
 
 # ----------------------
-# Scan uploads directory
+# Notify scheduler
+# ----------------------
+def notify_scheduler_job_ready(job_id: str):
+    payload = {"job_id": job_id}
+
+    try:
+        response = requests.post(SCHEDULER_API_URL, json=payload, timeout=10)
+        if response.status_code == 200:
+            logger.info("Scheduler notified successfully for job %s", job_id)
+        else:
+            logger.error(
+                "Scheduler notification failed for job %s: %s %s",
+                job_id,
+                response.status_code,
+                response.text
+            )
+    except Exception as e:
+        logger.error("Failed to contact scheduler for job %s: %s", job_id, e)
+
+# ----------------------
+# Scan uploads
 # ----------------------
 def scan_and_process():
     processed = load_processed_jobs()
     client = docker.from_env()
-
     docker_login(client)
 
     if not os.path.isdir(UPLOADS_DIR):
@@ -243,7 +265,8 @@ def scan_and_process():
         if success:
             processed.add(job_id)
             save_processed_jobs(processed)
-            logger.info("Job %s marked as processed.", job_id)
+            notify_scheduler_job_ready(job_id)
+            logger.info("Job %s marked as processed and scheduler notified.", job_id)
         else:
             logger.error("Job %s failed, will retry next cycle.", job_id)
 
