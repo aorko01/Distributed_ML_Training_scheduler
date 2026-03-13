@@ -10,3 +10,6 @@ class JobResponse(BaseModel):
     status: str
 
     model_config = ConfigDict(from_attributes=True)
+
+class Job_status_to_pending(BaseModel):
+    job_id: str

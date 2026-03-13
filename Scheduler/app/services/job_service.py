@@ -3,6 +3,7 @@ from app.models.job_model import Job, JobStatus
 
 def create_job(db: Session, job_data: dict):
     db_job = Job(
+        id=job_data["id"],
         script_path=job_data["script_path"],
         config=job_data.get("config")
     )
@@ -17,3 +18,19 @@ def create_job(db: Session, job_data: dict):
     # The transaction is committed; the changes are now permanent.
     db.refresh(db_job)
     return db_job
+
+def set_job_pending(db: Session, job_id: str):
+    job = db.query(Job).filter(Job.id == job_id).first()
+
+    if not job:
+        raise Exception("Job not found")
+
+    if job.status != JobStatus.NOT_RUNNABLE:
+        raise Exception("Job is not in NOT_RUNNABLE state")
+
+    job.status = JobStatus.PENDING
+
+    db.commit()
+    db.refresh(job)
+
+    return job

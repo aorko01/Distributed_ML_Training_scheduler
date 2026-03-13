@@ -34,7 +34,8 @@ def save_and_extract_zip(
     file_content: bytes,
     filename: str,
     entry_file: str,
-    require_files: list[str] = None
+    require_files: list[str] = None,
+    job_id: str = None  # Accept it, don't generate it
 ) -> dict:
     """
     Save uploaded ZIP file, extract it, and validate files.
@@ -48,7 +49,7 @@ def save_and_extract_zip(
         }
     """
 
-    job_id = str(uuid.uuid4())
+    job_id = job_id or str(uuid.uuid4())
     job_dir = os.path.join(UPLOAD_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
 

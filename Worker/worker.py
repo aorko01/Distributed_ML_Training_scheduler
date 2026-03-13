@@ -53,7 +53,7 @@ def get_gpu_info():
 # MAC ADDRESS
 # -------------------------
 mac = ':'.join(f'{(uuid.getnode() >> ele) & 0xff:02x}'
-               for ele in range(0, 8*6, 8)[::-1])
+            for ele in range(0, 8*6, 8)[::-1])
 
 
 # -------------------------
