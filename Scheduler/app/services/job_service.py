@@ -34,3 +34,25 @@ def set_job_pending(db: Session, job_id: str):
     db.refresh(job)
 
     return job
+
+
+def get_first_pending_job(db: Session):
+    # Query the first job with status PENDING
+    job = db.query(Job).filter(Job.status == JobStatus.PENDING).order_by(Job.created_at).first()
+    
+    if not job:
+        # If no pending job exists, raise an exception or return None
+        return None
+    
+    # Convert job object to dictionary to send all fields
+    job_dict = {
+        "id": job.id,
+        "script_path": job.script_path,
+        "config": job.config,
+        "status": job.status.value,  # Enum to string
+        "vram_required": job.vram_required,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at
+    }
+    
+    return job_dict

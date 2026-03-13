@@ -10,3 +10,9 @@ class WorkerInfo(BaseModel):
 class WorkerResponse(BaseModel):
     message: str
     worker_id: str
+    
+
+class WorkerResource(BaseModel):
+    worker_id: str
+    gpu_type: str
+    free_vram:float

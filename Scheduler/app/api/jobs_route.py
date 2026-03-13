@@ -7,6 +7,7 @@ from app.db.database import SessionLocal
 from app.services import job_service
 from app.utils.file_utils import save_and_extract_zip
 from app.schemas.job_schema import Job_status_to_pending
+from app.schemas.worker_schema import WorkerResource
 
 
 router = APIRouter(tags=["jobs"])
@@ -62,5 +63,19 @@ def Update_job_to_pending(
             "status": job.status.value
         }
 
+    except Exception as e:
+        return {"error": str(e)}
+    
+    
+@router.get("/pull_job")
+def pull_job(
+    request: WorkerResource,
+    db: Session = Depends(get_db)
+):
+    try:
+        job_info = job_service.get_first_pending_job(db)
+        if job_info is None:
+            return {"message": "No pending jobs available"}
+        return job_info
     except Exception as e:
         return {"error": str(e)}
