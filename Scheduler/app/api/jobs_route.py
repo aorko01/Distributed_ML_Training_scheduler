@@ -67,13 +67,13 @@ def Update_job_to_pending(
         return {"error": str(e)}
     
     
-@router.get("/pull_job")
+@router.post("/pull_job")
 def pull_job(
     request: WorkerResource,
     db: Session = Depends(get_db)
 ):
     try:
-        job_info = job_service.get_first_pending_job(db)
+        job_info = job_service.get_first_pending_job(db,request)
         if job_info is None:
             return {"message": "No pending jobs available"}
         return job_info
