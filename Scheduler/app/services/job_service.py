@@ -41,7 +41,7 @@ def set_job_pending(db: Session, job_id: str):
 def get_first_pending_job(db: Session,request: WorkerResource):
     # Query the first job with status PENDING
     
-    worker = db.query(Worker).filter(Worker.id == request.worker_id).first()
+    worker = db.query(Worker).filter(Worker.worker_id == request.worker_id).first()
     
     if not worker:
         raise Exception("Worker not found")

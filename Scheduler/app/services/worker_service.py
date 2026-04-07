@@ -1,6 +1,7 @@
 from app.core.redis import redis_client
 from app.models.worker_model import Worker
 from app.db.database import SessionLocal
+from app.schemas.heartbeat_schema import HeartbeatSchema
 import time
 
 HEARTBEAT_TTL = 15

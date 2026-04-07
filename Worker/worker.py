@@ -97,7 +97,7 @@ def get_gpu_info():
 
 # -------------------------
 # MAC ADDRESS
-# -------------------------
+# -------------------------s
 mac = ':'.join(f'{(uuid.getnode() >> ele) & 0xff:02x}'
                for ele in range(0, 8*6, 8)[::-1])
 
@@ -117,7 +117,14 @@ def register_worker():
     }
 
     resp = requests.post(REGISTER_URL, json=worker_info)
-    base_logger.info("REGISTER RESPONSE: %s", resp.json())
+    try:
+        response_payload = resp.json()
+    except ValueError:
+        response_payload = {
+            "status_code": resp.status_code,
+            "body": resp.text.strip() or "<empty body>"
+        }
+    base_logger.info("REGISTER RESPONSE: %s", response_payload)
 
 
 # -------------------------
@@ -143,13 +150,13 @@ def send_heartbeat():
 def pull_job():
     gpu_type, _, free_vram, _ = get_gpu_info()
 
-    params = {
+    payload = {
         "worker_id": worker_id,
         "gpu_type": gpu_type,
         "free_vram": free_vram
     }
 
-    resp = requests.get(PULL_JOB_URL, params=params, timeout=10)
+    resp = requests.post(PULL_JOB_URL, json=payload, timeout=10)
     data = resp.json()
 
     if "message" in data:
