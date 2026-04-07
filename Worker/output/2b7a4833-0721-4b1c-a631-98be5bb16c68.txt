@@ -1,0 +1,115 @@
+Using device: cuda
+Epoch 1/3, Loss: 2.2630
+Epoch 2/3, Loss: 1.7914
+Epoch 3/3, Loss: 1.4223
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2839
+Epoch 2/3, Loss: 1.8120
+Epoch 3/3, Loss: 1.4537
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3226
+Epoch 2/3, Loss: 1.8849
+Epoch 3/3, Loss: 1.5385
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2856
+Epoch 2/3, Loss: 1.8388
+Epoch 3/3, Loss: 1.4866
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2766
+Epoch 2/3, Loss: 1.7488
+Epoch 3/3, Loss: 1.3571
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2514
+Epoch 2/3, Loss: 1.7706
+Epoch 3/3, Loss: 1.4052
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2919
+Epoch 2/3, Loss: 1.8442
+Epoch 3/3, Loss: 1.4902
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3141
+Epoch 2/3, Loss: 1.8390
+Epoch 3/3, Loss: 1.4728
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2823
+Epoch 2/3, Loss: 1.8166
+Epoch 3/3, Loss: 1.4601
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3481
+Epoch 2/3, Loss: 1.9031
+Epoch 3/3, Loss: 1.5499
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3384
+Epoch 2/3, Loss: 1.8876
+Epoch 3/3, Loss: 1.5392
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3269
+Epoch 2/3, Loss: 1.8481
+Epoch 3/3, Loss: 1.4855
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2932
+Epoch 2/3, Loss: 1.8017
+Epoch 3/3, Loss: 1.4294
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3751
+Epoch 2/3, Loss: 1.8755
+Epoch 3/3, Loss: 1.4848
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3342
+Epoch 2/3, Loss: 1.8411
+Epoch 3/3, Loss: 1.4675
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3525
+Epoch 2/3, Loss: 1.9014
+Epoch 3/3, Loss: 1.5329
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3113
+Epoch 2/3, Loss: 1.8226
+Epoch 3/3, Loss: 1.4453
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3632
+Epoch 2/3, Loss: 1.8593
+Epoch 3/3, Loss: 1.4730
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2930
+Epoch 2/3, Loss: 1.8079
+Epoch 3/3, Loss: 1.4357
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3704
+Epoch 2/3, Loss: 1.8846
+Epoch 3/3, Loss: 1.5109
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3856
+Epoch 2/3, Loss: 1.9173
+Epoch 3/3, Loss: 1.5495
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.2909
+Epoch 2/3, Loss: 1.8144
+Epoch 3/3, Loss: 1.4445
+Training finished in 0.13 seconds
+Using device: cuda
+Epoch 1/3, Loss: 2.3786
+Epoch 2/3, Loss: 1.8988
+Epoch 3/3, Loss: 1.5182
+Training finished in 0.13 seconds

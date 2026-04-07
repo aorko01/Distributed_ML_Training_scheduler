@@ -198,28 +198,35 @@ def pull_docker_image(client: docker.DockerClient, job_id: str, logger: logging.
 # -------------------------
 # RUN SCRIPT INSIDE DOCKER
 # -------------------------
-def run_job_in_docker(client: docker.DockerClient, job_id: str, script_path: str, logger: logging.Logger):
+def run_job_in_docker(client: docker.DockerClient, job_id: str, script_path: str, logger: logging.Logger, log_file: str):
     image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+    entry_file = os.path.basename(script_path)
 
-    logger.info("Running script '%s' in container from image: %s", script_path, image_name)
+    logger.info("Running entry file '%s' in container from image: %s", entry_file, image_name)
 
     try:
         container = client.containers.run(
             image=image_name,
-            command=["python", script_path],
+            command=["python", entry_file],
             detach=True,
-            runtime="nvidia",
             device_requests=[
                 docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
             ],
+            environment={
+                "NVIDIA_VISIBLE_DEVICES": "all",
+                "NVIDIA_DRIVER_CAPABILITIES": "all",
+            },
             stdout=True,
             stderr=True,
         )
 
         logger.info("Container started: %s", container.short_id)
 
-        for log_line in container.logs(stream=True, follow=True):
-            logger.info("  [container] %s", log_line.decode("utf-8", errors="replace").strip())
+        with open(log_file, "a", encoding="utf-8") as f:
+            for log_line in container.logs(stream=True, follow=True):
+                line = log_line.decode("utf-8", errors="replace").strip()
+                logger.info("  [container] %s", line)
+                f.write(line + "\n")
 
         result = container.wait()
         exit_code = result.get("StatusCode", -1)
@@ -247,16 +254,16 @@ def process_job():
     if job is None:
         return
 
-    job_id = job.get("job_id")
+    job_id = job.get("job_id") or job.get("id")
     script_path = job.get("script_path")
 
     if not job_id or not script_path:
         base_logger.error("Invalid job payload received: %s", job)
         return
 
-    # Create a dedicated logger that writes to output/<job_id>.txt
+    # Keep lifecycle logs on console; only container runtime output goes to file.
     log_file = os.path.join(OUTPUT_DIR, f"{job_id}.txt")
-    job_logger = get_logger(f"job_{job_id}", log_file=log_file)
+    job_logger = get_logger(f"job_{job_id}")
 
     job_logger.info("=" * 60)
     job_logger.info("Job started — ID: %s | Script: %s", job_id, script_path)
@@ -269,7 +276,7 @@ def process_job():
         job_logger.error("Aborting job %s: image pull failed.", job_id)
         return
 
-    run_job_in_docker(client, job_id, script_path, job_logger)
+    run_job_in_docker(client, job_id, script_path, job_logger, log_file)
 
     job_logger.info("Job %s finished. Log saved to: %s", job_id, log_file)
 
