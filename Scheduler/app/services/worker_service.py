@@ -1,3 +1,4 @@
+from sqlalchemy.orm import Session
 from app.core.redis import redis_client
 from app.models.worker_model import Worker
 from app.db.database import SessionLocal
@@ -6,27 +7,23 @@ import time
 
 HEARTBEAT_TTL = 15
 
-async def register_or_update_worker_service(worker_info):
+def register_or_update_worker_service(db: Session, worker_info):
     """Registers or updates a worker in DB (sync)"""
     from sqlalchemy import func
-    db = SessionLocal()
-    try:
-        db_worker = db.query(Worker).filter(Worker.worker_id == worker_info.worker_id).first()
-        if db_worker:
-            db_worker.last_registered = func.now()
-        else:
-            db_worker = Worker(
-                worker_id=worker_info.worker_id,
-                mac_address=worker_info.mac_address,
-                gpu_type=worker_info.gpu_type,
-                num_gpus=worker_info.num_gpus,
-                total_vram=worker_info.total_vram,
-            )
-            db.add(db_worker)
-        db.commit()
-        return db_worker
-    finally:
-        db.close()
+    db_worker = db.query(Worker).filter(Worker.worker_id == worker_info.worker_id).first()
+    if db_worker:
+        db_worker.last_registered = func.now()
+    else:
+        db_worker = Worker(
+            worker_id=worker_info.worker_id,
+            mac_address=worker_info.mac_address,
+            gpu_type=worker_info.gpu_type,
+            num_gpus=worker_info.num_gpus,
+            total_vram=worker_info.total_vram,
+        )
+        db.add(db_worker)
+    db.commit()
+    return db_worker
 
 
 async def process_heartbeat( Heartbeat: HeartbeatSchema):
