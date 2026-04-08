@@ -5,7 +5,6 @@ import os
 import time
 import docker
 import logging
-from concurrent.futures import ThreadPoolExecutor, Future
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,7 +26,6 @@ UPLOAD_OUTPUT_URL = f"{BASE_URL}/jobs/upload_output"
 
 HEARTBEAT_INTERVAL = 5
 JOB_POLL_INTERVAL = 10
-MAX_CONCURRENT_JOBS = 4          # <-- tune to your GPU/CPU capacity
 WORKER_ID_FILE = "worker_id.txt"
 DOCKER_HUB_USERNAME = "aorko123"
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
@@ -100,7 +98,7 @@ def get_gpu_info():
 
 # -------------------------
 # MAC ADDRESS
-# -------------------------
+# -------------------------s
 mac = ':'.join(f'{(uuid.getnode() >> ele) & 0xff:02x}'
                for ele in range(0, 8*6, 8)[::-1])
 
@@ -247,11 +245,9 @@ def run_job_in_docker(client: docker.DockerClient, job_id: str, script_path: str
         logger.error("Image not found locally for job %s. Pull may have failed.", job_id)
     except docker.errors.APIError as e:
         logger.error("Docker API error for job %s: %s", job_id, e)
-
-
-# -------------------------
-# UPLOAD OUTPUT FILE
-# -------------------------
+        
+        
+        
 def upload_output_file(file_path: str, job_id: str, logger: logging.Logger):
     try:
         if not os.path.exists(file_path):
@@ -319,51 +315,24 @@ def process_job():
 # -------------------------
 if __name__ == "__main__":
     base_logger.info("Worker starting up. Output directory: %s", OUTPUT_DIR)
-    base_logger.info("Max concurrent jobs: %d", MAX_CONCURRENT_JOBS)
     register_worker()
 
     base_logger.info("Starting worker loop...")
     last_heartbeat = 0
 
-    # Each submitted Future is kept in this list so we can track how many
-    # jobs are currently running and reap completed ones each iteration.
-    active_futures: list[Future] = []
+    while True:
+        now = time.time()
 
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS) as executor:
-        while True:
-            now = time.time()
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+            try:
+                send_heartbeat()
+            except Exception as e:
+                base_logger.error("Heartbeat failed: %s", e)
+            last_heartbeat = time.time()
 
-            # --- Heartbeat ---
-            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-                try:
-                    send_heartbeat()
-                except Exception as e:
-                    base_logger.error("Heartbeat failed: %s", e)
-                last_heartbeat = time.time()
+        try:
+            process_job()
+        except Exception as e:
+            base_logger.error("Job processing failed: %s", e)
 
-            # --- Reap finished futures & log any exceptions ---
-            still_running: list[Future] = []
-            for fut in active_futures:
-                if fut.done():
-                    exc = fut.exception()
-                    if exc:
-                        base_logger.error("Job thread raised an exception: %s", exc)
-                else:
-                    still_running.append(fut)
-            active_futures = still_running
-
-            # --- Submit new jobs only when there is spare capacity ---
-            slots_free = MAX_CONCURRENT_JOBS - len(active_futures)
-            base_logger.info(
-                "Active jobs: %d | Free slots: %d",
-                len(active_futures), slots_free,
-            )
-
-            for _ in range(slots_free):
-                try:
-                    future = executor.submit(process_job)
-                    active_futures.append(future)
-                except Exception as e:
-                    base_logger.error("Failed to submit job: %s", e)
-
-            time.sleep(JOB_POLL_INTERVAL)
+        time.sleep(JOB_POLL_INTERVAL)
