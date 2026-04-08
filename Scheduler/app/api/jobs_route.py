@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.services import job_service
 from app.utils.file_utils import save_and_extract_zip
-from app.schemas.job_schema import Job_status_to_pending
+from app.schemas.job_schema import Job_status_to_pending, JobIDRequest
 from app.schemas.worker_schema import WorkerResource
 
 
@@ -116,6 +116,47 @@ async def upload_output_file(
             "message": "File uploaded and job marked as completed",
             "file_path": file_path,
             "job_id": job_id
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+    
+    
+@router.post("/get_output_by_id")
+def get_output_by_id(
+    request: JobIDRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+        job_id = request.job_id
+
+        # Base directory: Scheduler/ (api -> app -> Scheduler)
+        base_dir = os.path.dirname(
+            os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))
+            )
+        )
+
+        # Output directory: Scheduler/output
+        output_dir = os.path.join(base_dir, "output")
+
+        # File path
+        file_path = os.path.join(output_dir, f"{job_id}.txt")
+
+        if not os.path.exists(file_path):
+            return {"error": f"No output file found for job_id {job_id}"}
+
+        # Read file content
+        with open(file_path, "r") as f:
+            content = f.read()
+
+        job = db.query(job_service.Job).filter(job_service.Job.id == job_id).first()
+        status = job.status.value if job else "UNKNOWN"
+
+        return {
+            "job_id": job_id,
+            "status": status,
+            "content": content
         }
 
     except Exception as e:

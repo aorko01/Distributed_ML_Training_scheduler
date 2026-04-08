@@ -13,3 +13,6 @@ class JobResponse(BaseModel):
 
 class Job_status_to_pending(BaseModel):
     job_id: str
+
+class JobIDRequest(BaseModel):
+    job_id: str
