@@ -1,5 +1,6 @@
 from app.models.worker_model import Worker
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.models.job_model import Job, JobStatus
 from app.schemas.worker_schema import WorkerResource
 
@@ -7,7 +8,8 @@ def create_job(db: Session, job_data: dict):
     db_job = Job(
         id=job_data["id"],
         script_path=job_data["script_path"],
-        config=job_data.get("config")
+        config=job_data.get("config"),
+        vram_required=job_data.get("vram_required")
     )
     db.add(db_job)
     #Tells the session: “I want to insert this object into the database.”
@@ -38,30 +40,56 @@ def set_job_pending(db: Session, job_id: str):
     return job
 
 
-def get_first_pending_job(db: Session,request: WorkerResource):
-    # Query the first job with status PENDING
-    
+def get_first_pending_job(db: Session, request: WorkerResource):
+    # Get worker
     worker = db.query(Worker).filter(Worker.worker_id == request.worker_id).first()
     
     if not worker:
         raise Exception("Worker not found")
-    
-    
-    job = db.query(Job).filter(Job.status == JobStatus.PENDING).order_by(Job.created_at).first()
-    
+
+    # Get first pending job the worker can run based on free VRAM.
+    job = (
+        db.query(Job)
+        .filter(
+            Job.status == JobStatus.PENDING,
+            or_(Job.vram_required.is_(None), Job.vram_required <= request.free_vram)
+        )
+        .order_by(Job.created_at)
+        .first()
+    )
+
     if not job:
-        # If no pending job exists, raise an exception or return None
         return None
-    
-    # Convert job object to dictionary to send all fields
+
+    job.status = JobStatus.IN_PROGRESS
+    db.commit()
+    db.refresh(job)  # refresh to get updated values
+
+    # Convert to dict
     job_dict = {
         "id": job.id,
         "script_path": job.script_path,
         "config": job.config,
-        "status": job.status.value,  # Enum to string
+        "status": job.status.value,
         "vram_required": job.vram_required,
         "created_at": job.created_at,
         "updated_at": job.updated_at
     }
-    
+
     return job_dict
+
+def set_to_completed(db: Session, job_id: str):
+    job = db.query(Job).filter(Job.id == job_id).first()
+
+    if not job:
+        raise Exception("Job not found")
+
+    if job.status != JobStatus.IN_PROGRESS:
+        raise Exception("Job is not in IN_PROGRESS state")
+
+    job.status = JobStatus.COMPLETED
+
+    db.commit()
+    db.refresh(job)
+
+    return job

@@ -22,6 +22,7 @@ BASE_URL = BASE_URL.rstrip("/")
 REGISTER_URL = f"{BASE_URL}/workers/register"
 HEARTBEAT_URL = f"{BASE_URL}/workers/heartbeat"
 PULL_JOB_URL = f"{BASE_URL}/jobs/pull_job"
+UPLOAD_OUTPUT_URL = f"{BASE_URL}/jobs/upload_output"
 
 HEARTBEAT_INTERVAL = 5
 JOB_POLL_INTERVAL = 10
@@ -244,6 +245,31 @@ def run_job_in_docker(client: docker.DockerClient, job_id: str, script_path: str
         logger.error("Image not found locally for job %s. Pull may have failed.", job_id)
     except docker.errors.APIError as e:
         logger.error("Docker API error for job %s: %s", job_id, e)
+        
+        
+        
+def upload_output_file(file_path: str, job_id: str, logger: logging.Logger):
+    try:
+        if not os.path.exists(file_path):
+            logger.error("Output file not found: %s", file_path)
+            return
+
+        with open(file_path, "rb") as f:
+            files = {
+                "file": (os.path.basename(file_path), f)
+            }
+
+            response = requests.post(UPLOAD_OUTPUT_URL, files=files, timeout=30)
+
+        try:
+            resp_json = response.json()
+        except Exception:
+            resp_json = response.text
+
+        logger.info("Upload response: %s", resp_json)
+
+    except Exception as e:
+        logger.error("Failed to upload output file: %s", e)
 
 
 # -------------------------
@@ -279,6 +305,9 @@ def process_job():
     run_job_in_docker(client, job_id, script_path, job_logger, log_file)
 
     job_logger.info("Job %s finished. Log saved to: %s", job_id, log_file)
+
+    # Upload output file to server
+    upload_output_file(log_file, job_id, job_logger)
 
 
 # -------------------------

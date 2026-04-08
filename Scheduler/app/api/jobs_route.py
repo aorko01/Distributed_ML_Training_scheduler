@@ -23,6 +23,7 @@ def get_db():
 async def submit_job(
     zip_file: UploadFile = File(...),
     entry_file: str = Form(...),
+    vram_required: float | None = Form(None),
     db: Session = Depends(get_db)
 ):
     job_id = str(uuid.uuid4())  # Generate ONE shared ID here
@@ -44,7 +45,8 @@ async def submit_job(
     job_data = {
         "id": job_id,  # Pass it in
         "script_path": result["script_path"],
-        "config": None
+        "config": None,
+        "vram_required": vram_required
     }
 
     db_job = job_service.create_job(db, job_data)
@@ -77,5 +79,44 @@ def pull_job(
         if job_info is None:
             return {"message": "No pending jobs available"}
         return job_info
+    except Exception as e:
+        return {"error": str(e)}
+    
+@router.post("/upload_output")
+async def upload_output_file(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Extract job_id from filename
+        job_id = os.path.splitext(file.filename)[0]
+
+        # Go up 3 levels: api → app → Scheduler
+        base_dir = os.path.dirname(
+            os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))
+            )
+        )
+
+        # Create output dir
+        output_dir = os.path.join(base_dir, "output")
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Save file
+        file_path = os.path.join(output_dir, file.filename)
+
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+
+        # ✅ mark job as completed
+        job_service.set_to_completed(db, job_id)
+
+        return {
+            "message": "File uploaded and job marked as completed",
+            "file_path": file_path,
+            "job_id": job_id
+        }
+
     except Exception as e:
         return {"error": str(e)}

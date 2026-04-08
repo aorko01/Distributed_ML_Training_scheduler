@@ -35,6 +35,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./uploads:/app/uploads
+      - ./output:/app/output
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       # DATABASE_URL format:
