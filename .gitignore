@@ -1,10 +1,13 @@
 venv/
+**/venv/
+output/
+**/output/
+upload/
+**/upload/
+uploads/
+**/uploads/
 .env
 
 __pycache__/
 **/__pycache__/
 *.py[cod]
-Scheduler/uploads
-**/output/
-**/uploads/
-**/venv/
