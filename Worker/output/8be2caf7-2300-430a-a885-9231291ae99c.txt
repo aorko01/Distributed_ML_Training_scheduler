@@ -1,5 +1,0 @@
-Using device: cuda
-Epoch 1/3, Loss: 2.2877
-Epoch 2/3, Loss: 1.8109
-Epoch 3/3, Loss: 1.4393
-Training finished in 0.13 seconds
