@@ -5,11 +5,13 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      SCHEDULER_API_URL: http://host.docker.internal:8000
+      OBJECT_STORE_URL: http://host.docker.internal:8010
+      OBJECT_STORE_BUCKET: uploads
     volumes:
       # Mount the Docker socket so we can build images from inside the container
       - /var/run/docker.sock:/var/run/docker.sock
-      # Mount the Scheduler's uploads directory (read-only)
-      - ../Scheduler/uploads:/uploads:ro
       # Persist the processed-jobs tracker across restarts
       - builder-data:/data
 

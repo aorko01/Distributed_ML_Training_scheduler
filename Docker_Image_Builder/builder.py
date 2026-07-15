@@ -264,16 +264,16 @@
 #     main()
 
 
-
-
-
 import os
 import time
 import json
 import shutil
 import tempfile
 import logging
+import io
+import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 import docker
 import requests
@@ -285,17 +285,17 @@ from dotenv import load_dotenv
 load_dotenv()  # loads variables from .env
 
 # Load scheduler base URL from .env
-SCHEDULER_BASE_URL = os.environ.get(
-    "SCHEDULER_API_URL",
-    "http://localhost:8000"
-)
-# Ensure the endpoint path is appended
-SCHEDULER_API_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_pending"
+SCHEDULER_BASE_URL = os.environ.get("SCHEDULER_API_URL", "http://localhost:8000")
+SCHEDULER_UPDATE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_pending"
+SCHEDULER_QUEUE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/unbuilt_jobs"
 
 DOCKER_HUB_USERNAME = os.environ["DOCKER_HUB_USERNAME"]
 DOCKER_HUB_PASSWORD = os.environ.get("DOCKER_HUB_PASSWORD", "")
 
-UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "/uploads")
+OBJECT_STORE_URL = os.environ.get("OBJECT_STORE_URL", "http://localhost:8010").rstrip(
+    "/"
+)
+OBJECT_STORE_BUCKET = os.environ.get("OBJECT_STORE_BUCKET", "uploads")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
 PROCESSED_FILE = "/data/processed_jobs.json"
 
@@ -322,6 +322,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("image_builder")
 
+
 # ----------------------
 # Job tracking
 # ----------------------
@@ -331,10 +332,12 @@ def load_processed_jobs() -> set:
             return set(json.load(f))
     return set()
 
+
 def save_processed_jobs(processed: set):
     os.makedirs(os.path.dirname(PROCESSED_FILE), exist_ok=True)
     with open(PROCESSED_FILE, "w") as f:
         json.dump(list(processed), f)
+
 
 # ----------------------
 # Project detection
@@ -347,6 +350,7 @@ def find_project_dir(extracted_dir: str) -> str | None:
         if os.path.isdir(candidate):
             return candidate
     return extracted_dir
+
 
 # ----------------------
 # Requirements parsing
@@ -366,12 +370,14 @@ def read_requirements(project_dir: str) -> list[str]:
             packages.append(pkg)
     return packages
 
+
 def select_base_image(project_dir: str) -> str:
     packages = read_requirements(project_dir)
     for pkg in packages:
         if pkg in BASE_IMAGE_MAP:
             return BASE_IMAGE_MAP[pkg]
     return BASE_IMAGE_DEFAULT
+
 
 # ----------------------
 # Dockerfile generation
@@ -402,6 +408,7 @@ def generate_dockerfile(project_dir: str) -> str:
     logger.info("Selected base image: %s", base_image)
     return "\n".join(lines)
 
+
 # ----------------------
 # Docker login
 # ----------------------
@@ -412,6 +419,7 @@ def docker_login(client: docker.DockerClient):
         logger.info("Docker Hub login successful.")
     else:
         logger.info("No Docker Hub password provided, assuming already logged in.")
+
 
 # ----------------------
 # Build and push image
@@ -475,6 +483,7 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
     logger.info("Successfully built and pushed %s", image_tag)
     return True
 
+
 # ----------------------
 # Notify scheduler
 # ----------------------
@@ -482,7 +491,7 @@ def notify_scheduler_job_ready(job_id: str):
     payload = {"job_id": job_id}
 
     try:
-        response = requests.post(SCHEDULER_API_URL, json=payload, timeout=10)
+        response = requests.post(SCHEDULER_UPDATE_URL, json=payload, timeout=10)
         if response.status_code == 200:
             logger.info("Scheduler notified successfully for job %s", job_id)
         else:
@@ -490,42 +499,77 @@ def notify_scheduler_job_ready(job_id: str):
                 "Scheduler notification failed for job %s: %s %s",
                 job_id,
                 response.status_code,
-                response.text
+                response.text,
             )
     except Exception as e:
         logger.error("Failed to contact scheduler for job %s: %s", job_id, e)
 
-# ----------------------
-# Scan uploads
-# ----------------------
+
+def fetch_unbuilt_jobs() -> list[dict]:
+    response = requests.get(SCHEDULER_QUEUE_URL, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload.get("jobs", [])
+
+
+def download_job_archive(object_key: str) -> bytes:
+    download_url = f"{OBJECT_STORE_URL}/objects/{OBJECT_STORE_BUCKET}/{quote(object_key, safe='/')}"
+    response = requests.get(download_url, timeout=30)
+    response.raise_for_status()
+    return response.content
+
+
+def extract_job_archive(archive_bytes: bytes, job_id: str) -> str:
+    extract_dir = tempfile.mkdtemp(prefix=f"job_{job_id}_")
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as zip_ref:
+            zip_ref.extractall(extract_dir)
+    except Exception:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise
+
+    return extract_dir
+
+
 def scan_and_process():
     processed = load_processed_jobs()
     client = docker.from_env()
     docker_login(client)
 
-    if not os.path.isdir(UPLOADS_DIR):
-        logger.warning("Uploads directory %s does not exist.", UPLOADS_DIR)
+    try:
+        jobs = fetch_unbuilt_jobs()
+    except Exception as e:
+        logger.error("Failed to fetch unbuilt jobs: %s", e)
         return
 
-    for entry in os.listdir(UPLOADS_DIR):
-        job_dir = os.path.join(UPLOADS_DIR, entry)
-        if not os.path.isdir(job_dir):
+    for job in jobs:
+        job_id = job.get("id")
+        object_key = job.get("object_key")
+
+        if not job_id or not object_key:
+            logger.warning("Skipping malformed job payload: %s", job)
             continue
 
-        job_id = entry
         if job_id in processed:
-            continue
-
-        # Files now live directly in job_dir — check for requirements.txt as readiness signal
-        if not os.path.exists(os.path.join(job_dir, "requirements.txt")):
-            logger.info("Job %s not ready yet (no requirements.txt), skipping.", job_id)
             continue
 
         logger.info("=" * 50)
         logger.info("Processing job: %s", job_id)
 
-        # Pass job_dir directly — no more extracted/ or find_project_dir
-        success = build_and_push(client, job_id, job_dir)
+        extract_dir = None
+        success = False
+
+        try:
+            archive_bytes = download_job_archive(object_key)
+            extract_dir = extract_job_archive(archive_bytes, job_id)
+            project_dir = find_project_dir(extract_dir)
+            success = build_and_push(client, job_id, project_dir)
+        except Exception as e:
+            logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
+        finally:
+            if extract_dir:
+                shutil.rmtree(extract_dir, ignore_errors=True)
 
         if success:
             processed.add(job_id)
@@ -537,12 +581,13 @@ def scan_and_process():
 
     logger.info("Scan complete. Total processed: %d", len(processed))
 
+
 # ----------------------
 # Main loop
 # ----------------------
 def main():
     logger.info("Docker Image Builder service starting ...")
-    logger.info("Watching directory: %s", UPLOADS_DIR)
+    logger.info("Watching scheduler queue: %s", SCHEDULER_QUEUE_URL)
     logger.info("Poll interval: %d seconds", POLL_INTERVAL)
     logger.info("Docker Hub user: %s", DOCKER_HUB_USERNAME)
 
@@ -553,6 +598,7 @@ def main():
             logger.error("Error during scan cycle: %s", e, exc_info=True)
 
         time.sleep(POLL_INTERVAL)
+
 
 if __name__ == "__main__":
     main()
