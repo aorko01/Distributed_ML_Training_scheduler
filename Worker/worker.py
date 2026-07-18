@@ -95,14 +95,6 @@ def get_gpu_info():
     num_gpus = len(gpus)
     return gpu_type, total_vram, available_vram, num_gpus
 
-
-# -------------------------
-# MAC ADDRESS
-# -------------------------s
-mac = ':'.join(f'{(uuid.getnode() >> ele) & 0xff:02x}'
-               for ele in range(0, 8*6, 8)[::-1])
-
-
 # -------------------------
 # REGISTER WORKER
 # -------------------------
@@ -111,7 +103,6 @@ def register_worker():
 
     worker_info = {
         "worker_id": worker_id,
-        "mac_address": mac,
         "gpu_type": gpu_type,
         "num_gpus": num_gpus,
         "total_vram": total_vram

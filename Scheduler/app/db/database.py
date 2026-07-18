@@ -20,7 +20,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Retry mechanism: wait until the database is ready (useful for Docker setups)
 for i in range(30):  # retry for ~30 seconds
     try:
-        engine = create_engine(DATABASE_URL)
+        engine = create_engine(DATABASE_URL) # This object knows how to connect to the database
         # Test connection
         conn = engine.connect()
         conn.close()
