@@ -44,6 +44,7 @@ async def submit_job(
 
     job_data = {
         "id": job_id,  # Pass it in
+        "object_key": result["object_key"],
         "script_path": result["script_path"],
         "config": None,
         "vram_required": vram_required
@@ -65,6 +66,15 @@ def Update_job_to_pending(
             "status": job.status.value
         }
 
+    except Exception as e:
+        return {"error": str(e)}
+    
+    
+@router.get("/unbuilt_jobs")
+def get_unbuilt_jobs(db: Session = Depends(get_db)):
+    try:
+        jobs = job_service.get_not_runnable_jobs(db)
+        return {"jobs": jobs}
     except Exception as e:
         return {"error": str(e)}
     

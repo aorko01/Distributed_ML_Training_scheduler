@@ -2,6 +2,7 @@ from pydantic import BaseModel, ConfigDict
 from typing import Optional, Dict
 
 class JobCreate(BaseModel):
+    object_key: str
     script_path: str
     config: Optional[Dict] = None
     

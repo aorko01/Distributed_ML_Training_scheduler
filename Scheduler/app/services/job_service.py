@@ -7,6 +7,7 @@ from app.schemas.worker_schema import WorkerResource
 def create_job(db: Session, job_data: dict):
     db_job = Job(
         id=job_data["id"],
+        object_key=job_data["object_key"],
         script_path=job_data["script_path"],
         config=job_data.get("config"),
         vram_required=job_data.get("vram_required")
@@ -40,6 +41,29 @@ def set_job_pending(db: Session, job_id: str):
     return job
 
 
+def get_not_runnable_jobs(db: Session):
+    jobs = (
+        db.query(Job)
+        .filter(Job.status == JobStatus.NOT_RUNNABLE)
+        .order_by(Job.created_at)
+        .all()
+    )
+
+    return [
+        {
+            "id": job.id,
+            "object_key": job.object_key,
+            "script_path": job.script_path,
+            "config": job.config,
+            "status": job.status.value,
+            "vram_required": job.vram_required,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+        }
+        for job in jobs
+    ]
+
+
 def get_first_pending_job(db: Session, request: WorkerResource):
     # Get worker
     worker = db.query(Worker).filter(Worker.worker_id == request.worker_id).first()
@@ -68,6 +92,7 @@ def get_first_pending_job(db: Session, request: WorkerResource):
     # Convert to dict
     job_dict = {
         "id": job.id,
+        "object_key": job.object_key,
         "script_path": job.script_path,
         "config": job.config,
         "status": job.status.value,
