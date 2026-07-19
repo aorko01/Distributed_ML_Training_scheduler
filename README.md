@@ -111,7 +111,6 @@ Base URL: `http://localhost:8000`
 - `POST /workers/register`
   - Body:
     - `worker_id`
-    - `mac_address`
     - `gpu_type`
     - `num_gpus`
     - `total_vram`

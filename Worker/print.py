@@ -1,10 +1,7 @@
 import GPUtil
 import uuid
 
-def get_mac_address():
-    mac = uuid.getnode()  # returns MAC as integer
-    mac_addr = ':'.join(f'{(mac >> ele) & 0xff:02x}' for ele in range(0,8*6,8)[::-1])
-    return mac_addr
+
 
 def get_worker_info():
     gpus = GPUtil.getGPUs()
@@ -17,15 +14,13 @@ def get_worker_info():
     total_vram = round(gpu.memoryTotal / 1024, 2)  # GB
     free_vram  = round(gpu.memoryFree / 1024, 2)   # GB
     num_gpus   = len(gpus)
-    
-    mac_addr = get_mac_address()
+
     
     worker_info = {
         "gpu_type": gpu_type,
         "total_vram": total_vram,
         "free_vram": free_vram,
         "num_gpus": num_gpus,
-        "mac_address": mac_addr
     }
     
     return worker_info

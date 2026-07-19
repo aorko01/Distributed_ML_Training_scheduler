@@ -16,7 +16,6 @@ def register_or_update_worker_service(db: Session, worker_info):
     else:
         db_worker = Worker(
             worker_id=worker_info.worker_id,
-            mac_address=worker_info.mac_address,
             gpu_type=worker_info.gpu_type,
             num_gpus=worker_info.num_gpus,
             total_vram=worker_info.total_vram,

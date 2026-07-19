@@ -7,7 +7,6 @@ class Worker(Base):
     __tablename__ = "workers"
 
     worker_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    mac_address = Column(String, unique=True, nullable=False)
     gpu_type = Column(String, nullable=False)
     num_gpus = Column(Integer, nullable=False)
     total_vram = Column(Float, nullable=False)
