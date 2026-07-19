@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.services import job_service
-from app.utils.file_utils import save_and_extract_zip
+from app.utils.file_utils import save_to_object_store
 from app.schemas.job_schema import Job_status_to_pending, JobIDRequest
 from app.schemas.worker_schema import WorkerResource
 
@@ -31,7 +31,7 @@ async def submit_job(
     try:
         file_content = await zip_file.read()
 
-        result = save_and_extract_zip(
+        result = save_to_object_store(
             file_content=file_content,
             filename=zip_file.filename,
             entry_file=entry_file,

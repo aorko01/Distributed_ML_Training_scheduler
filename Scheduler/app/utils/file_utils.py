@@ -1,98 +1,92 @@
 import os
 import uuid
-import shutil
+import io
 import zipfile
+
+import requests
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+OBJECT_STORE_URL = os.environ.get("OBJECT_STORE_URL", "http://localhost:8010").rstrip(
+    "/"
+)
+OBJECT_STORE_BUCKET = os.environ.get("OBJECT_STORE_BUCKET", "uploads")
 
-def find_file(directory: str, filename: str) -> str | None:
-    for root, _, files in os.walk(directory):
-        if filename in files:
-            return os.path.join(root, filename)
+
+def find_file_in_zip(names: list[str], filename: str) -> str | None:
+    """Return the first entry in `names` whose basename matches `filename`,
+    without touching the filesystem. Skips directory entries."""
+    for name in names:
+        if name.endswith("/"):
+            continue
+        if os.path.basename(name) == filename:
+            return name
     return None
 
 
-def validate_required_files(extract_dir: str, required_files: list[str]):
+def validate_required_files(names: list[str], required_files: list[str]):
     for file in required_files:
-        file_path = find_file(extract_dir, file)
-        if not file_path:
+        if not find_file_in_zip(names, file):
             raise FileNotFoundError(f"Required file '{file}' not found in ZIP.")
 
-def save_and_extract_zip(
+
+def save_to_object_store(
     file_content: bytes,
     filename: str,
     entry_file: str,
     require_files: list[str] = None,
-    job_id: str = None
+    job_id: str = None,
 ) -> dict:
     job_id = job_id or str(uuid.uuid4())
-    job_dir = os.path.join(UPLOAD_DIR, job_id)
-    os.makedirs(job_dir, exist_ok=True)
 
     zip_filename = filename if filename else f"{uuid.uuid4()}.zip"
-    zip_path = os.path.join(job_dir, zip_filename)
-
-    # Get zip name without extension e.g. "Distribute_test"
-    zip_base_name = os.path.splitext(zip_filename)[0]
-
-    # Save ZIP
-    with open(zip_path, "wb") as f:
-        f.write(file_content)
-
-    # Extract to temp dir
-    temp_dir = os.path.join(job_dir, "__temp__")
-    os.makedirs(temp_dir, exist_ok=True)
+    object_key = f"{job_id}/{zip_filename}"
 
     try:
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(temp_dir)
+        with zipfile.ZipFile(io.BytesIO(file_content), "r") as zip_ref:
+            # Reads only the central directory listing — no decompression,
+            # no writing to disk, so no zip-slip / zip-bomb exposure.
             extracted_files = zip_ref.namelist()
+
+        zip_base_name = os.path.splitext(zip_filename)[0]
+        prefix = f"{zip_base_name}/"
+        matched_files = [f for f in extracted_files if f.startswith(prefix)]
+
+        if require_files:
+            validate_required_files(extracted_files, require_files)
+
+        script_path = find_file_in_zip(extracted_files, entry_file)
+        if not script_path:
+            raise FileNotFoundError(f"Entry file '{entry_file}' not found in ZIP.")
+
+        # script_path is already the path as stored inside the zip.
+        relative_script_path = script_path
     except zipfile.BadZipFile:
         raise zipfile.BadZipFile("Uploaded file is not a valid ZIP archive.")
 
-    # Match only entries that start with "Distribute_test/" i.e. zip_base_name/
-    prefix = f"{zip_base_name}/"
-    matched_files = [f for f in extracted_files if f.startswith(prefix)]
+    upload_response = requests.post(
+        f"{OBJECT_STORE_URL}/objects/upload",
+        data={
+            "bucket": OBJECT_STORE_BUCKET,
+            "object_key": object_key,
+        },
+        files={
+            "file": (zip_filename, io.BytesIO(file_content), "application/zip"),
+        },
+        timeout=30,
+    )
 
-    # Move matched files into job_dir, stripping the prefix
-    for relative_path in matched_files:
-        src = os.path.join(temp_dir, relative_path)
+    if upload_response.status_code >= 400:
+        raise RuntimeError(
+            f"Object store upload failed: {upload_response.status_code} {upload_response.text}"
+        )
 
-        if not os.path.exists(src):
-            continue
-
-        # Strip the zip_base_name/ prefix to get the flat relative path
-        # e.g. "Distribute_test/train.py" → "train.py"
-        stripped = relative_path[len(prefix):]
-
-        if not stripped:
-            # This was the folder entry itself, skip
-            continue
-
-        dst = os.path.join(job_dir, stripped)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-
-        if os.path.exists(dst):
-            shutil.rmtree(dst) if os.path.isdir(dst) else os.remove(dst)
-
-        shutil.move(src, dst)
-
-    # Delete entire temp dir (removes everything including unmatched files)
-    shutil.rmtree(temp_dir)
-    os.remove(zip_path)
-
-    if require_files:
-        validate_required_files(job_dir, require_files)
-
-    script_path = find_file(job_dir, entry_file)
-    if not script_path:
-        raise FileNotFoundError(f"Entry file '{entry_file}' not found in ZIP.")
+    stored_object_key = upload_response.json().get("object_key", object_key)
 
     return {
-        "extract_dir": job_dir,
+        "object_key": stored_object_key,
         "files": matched_files,
-        "script_path": script_path
+        "script_path": relative_script_path,
     }
