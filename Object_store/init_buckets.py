@@ -1,36 +1,43 @@
 import os
+
 from minio import Minio
 from minio.error import S3Error
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
+MINIO_ROOT_USER = os.environ.get("MINIO_ROOT_USER", "minioadmin")
+MINIO_ROOT_PASSWORD = os.environ.get("MINIO_ROOT_PASSWORD", "minioadmin")
+MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "minioadmin")
+BUCKETS = (
+    os.environ.get("OBJECT_STORE_BUCKET", "uploads"),
+    os.environ.get("OBJECT_OUTPUT_BUCKET", "outputs"),
+)
 
-def main():
-    # Initialize MinIO client
-    client = Minio(
+
+def get_client() -> Minio:
+    return Minio(
         MINIO_ENDPOINT,
-        access_key=MINIO_ACCESS_KEY,
-        secret_key=MINIO_SECRET_KEY,
-        secure=False  # Set to True if using HTTPS
+        access_key=MINIO_ROOT_USER,
+        secret_key=MINIO_ROOT_PASSWORD,
+        secure=MINIO_SECURE,
     )
 
-    buckets_to_create = ["uploads", "outputs"]
 
-    for bucket_name in buckets_to_create:
+def ensure_buckets(client: Minio | None = None) -> None:
+    storage_client = client or get_client()
+
+    for bucket_name in BUCKETS:
+        if not bucket_name:
+            continue
+
         try:
-            found = client.bucket_exists(bucket_name)
-            if not found:
-                client.make_bucket(bucket_name)
-                print(f"Bucket '{bucket_name}' created successfully.")
-            else:
-                print(f"Bucket '{bucket_name}' already exists.")
-        except S3Error as err:
-            print(f"Error creating bucket '{bucket_name}': {err}")
+            if not storage_client.bucket_exists(bucket_name):
+                storage_client.make_bucket(bucket_name)
+        except S3Error as exc:
+            raise RuntimeError(
+                f"Could not ensure bucket '{bucket_name}': {exc}"
+            ) from exc
+
 
 if __name__ == "__main__":
-    main()
+    ensure_buckets()
