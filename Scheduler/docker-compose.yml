@@ -20,16 +20,11 @@ services:
     # This service is needed so API can connect to host "redis"
 
   api:
-    # Assuming you have a Dockerfile in the same directory.
-    # The image can be built from that Dockerfile.
     build: .
     container_name: app-api
     depends_on:
       - db
       - redis
-    # Start db and redis before starting api
-    # Important note:
-    # depends_on ensures startup order, NOT readiness
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -38,10 +33,8 @@ services:
       - ./output:/app/output
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
-      # DATABASE_URL format:
-      # postgresql://<user>:<password>@<service_name>:<port>/<database_name>
-      # - "db" matches the service name above
       DATABASE_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-app}
-      # Redis host/port for the API
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      OBJECT_STORE_URL: ${OBJECT_STORE_URL:-http://localhost:8010}
+      OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-uploads}
