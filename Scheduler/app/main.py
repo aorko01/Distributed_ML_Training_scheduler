@@ -3,6 +3,7 @@ from app.db.database import Base, engine
 
 # Import routers
 from app.api.jobs_route import router as jobs_router
+from app.api.scheduler_route import router as scheduler_router
 from app.api.worker_route import router as workers_router  # include worker registration
 
 # Create FastAPI app
@@ -20,4 +21,5 @@ Base.metadata.create_all(bind=engine)
 
 # Include API routers
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
+app.include_router(scheduler_router, prefix="/scheduler", tags=["scheduler"])
 app.include_router(workers_router, prefix="/workers", tags=["workers"])
