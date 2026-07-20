@@ -11,21 +11,22 @@ def create_job(db: Session, job_data: dict):
         object_key=job_data["object_key"],
         script_path=job_data["script_path"],
         config=job_data.get("config"),
-        vram_required=job_data.get("vram_required")
+        vram_required=job_data.get("vram_required"),
     )
     db.add(db_job)
-    #Tells the session: “I want to insert this object into the database.”
-    #Object is staged, not yet written to the database.
+    # Tells the session: “I want to insert this object into the database.”
+    # Object is staged, not yet written to the database.
     # SQLAlchemy keeps track of changes in a transactional “unit of work.”
     db.commit()
-    #Writes the staged object into the database.
+    # Writes the staged object into the database.
     # A SQL INSERT statement is executed.
     # After this, the job exists in the database.
     # The transaction is committed; the changes are now permanent.
     db.refresh(db_job)
     return db_job
 
-def set_job_pending(db: Session, job_id: str):
+
+def set_job_vram_estimation_pending(db: Session, job_id: str):
     job = db.query(Job).filter(Job.id == job_id).first()
 
     if not job:
@@ -85,7 +86,7 @@ def get_not_runnable_jobs(db: Session):
 def get_first_runnable_job(db: Session, request: WorkerResource):
     # Get worker
     worker = db.query(Worker).filter(Worker.worker_id == request.worker_id).first()
-    
+
     if not worker:
         raise Exception("Worker not found")
 
@@ -116,10 +117,11 @@ def get_first_runnable_job(db: Session, request: WorkerResource):
         "status": job.status.value,
         "vram_required": job.vram_required,
         "created_at": job.created_at,
-        "updated_at": job.updated_at
+        "updated_at": job.updated_at,
     }
 
     return job_dict
+
 
 def set_to_completed(db: Session, job_id: str):
     job = db.query(Job).filter(Job.id == job_id).first()
