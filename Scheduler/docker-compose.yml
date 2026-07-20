@@ -16,8 +16,6 @@ services:
     restart: always
     ports:
       - "6379:6379"
-    # Redis does not require environment variables by default
-    # This service is needed so API can connect to host "redis"
 
   api:
     build: .
@@ -38,3 +36,14 @@ services:
       REDIS_PORT: 6379
       OBJECT_STORE_URL: ${OBJECT_STORE_URL:-http://localhost:8010}
       OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-uploads}
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: app-pgadmin
+    restart: always
+    depends_on:
+      - db
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin

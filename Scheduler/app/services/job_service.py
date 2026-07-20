@@ -4,6 +4,7 @@ from sqlalchemy import or_
 from app.models.job_model import Job, JobStatus
 from app.schemas.worker_schema import WorkerResource
 
+
 def create_job(db: Session, job_data: dict):
     db_job = Job(
         id=job_data["id"],
@@ -33,7 +34,24 @@ def set_job_pending(db: Session, job_id: str):
     if job.status != JobStatus.NOT_RUNNABLE:
         raise Exception("Job is not in NOT_RUNNABLE state")
 
-    job.status = JobStatus.PENDING
+    job.status = JobStatus.VRAM_ESTIMATION_PENDING
+
+    db.commit()
+    db.refresh(job)
+
+    return job
+
+
+def set_job_runnable(db: Session, job_id: str):
+    job = db.query(Job).filter(Job.id == job_id).first()
+
+    if not job:
+        raise Exception("Job not found")
+
+    if job.status != JobStatus.VRAM_ESTIMATION_PENDING:
+        raise Exception("Job is not in VRAM_ESTIMATION_PENDING state")
+
+    job.status = JobStatus.RUNNABLE
 
     db.commit()
     db.refresh(job)
@@ -64,19 +82,19 @@ def get_not_runnable_jobs(db: Session):
     ]
 
 
-def get_first_pending_job(db: Session, request: WorkerResource):
+def get_first_runnable_job(db: Session, request: WorkerResource):
     # Get worker
     worker = db.query(Worker).filter(Worker.worker_id == request.worker_id).first()
     
     if not worker:
         raise Exception("Worker not found")
 
-    # Get first pending job the worker can run based on free VRAM.
+    # Get first runnable job the worker can run based on free VRAM.
     job = (
         db.query(Job)
         .filter(
-            Job.status == JobStatus.PENDING,
-            or_(Job.vram_required.is_(None), Job.vram_required <= request.free_vram)
+            Job.status == JobStatus.RUNNABLE,
+            or_(Job.vram_required.is_(None), Job.vram_required <= request.free_vram),
         )
         .order_by(Job.created_at)
         .first()

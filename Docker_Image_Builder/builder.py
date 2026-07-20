@@ -21,7 +21,10 @@ load_dotenv()  # loads variables from .env
 
 # Load scheduler base URL from .env
 SCHEDULER_BASE_URL = os.environ.get("SCHEDULER_API_URL", "http://localhost:8000")
-SCHEDULER_UPDATE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_pending"
+SCHEDULER_UPDATE_URLS = [
+    SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_vram_estimation_pending",
+    SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_pending",
+]
 SCHEDULER_QUEUE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/unbuilt_jobs"
 
 DOCKER_HUB_USERNAME = os.environ["DOCKER_HUB_USERNAME"]
@@ -226,15 +229,32 @@ def notify_scheduler_job_ready(job_id: str):
     payload = {"job_id": job_id}
 
     try:
-        response = requests.post(SCHEDULER_UPDATE_URL, json=payload, timeout=10)
-        if response.status_code == 200:
-            logger.info("Scheduler notified successfully for job %s", job_id)
-        else:
+        last_response = None
+        for url in SCHEDULER_UPDATE_URLS:
+            response = requests.post(url, json=payload, timeout=10)
+            last_response = response
+
+            if response.status_code == 404:
+                continue
+
+            if response.status_code == 200:
+                logger.info("Scheduler notified successfully for job %s", job_id)
+                return
+
             logger.error(
                 "Scheduler notification failed for job %s: %s %s",
                 job_id,
                 response.status_code,
                 response.text,
+            )
+            return
+
+        if last_response is not None:
+            logger.error(
+                "Scheduler notification failed for job %s: %s %s",
+                job_id,
+                last_response.status_code,
+                last_response.text,
             )
     except Exception as e:
         logger.error("Failed to contact scheduler for job %s: %s", job_id, e)

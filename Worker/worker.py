@@ -152,7 +152,7 @@ def pull_job():
     data = resp.json()
 
     if "message" in data:
-        base_logger.info("No pending jobs: %s", data["message"])
+        base_logger.info("No runnable jobs: %s", data["message"])
         return None
 
     if "error" in data:

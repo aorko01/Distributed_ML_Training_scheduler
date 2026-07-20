@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, Dict
 
+
 class JobCreate(BaseModel):
     object_key: str
     script_path: str
@@ -12,7 +13,7 @@ class JobResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-class Job_status_to_pending(BaseModel):
+class Job_status_to_vram_estimation_pending(BaseModel):
     job_id: str
 
 class JobIDRequest(BaseModel):

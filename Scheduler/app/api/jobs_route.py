@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.services import job_service
 from app.utils.file_utils import save_to_object_store
-from app.schemas.job_schema import Job_status_to_pending, JobIDRequest
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest
 from app.schemas.worker_schema import WorkerResource
 
 
@@ -54,22 +54,19 @@ async def submit_job(
     return db_job
 
 
+@router.post("/update_job_to_vram_estimation_pending")
 @router.post("/update_job_to_pending")
-def Update_job_to_pending(
-    request: Job_status_to_pending,
-    db: Session = Depends(get_db)
+def update_job_to_vram_estimation_pending(
+    request: Job_status_to_vram_estimation_pending, db: Session = Depends(get_db)
 ):
     try:
-        job = job_service.set_job_pending(db, request.job_id)
-        return {
-            "job_id": job.id,
-            "status": job.status.value
-        }
+        job = job_service.set_job_vram_estimation_pending(db, request.job_id)
+        return {"job_id": job.id, "status": job.status.value}
 
     except Exception as e:
         return {"error": str(e)}
-    
-    
+
+
 @router.get("/unbuilt_jobs")
 def get_unbuilt_jobs(db: Session = Depends(get_db)):
     try:
@@ -77,25 +74,32 @@ def get_unbuilt_jobs(db: Session = Depends(get_db)):
         return {"jobs": jobs}
     except Exception as e:
         return {"error": str(e)}
-    
-    
+
+
 @router.post("/pull_job")
-def pull_job(
-    request: WorkerResource,
-    db: Session = Depends(get_db)
-):
+def pull_job(request: WorkerResource, db: Session = Depends(get_db)):
     try:
-        job_info = job_service.get_first_pending_job(db,request)
+        job_info = job_service.get_first_runnable_job(db, request)
         if job_info is None:
-            return {"message": "No pending jobs available"}
+            return {"message": "No runnable jobs available"}
         return job_info
     except Exception as e:
         return {"error": str(e)}
-    
+
+
+@router.post("/update_job_to_runnable")
+def update_job_to_runnable(request: JobIDRequest, db: Session = Depends(get_db)):
+    try:
+        job = job_service.set_job_runnable(db, request.job_id)
+        return {"job_id": job.id, "status": job.status.value}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.post("/upload_output")
 async def upload_output_file(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     try:
         # Extract job_id from filename
@@ -103,9 +107,7 @@ async def upload_output_file(
 
         # Go up 3 levels: api → app → Scheduler
         base_dir = os.path.dirname(
-            os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))
-            )
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
 
         # Create output dir
@@ -125,26 +127,21 @@ async def upload_output_file(
         return {
             "message": "File uploaded and job marked as completed",
             "file_path": file_path,
-            "job_id": job_id
+            "job_id": job_id,
         }
 
     except Exception as e:
         return {"error": str(e)}
-    
-    
+
+
 @router.post("/get_output_by_id")
-def get_output_by_id(
-    request: JobIDRequest,
-    db: Session = Depends(get_db)
-):
+def get_output_by_id(request: JobIDRequest, db: Session = Depends(get_db)):
     try:
         job_id = request.job_id
 
         # Base directory: Scheduler/ (api -> app -> Scheduler)
         base_dir = os.path.dirname(
-            os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))
-            )
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
 
         # Output directory: Scheduler/output
@@ -163,11 +160,7 @@ def get_output_by_id(
         job = db.query(job_service.Job).filter(job_service.Job.id == job_id).first()
         status = job.status.value if job else "UNKNOWN"
 
-        return {
-            "job_id": job_id,
-            "status": status,
-            "content": content
-        }
+        return {"job_id": job_id, "status": status, "content": content}
 
     except Exception as e:
         return {"error": str(e)}
