@@ -55,7 +55,6 @@ async def submit_job(
 
 
 @router.post("/update_job_to_vram_estimation_pending")
-@router.post("/update_job_to_pending")
 def update_job_to_vram_estimation_pending(
     request: Job_status_to_vram_estimation_pending, db: Session = Depends(get_db)
 ):

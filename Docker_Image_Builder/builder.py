@@ -23,7 +23,6 @@ load_dotenv()  # loads variables from .env
 SCHEDULER_BASE_URL = os.environ.get("SCHEDULER_API_URL", "http://localhost:8000")
 SCHEDULER_UPDATE_URLS = [
     SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_vram_estimation_pending",
-    SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_pending",
 ]
 SCHEDULER_QUEUE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/unbuilt_jobs"
 
