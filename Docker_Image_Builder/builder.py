@@ -224,7 +224,7 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
 # ----------------------
 # Notify scheduler
 # ----------------------
-def notify_scheduler_job_ready(job_id: str):
+def notify_scheduler_job_ready(job_id: str) -> bool:
     payload = {"job_id": job_id}
 
     try:
@@ -237,8 +237,17 @@ def notify_scheduler_job_ready(job_id: str):
                 continue
 
             if response.status_code == 200:
+                # Check response body for error — scheduler returns 200 even on failures
+                body = response.json()
+                if "error" in body:
+                    logger.error(
+                        "Scheduler returned error for job %s: %s",
+                        job_id,
+                        body["error"],
+                    )
+                    return False
                 logger.info("Scheduler notified successfully for job %s", job_id)
-                return
+                return True
 
             logger.error(
                 "Scheduler notification failed for job %s: %s %s",
@@ -246,7 +255,7 @@ def notify_scheduler_job_ready(job_id: str):
                 response.status_code,
                 response.text,
             )
-            return
+            return False
 
         if last_response is not None:
             logger.error(
@@ -257,6 +266,8 @@ def notify_scheduler_job_ready(job_id: str):
             )
     except Exception as e:
         logger.error("Failed to contact scheduler for job %s: %s", job_id, e)
+
+    return False
 
 
 def fetch_unbuilt_jobs() -> list[dict]:
@@ -306,6 +317,10 @@ def scan_and_process():
             continue
 
         if job_id in processed:
+            # Image was built before but still showing as unbuilt —
+            # scheduler notification must have failed. Retry notification.
+            logger.info("Job %s already built but still unbuilt in scheduler, re-notifying...", job_id)
+            notify_scheduler_job_ready(job_id)
             continue
 
         logger.info("=" * 50)
@@ -326,10 +341,13 @@ def scan_and_process():
                 shutil.rmtree(extract_dir, ignore_errors=True)
 
         if success:
-            processed.add(job_id)
-            save_processed_jobs(processed)
-            notify_scheduler_job_ready(job_id)
-            logger.info("Job %s completed.", job_id)
+            notified = notify_scheduler_job_ready(job_id)
+            if notified:
+                processed.add(job_id)
+                save_processed_jobs(processed)
+                logger.info("Job %s completed.", job_id)
+            else:
+                logger.error("Job %s built but scheduler notification failed, will retry.", job_id)
         else:
             logger.error("Job %s failed, will retry later.", job_id)
 
