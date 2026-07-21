@@ -35,7 +35,6 @@ def validate_required_files(names: list[str], required_files: list[str]):
 def save_to_object_store(
     file_content: bytes,
     filename: str,
-    entry_file: str,
     require_files: list[str] = None,
     job_id: str = None,
 ) -> dict:
@@ -57,12 +56,7 @@ def save_to_object_store(
         if require_files:
             validate_required_files(extracted_files, require_files)
 
-        script_path = find_file_in_zip(extracted_files, entry_file)
-        if not script_path:
-            raise FileNotFoundError(f"Entry file '{entry_file}' not found in ZIP.")
 
-        # script_path is already the path as stored inside the zip.
-        relative_script_path = script_path
     except zipfile.BadZipFile:
         raise zipfile.BadZipFile("Uploaded file is not a valid ZIP archive.")
 
@@ -88,5 +82,4 @@ def save_to_object_store(
     return {
         "object_key": stored_object_key,
         "files": matched_files,
-        "script_path": relative_script_path,
     }

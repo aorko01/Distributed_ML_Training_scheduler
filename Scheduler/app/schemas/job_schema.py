@@ -4,7 +4,7 @@ from typing import Optional, Dict
 
 class JobCreate(BaseModel):
     object_key: str
-    script_path: str
+    command: str
     config: Optional[Dict] = None
     
 class JobResponse(BaseModel):

@@ -119,7 +119,7 @@ def select_base_image(project_dir: str) -> str:
 # ----------------------
 # Dockerfile generation
 # ----------------------
-def generate_dockerfile(project_dir: str) -> str:
+def generate_dockerfile(project_dir: str, command: str) -> str:
     base_image = select_base_image(project_dir)
     has_requirements = os.path.exists(os.path.join(project_dir, "requirements.txt"))
 
@@ -138,9 +138,14 @@ def generate_dockerfile(project_dir: str) -> str:
             "",
         ]
 
-    lines += [
-        'CMD ["python"]',
-    ]
+    if command:
+        lines += [
+            f"CMD {command}",
+        ]
+    else:
+        lines += [
+            'CMD ["python"]',
+        ]
 
     logger.info("Selected base image: %s", base_image)
     return "\n".join(lines)
@@ -161,7 +166,7 @@ def docker_login(client: docker.DockerClient):
 # ----------------------
 # Build and push image
 # ----------------------
-def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -> bool:
+def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str, command: str) -> bool:
     image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
@@ -174,7 +179,7 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str) -
             else:
                 shutil.copy2(src, dst)
 
-        dockerfile_content = generate_dockerfile(project_dir)
+        dockerfile_content = generate_dockerfile(project_dir, command)
         with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile_content)
 
@@ -311,6 +316,7 @@ def scan_and_process():
     for job in jobs:
         job_id = job.get("id")
         object_key = job.get("object_key")
+        command = job.get("command", "")
 
         if not job_id or not object_key:
             logger.warning("Skipping malformed job payload: %s", job)
@@ -333,7 +339,7 @@ def scan_and_process():
             archive_bytes = download_job_archive(object_key)
             extract_dir = extract_job_archive(archive_bytes, job_id)
             project_dir = find_project_dir(extract_dir)
-            success = build_and_push(client, job_id, project_dir)
+            success = build_and_push(client, job_id, project_dir, command)
         except Exception as e:
             logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
         finally:

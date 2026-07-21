@@ -19,7 +19,7 @@ class Job(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     object_key = Column(String, nullable=False, unique=True)
-    script_path = Column(String, nullable=False)
+    command = Column(String, nullable=False)
     config = Column(JSON, nullable=True)
 
     status = Column(

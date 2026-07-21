@@ -9,7 +9,7 @@ def create_job(db: Session, job_data: dict):
     db_job = Job(
         id=job_data["id"],
         object_key=job_data["object_key"],
-        script_path=job_data["script_path"],
+        command=job_data["command"],
         config=job_data.get("config"),
         vram_required=job_data.get("vram_required"),
     )
@@ -72,7 +72,7 @@ def get_not_runnable_jobs(db: Session):
         {
             "id": job.id,
             "object_key": job.object_key,
-            "script_path": job.script_path,
+            "command": job.command,
             "config": job.config,
             "status": job.status.value,
             "vram_required": job.vram_required,
@@ -112,7 +112,7 @@ def get_first_runnable_job(db: Session, request: WorkerResource):
     job_dict = {
         "id": job.id,
         "object_key": job.object_key,
-        "script_path": job.script_path,
+        "command": job.command,
         "config": job.config,
         "status": job.status.value,
         "vram_required": job.vram_required,

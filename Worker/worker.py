@@ -190,16 +190,14 @@ def pull_docker_image(client: docker.DockerClient, job_id: str, logger: logging.
 # -------------------------
 # RUN SCRIPT INSIDE DOCKER
 # -------------------------
-def run_job_in_docker(client: docker.DockerClient, job_id: str, script_path: str, logger: logging.Logger, log_file: str):
+def run_job_in_docker(client: docker.DockerClient, job_id: str, logger: logging.Logger, log_file: str):
     image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
-    entry_file = os.path.basename(script_path)
 
-    logger.info("Running entry file '%s' in container from image: %s", entry_file, image_name)
+    logger.info("Running container from image: %s", image_name)
 
     try:
         container = client.containers.run(
             image=image_name,
-            command=["python", entry_file],
             detach=True,
             device_requests=[
                 docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
@@ -272,9 +270,8 @@ def process_job():
         return
 
     job_id = job.get("job_id") or job.get("id")
-    script_path = job.get("script_path")
 
-    if not job_id or not script_path:
+    if not job_id:
         base_logger.error("Invalid job payload received: %s", job)
         return
 
@@ -283,7 +280,7 @@ def process_job():
     job_logger = get_logger(f"job_{job_id}")
 
     job_logger.info("=" * 60)
-    job_logger.info("Job started — ID: %s | Script: %s", job_id, script_path)
+    job_logger.info("Job started — ID: %s", job_id)
     job_logger.info("Log file: %s", log_file)
 
     client = docker.from_env()
@@ -293,7 +290,7 @@ def process_job():
         job_logger.error("Aborting job %s: image pull failed.", job_id)
         return
 
-    run_job_in_docker(client, job_id, script_path, job_logger, log_file)
+    run_job_in_docker(client, job_id, job_logger, log_file)
 
     job_logger.info("Job %s finished. Log saved to: %s", job_id, log_file)
 

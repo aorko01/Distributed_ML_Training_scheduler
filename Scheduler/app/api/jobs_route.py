@@ -22,7 +22,7 @@ def get_db():
 @router.post("/submit_job")
 async def submit_job(
     zip_file: UploadFile = File(...),
-    entry_file: str = Form(...),
+    command: str = Form(...),
     vram_required: float | None = Form(None),
     db: Session = Depends(get_db)
 ):
@@ -34,7 +34,6 @@ async def submit_job(
         result = save_to_object_store(
             file_content=file_content,
             filename=zip_file.filename,
-            entry_file=entry_file,
             require_files=["requirements.txt"],
             job_id=job_id  # Pass it in
         )
@@ -45,7 +44,7 @@ async def submit_job(
     job_data = {
         "id": job_id,  # Pass it in
         "object_key": result["object_key"],
-        "script_path": result["script_path"],
+        "command": command,
         "config": None,
         "vram_required": vram_required
     }
