@@ -7,23 +7,20 @@ import tempfile
 import logging
 import io
 import zipfile
-from pathlib import Path
 from urllib.parse import quote
 
 import docker
 import requests
 from dotenv import load_dotenv
 
-# ----------------------
+
 # Load environment variables
-# ----------------------
 load_dotenv()  # loads variables from .env
 
 # Load scheduler base URL from .env
 SCHEDULER_BASE_URL = os.environ.get("SCHEDULER_API_URL", "http://localhost:8000")
-SCHEDULER_UPDATE_URLS = [
-    SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_vram_estimation_pending",
-]
+SCHEDULER_UPDATE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_vram_estimation_pending"
+
 SCHEDULER_QUEUE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/unbuilt_jobs"
 
 DOCKER_HUB_USERNAME = os.environ["DOCKER_HUB_USERNAME"]
@@ -50,9 +47,7 @@ BASE_IMAGE_MAP = {
     "hydra-core": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
 }
 
-# ----------------------
 # Logging
-# ----------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -60,9 +55,7 @@ logging.basicConfig(
 logger = logging.getLogger("image_builder")
 
 
-# ----------------------
 # Job tracking
-# ----------------------
 def load_processed_jobs() -> set:
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, "r") as f:
@@ -76,10 +69,8 @@ def save_processed_jobs(processed: set):
         json.dump(list(processed), f)
 
 
-# ----------------------
 # Project detection
-# ----------------------
-def find_project_dir(extracted_dir: str) -> str | None:
+def find_project_dir(extracted_dir: str) -> str:
     for entry in sorted(os.listdir(extracted_dir)):
         if entry.startswith("__") or entry.startswith("."):
             continue
@@ -89,9 +80,7 @@ def find_project_dir(extracted_dir: str) -> str | None:
     return extracted_dir
 
 
-# ----------------------
 # Requirements parsing
-# ----------------------
 def read_requirements(project_dir: str) -> list[str]:
     req_file = os.path.join(project_dir, "requirements.txt")
     if not os.path.exists(req_file):
@@ -116,9 +105,7 @@ def select_base_image(project_dir: str) -> str:
     return BASE_IMAGE_DEFAULT
 
 
-# ----------------------
 # Dockerfile generation
-# ----------------------
 def generate_dockerfile(project_dir: str, command: str) -> str:
     base_image = select_base_image(project_dir)
     has_requirements = os.path.exists(os.path.join(project_dir, "requirements.txt"))
@@ -151,9 +138,7 @@ def generate_dockerfile(project_dir: str, command: str) -> str:
     return "\n".join(lines)
 
 
-# ----------------------
 # Docker login
-# ----------------------
 def docker_login(client: docker.DockerClient):
     if DOCKER_HUB_PASSWORD:
         logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
@@ -163,9 +148,7 @@ def docker_login(client: docker.DockerClient):
         logger.info("No Docker Hub password provided, assuming already logged in.")
 
 
-# ----------------------
 # Build and push image
-# ----------------------
 def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str, command: str) -> bool:
     image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
@@ -185,7 +168,7 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str, c
 
         logger.info("Building image %s ...", image_tag)
         try:
-            image, build_logs = client.images.build(
+            build_logs = client.images.build(
                 path=build_dir, tag=image_tag, rm=True, forcerm=True
             )
             for chunk in build_logs:
@@ -226,51 +209,44 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str, c
     return True
 
 
-# ----------------------
 # Notify scheduler
-# ----------------------
 def notify_scheduler_job_ready(job_id: str) -> bool:
     payload = {"job_id": job_id}
 
     try:
-        last_response = None
-        for url in SCHEDULER_UPDATE_URLS:
-            response = requests.post(url, json=payload, timeout=10)
-            last_response = response
+        response = requests.post(
+            SCHEDULER_UPDATE_URL,
+            json=payload,
+            timeout=10,
+        )
 
-            if response.status_code == 404:
-                continue
+        if response.status_code == 200:
+            # Check response body for error — scheduler returns 200 even on failures
+            body = response.json()
+            if "error" in body:
+                logger.error(
+                    "Scheduler returned error for job %s: %s",
+                    job_id,
+                    body["error"],
+                )
+                return False
 
-            if response.status_code == 200:
-                # Check response body for error — scheduler returns 200 even on failures
-                body = response.json()
-                if "error" in body:
-                    logger.error(
-                        "Scheduler returned error for job %s: %s",
-                        job_id,
-                        body["error"],
-                    )
-                    return False
-                logger.info("Scheduler notified successfully for job %s", job_id)
-                return True
+            logger.info("Scheduler notified successfully for job %s", job_id)
+            return True
 
-            logger.error(
-                "Scheduler notification failed for job %s: %s %s",
-                job_id,
-                response.status_code,
-                response.text,
-            )
-            return False
+        logger.error(
+            "Scheduler notification failed for job %s: %s %s",
+            job_id,
+            response.status_code,
+            response.text,
+        )
 
-        if last_response is not None:
-            logger.error(
-                "Scheduler notification failed for job %s: %s %s",
-                job_id,
-                last_response.status_code,
-                last_response.text,
-            )
     except Exception as e:
-        logger.error("Failed to contact scheduler for job %s: %s", job_id, e)
+        logger.error(
+            "Failed to contact scheduler for job %s: %s",
+            job_id,
+            e,
+        )
 
     return False
 
@@ -360,9 +336,8 @@ def scan_and_process():
     logger.info("Scan complete. Total processed: %d", len(processed))
 
 
-# ----------------------
+
 # Main loop
-# ----------------------
 def main():
     logger.info("Docker Image Builder service starting ...")
     logger.info("Watching scheduler queue: %s", SCHEDULER_QUEUE_URL)
