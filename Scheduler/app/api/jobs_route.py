@@ -23,6 +23,7 @@ def get_db():
 async def submit_job(
     zip_file: UploadFile = File(...),
     command: str = Form(...),
+    docker_base_image: str = Form(...),
     vram_required: float | None = Form(None),
     db: Session = Depends(get_db)
 ):
@@ -45,6 +46,7 @@ async def submit_job(
         "id": job_id,  # Pass it in
         "object_key": result["object_key"],
         "command": command,
+        "docker_base_image": docker_base_image,
         "config": None,
         "vram_required": vram_required
     }

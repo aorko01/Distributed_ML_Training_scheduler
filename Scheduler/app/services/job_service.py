@@ -10,6 +10,7 @@ def create_job(db: Session, job_data: dict):
         id=job_data["id"],
         object_key=job_data["object_key"],
         command=job_data["command"],
+        docker_base_image=job_data["docker_base_image"],
         config=job_data.get("config"),
         vram_required=job_data.get("vram_required"),
     )
@@ -73,6 +74,7 @@ def get_not_runnable_jobs(db: Session):
             "id": job.id,
             "object_key": job.object_key,
             "command": job.command,
+            "docker_base_image": job.docker_base_image,
             "config": job.config,
             "status": job.status.value,
             "vram_required": job.vram_required,
@@ -115,6 +117,7 @@ def _format_job_response(job: Job, flag: str) -> dict:
         "id": job.id,
         "object_key": job.object_key,
         "command": job.command,
+        "docker_base_image": job.docker_base_image,
         "config": job.config,
         "status": job.status.value,
         "vram_required": job.vram_required,

@@ -20,6 +20,7 @@ class Job(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     object_key = Column(String, nullable=False, unique=True)
     command = Column(String, nullable=False)
+    docker_base_image = Column(String, nullable=False)
     config = Column(JSON, nullable=True)
 
     status = Column(

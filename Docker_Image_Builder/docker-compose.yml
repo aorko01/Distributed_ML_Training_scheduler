@@ -10,6 +10,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Persist the processed-jobs tracker across restarts
       - builder-data:/data
+      - ./debug_jobs:/app/debug_jobs   
 
 volumes:
   builder-data:

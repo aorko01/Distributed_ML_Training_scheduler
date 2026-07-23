@@ -5,6 +5,7 @@ from typing import Optional, Dict
 class JobCreate(BaseModel):
     object_key: str
     command: str
+    docker_base_image: str
     config: Optional[Dict] = None
     
 class JobResponse(BaseModel):

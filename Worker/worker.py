@@ -273,7 +273,7 @@ def handle_training_job(job: dict):
     job_logger.info("Job %s finished. Log saved to: %s", job_id, log_file)
 
     # Upload output file to server
-    upload_output_file(log_file, job_id, job_logger)
+    # upload_output_file(log_file, job_id, job_logger)
 
 
 JOB_HANDLERS = {
@@ -300,29 +300,45 @@ def process_job():
     handler(job)
 
 
+def test():
+    """
+    Run a hardcoded job without contacting the scheduler.
+    """
+    job = {
+        "job_id": "77c3f7ba-1f05-4563-bdb9-94a5557b5141",
+        "flag": "training",
+    }
+
+    base_logger.info("=" * 60)
+    base_logger.info("Running TEST MODE")
+    base_logger.info("Using image: %s/%s:latest", DOCKER_HUB_USERNAME, job["job_id"])
+
+    handle_training_job(job)
+
 # -------------------------
 # MAIN LOOP
 # -------------------------
 if __name__ == "__main__":
     base_logger.info("Worker starting up. Output directory: %s", OUTPUT_DIR)
-    register_worker()
+    # register_worker()
 
-    base_logger.info("Starting worker loop...")
-    last_heartbeat = 0
+    # base_logger.info("Starting worker loop...")
+    # last_heartbeat = 0
 
-    while True:
-        now = time.time()
+    # while True:
+    #     now = time.time()
 
-        if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-            try:
-                send_heartbeat()
-            except Exception as e:
-                base_logger.error("Heartbeat failed: %s", e)
-            last_heartbeat = time.time()
+    #     if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+    #         try:
+    #             send_heartbeat()
+    #         except Exception as e:
+    #             base_logger.error("Heartbeat failed: %s", e)
+    #         last_heartbeat = time.time()
 
-        try:
-            process_job()
-        except Exception as e:
-            base_logger.error("Job processing failed: %s", e)
+    #     try:
+    #         process_job()
+    #     except Exception as e:
+    #         base_logger.error("Job processing failed: %s", e)
 
-        time.sleep(JOB_POLL_INTERVAL)
+    #     time.sleep(JOB_POLL_INTERVAL)
+    test()

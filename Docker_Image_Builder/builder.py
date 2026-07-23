@@ -33,19 +33,16 @@ OBJECT_STORE_BUCKET = os.environ.get("OBJECT_STORE_BUCKET", "uploads")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
 PROCESSED_FILE = "/data/processed_jobs.json"
 
-BASE_IMAGE_DEFAULT = "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime"
-
-BASE_IMAGE_MAP = {
-    "transformers": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
-    "datasets": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
-    "accelerate": f"{DOCKER_HUB_USERNAME}/ml-base-transformers:latest",
-    "opencv-python": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
-    "albumentations": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
-    "Pillow": f"{DOCKER_HUB_USERNAME}/ml-base-vision:latest",
-    "wandb": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
-    "tensorboard": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
-    "hydra-core": f"{DOCKER_HUB_USERNAME}/ml-base-training:latest",
-}
+# --- Debug: optionally persist the assembled build context (source files +
+# generated Dockerfile) to a local directory, keyed by job_id, for inspection.
+# Off by default so normal runs don't litter the filesystem.
+DEBUG_SAVE_LOCAL = os.environ.get("DEBUG_SAVE_LOCAL", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+DEBUG_LOCAL_DIR = os.environ.get("DEBUG_LOCAL_DIR", "./debug_jobs")
 
 # Logging
 logging.basicConfig(
@@ -80,34 +77,8 @@ def find_project_dir(extracted_dir: str) -> str:
     return extracted_dir
 
 
-# Requirements parsing
-def read_requirements(project_dir: str) -> list[str]:
-    req_file = os.path.join(project_dir, "requirements.txt")
-    if not os.path.exists(req_file):
-        return []
-
-    packages = []
-    with open(req_file) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            pkg = line.split("==")[0].strip()
-            packages.append(pkg)
-    return packages
-
-
-def select_base_image(project_dir: str) -> str:
-    packages = read_requirements(project_dir)
-    for pkg in packages:
-        if pkg in BASE_IMAGE_MAP:
-            return BASE_IMAGE_MAP[pkg]
-    return BASE_IMAGE_DEFAULT
-
-
 # Dockerfile generation
-def generate_dockerfile(project_dir: str, command: str) -> str:
-    base_image = select_base_image(project_dir)
+def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
     has_requirements = os.path.exists(os.path.join(project_dir, "requirements.txt"))
 
     lines = [
@@ -134,7 +105,7 @@ def generate_dockerfile(project_dir: str, command: str) -> str:
             'CMD ["python"]',
         ]
 
-    logger.info("Selected base image: %s", base_image)
+    logger.info("Using base image: %s", base_image)
     return "\n".join(lines)
 
 
@@ -148,8 +119,31 @@ def docker_login(client: docker.DockerClient):
         logger.info("No Docker Hub password provided, assuming already logged in.")
 
 
+# Debug snapshot of the assembled build context
+def save_debug_copy(job_id: str, build_dir: str) -> None:
+    """Copy the assembled build context (source files + generated Dockerfile)
+    into DEBUG_LOCAL_DIR/<job_id> for local inspection. Only called when
+    DEBUG_SAVE_LOCAL is enabled. Overwrites any previous copy for the job."""
+    debug_dir = os.path.join(DEBUG_LOCAL_DIR, job_id)
+    try:
+        if os.path.exists(debug_dir):
+            shutil.rmtree(debug_dir)
+        os.makedirs(os.path.dirname(debug_dir) or ".", exist_ok=True)
+        shutil.copytree(build_dir, debug_dir)
+        # Ensure permissions allow non-root host users to access debug files
+        os.chmod(debug_dir, 0o777)
+        for root, dirs, files in os.walk(debug_dir):
+            for d in dirs:
+                os.chmod(os.path.join(root, d), 0o777)
+            for f in files:
+                os.chmod(os.path.join(root, f), 0o666)
+        logger.info("Saved debug copy of job %s to %s", job_id, debug_dir)
+    except Exception as e:
+        logger.error("Failed to save debug copy for job %s: %s", job_id, e)
+
+
 # Build and push image
-def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str, command: str) -> bool:
+def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> bool:
     image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
@@ -162,13 +156,16 @@ def build_and_push(client: docker.DockerClient, job_id: str, project_dir: str, c
             else:
                 shutil.copy2(src, dst)
 
-        dockerfile_content = generate_dockerfile(project_dir, command)
+        dockerfile_content = generate_dockerfile(project_dir, command, base_image)
         with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile_content)
 
+        if DEBUG_SAVE_LOCAL:
+            save_debug_copy(job_id, build_dir)
+
         logger.info("Building image %s ...", image_tag)
         try:
-            build_logs = client.images.build(
+            _image, build_logs = client.images.build(
                 path=build_dir, tag=image_tag, rm=True, forcerm=True
             )
             for chunk in build_logs:
@@ -293,8 +290,9 @@ def scan_and_process():
         job_id = job.get("id")
         object_key = job.get("object_key")
         command = job.get("command", "")
+        base_image = job.get("docker_base_image")
 
-        if not job_id or not object_key:
+        if not job_id or not object_key or not base_image:
             logger.warning("Skipping malformed job payload: %s", job)
             continue
 
@@ -315,7 +313,7 @@ def scan_and_process():
             archive_bytes = download_job_archive(object_key)
             extract_dir = extract_job_archive(archive_bytes, job_id)
             project_dir = find_project_dir(extract_dir)
-            success = build_and_push(client, job_id, project_dir, command)
+            success = build_and_push(client, job_id, project_dir, command, base_image)
         except Exception as e:
             logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
         finally:
@@ -343,6 +341,10 @@ def main():
     logger.info("Watching scheduler queue: %s", SCHEDULER_QUEUE_URL)
     logger.info("Poll interval: %d seconds", POLL_INTERVAL)
     logger.info("Docker Hub user: %s", DOCKER_HUB_USERNAME)
+    if DEBUG_SAVE_LOCAL:
+        logger.info("Debug local saving ENABLED -> %s", DEBUG_LOCAL_DIR)
+    else:
+        logger.info("Debug local saving disabled (set DEBUG_SAVE_LOCAL=true to enable)")
 
     while True:
         try:
