@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.services import job_service
 from app.utils.file_utils import save_to_object_store
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VRAMEstimationRequest
 from app.schemas.worker_schema import WorkerResource
 
 
@@ -75,6 +75,28 @@ def get_unbuilt_jobs(db: Session = Depends(get_db)):
     except Exception as e:
         return {"error": str(e)}
 
+@router.post("/save_vram_estimation")
+def save_vram_estimation(
+    request: VramEstimationReport,
+    db: Session = Depends(get_db),
+):
+    try:
+        job = job_service.save_vram_estimation(
+            db=db,
+            job_id=request.job_id,
+            vram_required=request.vram_required,
+            step_time=request.step_time,
+        )
+
+        return {
+            "job_id": job.id,
+            "status": job.status.value,
+            "vram_required": job.vram_required,
+            "step_time": job.step_time,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
 
 @router.post("/pull_job")
 async def pull_job(request: WorkerResource, db: Session = Depends(get_db)):

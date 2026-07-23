@@ -61,6 +61,22 @@ def set_job_runnable(db: Session, job_id: str):
     return job
 
 
+def save_vram_estimation(db: Session, job_id: str, vram_required: float, step_time: float):
+    job = db.query(Job).filter(Job.id == job_id).first()
+
+    if not job:
+        raise Exception("Job not found")
+
+    job.vram_required = vram_required
+    job.step_time = step_time
+    job.status = JobStatus.RUNNABLE
+
+    db.commit()
+    db.refresh(job)
+
+    return job
+
+
 def get_not_runnable_jobs(db: Session):
     jobs = (
         db.query(Job)

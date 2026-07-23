@@ -30,6 +30,7 @@ class Job(Base):
 
     # VRAM estimation
     vram_required = Column(Float, nullable=True)  # in GB
+    step_time = Column(Float, nullable=True)  # in seconds per step
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
