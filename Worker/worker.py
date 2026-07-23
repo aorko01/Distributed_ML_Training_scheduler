@@ -9,9 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# -------------------------
 # CONFIG
-# -------------------------
 BASE_URL = os.getenv("SCHEDULER_URL")
 
 if not BASE_URL:
@@ -30,20 +28,12 @@ WORKER_ID_FILE = "worker_id.txt"
 DOCKER_HUB_USERNAME = "aorko123"
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
-# -------------------------
 # ENSURE OUTPUT DIR EXISTS
-# -------------------------
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-# -------------------------
 # LOGGER SETUP
-# -------------------------
 def get_logger(name: str, log_file: str = None) -> logging.Logger:
-    """
-    Returns a logger that always writes to stdout.
-    If log_file is provided, also writes to that file.
-    """
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
 
@@ -71,9 +61,7 @@ def get_logger(name: str, log_file: str = None) -> logging.Logger:
 base_logger = get_logger("worker")
 
 
-# -------------------------
 # WORKER ID (persistent)
-# -------------------------
 if os.path.exists(WORKER_ID_FILE):
     with open(WORKER_ID_FILE, "r") as f:
         worker_id = f.read().strip()
@@ -83,9 +71,7 @@ else:
         f.write(worker_id)
 
 
-# -------------------------
 # GPU INFO
-# -------------------------
 def get_gpu_info():
     gpus = GPUtil.getGPUs()
     gpu = gpus[0]
@@ -95,9 +81,8 @@ def get_gpu_info():
     num_gpus = len(gpus)
     return gpu_type, total_vram, available_vram, num_gpus
 
-# -------------------------
+
 # REGISTER WORKER
-# -------------------------
 def register_worker():
     gpu_type, total_vram, _, num_gpus = get_gpu_info()
 
@@ -119,9 +104,7 @@ def register_worker():
     base_logger.info("REGISTER RESPONSE: %s", response_payload)
 
 
-# -------------------------
 # SEND HEARTBEAT
-# -------------------------
 def send_heartbeat():
     gpu_type, _, available_vram, _ = get_gpu_info()
 
@@ -136,9 +119,7 @@ def send_heartbeat():
     base_logger.info("SERVER RESPONSE: %s", resp.json())
 
 
-# -------------------------
 # PULL JOB FROM SCHEDULER
-# -------------------------
 def pull_job():
     gpu_type, _, free_vram, _ = get_gpu_info()
 
@@ -162,9 +143,7 @@ def pull_job():
     return data
 
 
-# -------------------------
 # PULL DOCKER IMAGE
-# -------------------------
 def pull_docker_image(client: docker.DockerClient, job_id: str, logger: logging.Logger) -> bool:
     image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
     logger.info("Pulling Docker image: %s", image_name)
@@ -187,9 +166,7 @@ def pull_docker_image(client: docker.DockerClient, job_id: str, logger: logging.
         return False
 
 
-# -------------------------
 # RUN SCRIPT INSIDE DOCKER
-# -------------------------
 def run_job_in_docker(client: docker.DockerClient, job_id: str, logger: logging.Logger, log_file: str):
     image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
@@ -262,13 +239,14 @@ def upload_output_file(file_path: str, job_id: str, logger: logging.Logger):
 
 
 # -------------------------
-# PROCESS ONE JOB
+# JOB HANDLERS
 # -------------------------
-def process_job():
-    job = pull_job()
-    if job is None:
-        return
+def handle_vram_estimation_job(job: dict):
+    job_id = job.get("job_id") or job.get("id")
+    base_logger.info("VRAM estimation requested for job %s. (Skipping execution — estimation logic pending)", job_id)
 
+
+def handle_training_job(job: dict):
     job_id = job.get("job_id") or job.get("id")
 
     if not job_id:
@@ -280,7 +258,7 @@ def process_job():
     job_logger = get_logger(f"job_{job_id}")
 
     job_logger.info("=" * 60)
-    job_logger.info("Job started — ID: %s", job_id)
+    job_logger.info("Training job started — ID: %s", job_id)
     job_logger.info("Log file: %s", log_file)
 
     client = docker.from_env()
@@ -296,6 +274,30 @@ def process_job():
 
     # Upload output file to server
     upload_output_file(log_file, job_id, job_logger)
+
+
+JOB_HANDLERS = {
+    "vram_estimation": handle_vram_estimation_job,
+    "training": handle_training_job,
+}
+
+
+# -------------------------
+# PROCESS ONE JOB
+# -------------------------
+def process_job():
+    job = pull_job()
+    if job is None:
+        return
+
+    flag = job.get("flag", "training")
+    handler = JOB_HANDLERS.get(flag)
+
+    if not handler:
+        base_logger.error("Unknown job flag received '%s' for job: %s", flag, job)
+        return
+
+    handler(job)
 
 
 # -------------------------

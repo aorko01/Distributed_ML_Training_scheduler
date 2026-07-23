@@ -75,9 +75,9 @@ def get_unbuilt_jobs(db: Session = Depends(get_db)):
 
 
 @router.post("/pull_job")
-def pull_job(request: WorkerResource, db: Session = Depends(get_db)):
+async def pull_job(request: WorkerResource, db: Session = Depends(get_db)):
     try:
-        job_info = job_service.get_first_runnable_job(db, request)
+        job_info = await job_service.get_next_job_for_worker(db, request)
         if job_info is None:
             return {"message": "No runnable jobs available"}
         return job_info

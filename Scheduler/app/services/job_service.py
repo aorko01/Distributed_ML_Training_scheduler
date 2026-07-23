@@ -83,33 +83,35 @@ def get_not_runnable_jobs(db: Session):
     ]
 
 
-def get_first_runnable_job(db: Session, request: WorkerResource):
-    # Get worker
-    worker = db.query(Worker).filter(Worker.worker_id == request.worker_id).first()
+import asyncio
+from app.core.redis import redis_client
 
-    if not worker:
-        raise Exception("Worker not found")
 
-    # Get first runnable job the worker can run based on free VRAM.
-    job = (
-        db.query(Job)
-        .filter(
-            Job.status == JobStatus.RUNNABLE,
-            or_(Job.vram_required.is_(None), Job.vram_required <= request.free_vram),
-        )
-        .order_by(Job.created_at)
-        .first()
-    )
+async def _get_connected_workers_vram() -> list[float]:
+    """Retrieve available VRAM for all currently connected workers from Redis."""
+    keys = await redis_client.keys("worker:*")
+    vrams = []
+    for k in keys:
+        vram_str = await redis_client.hget(k, "available_vram")
+        if vram_str is not None:
+            try:
+                vrams.append(float(vram_str))
+            except ValueError:
+                pass
+    return vrams
 
-    if not job:
-        return None
 
-    job.status = JobStatus.IN_PROGRESS
-    db.commit()
-    db.refresh(job)  # refresh to get updated values
+async def _is_highest_vram_worker(worker_free_vram: float) -> bool:
+    """Check if worker's available VRAM is highest among all currently connected workers."""
+    vrams = await _get_connected_workers_vram()
+    if not vrams:
+        return True
+    return worker_free_vram >= max(vrams)
 
-    # Convert to dict
-    job_dict = {
+
+def _format_job_response(job: Job, flag: str) -> dict:
+    return {
+        "flag": flag,
         "id": job.id,
         "object_key": job.object_key,
         "command": job.command,
@@ -120,7 +122,83 @@ def get_first_runnable_job(db: Session, request: WorkerResource):
         "updated_at": job.updated_at,
     }
 
-    return job_dict
+
+async def _check_vram_estimation_strategy(db: Session, request: WorkerResource) -> dict | None:
+    """
+    Strategy 1: If pulling worker has highest VRAM among connected workers,
+    check for any job with VRAM_ESTIMATION_PENDING status.
+    """
+    is_highest = await _is_highest_vram_worker(request.free_vram)
+    if not is_highest:
+        return None
+
+    job = (
+        db.query(Job)
+        .filter(Job.status == JobStatus.VRAM_ESTIMATION_PENDING)
+        .order_by(Job.created_at)
+        .first()
+    )
+
+    if not job:
+        return None
+
+    return _format_job_response(job, flag="vram_estimation")
+
+
+def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict | None:
+    """
+    Strategy 2: Find runnable training job where (vram_required + 1.0) <= available vram of pulling worker.
+    Selects the job with largest vram_required.
+    """
+    job = (
+        db.query(Job)
+        .filter(
+            Job.status == JobStatus.RUNNABLE,
+            or_(
+                Job.vram_required.is_(None),
+                (Job.vram_required + 1.0) <= request.free_vram,
+            ),
+        )
+        .order_by(Job.vram_required.desc().nullslast(), Job.created_at.asc())
+        .first()
+    )
+
+    if not job:
+        return None
+
+    job.status = JobStatus.IN_PROGRESS
+    db.commit()
+    db.refresh(job)
+
+    return _format_job_response(job, flag="training")
+
+
+# List of scheduling strategies in priority order. Easy to extend with new strategies.
+SCHEDULING_STRATEGIES = [
+    _check_vram_estimation_strategy,
+    _check_training_job_strategy,
+]
+
+
+async def get_next_job_for_worker(db: Session, request: WorkerResource):
+    """
+    Main entry point for pulling a job.
+    Executes scheduling strategies in order until a job is matched.
+    """
+    worker = db.query(Worker).filter(Worker.worker_id == request.worker_id).first()
+    if not worker:
+        raise Exception("Worker not found")
+
+    for strategy in SCHEDULING_STRATEGIES:
+        if asyncio.iscoroutinefunction(strategy):
+            job_info = await strategy(db, request)
+        else:
+            job_info = strategy(db, request)
+
+        if job_info is not None:
+            return job_info
+
+    return None
 
 
 def set_to_completed(db: Session, job_id: str):
