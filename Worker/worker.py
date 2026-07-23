@@ -1,20 +1,19 @@
-import requests
-import uuid
-import GPUtil
 import os
 import time
-import docker
+import uuid
 import logging
+import subprocess
+import requests
+import GPUtil
+import docker
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# CONFIG
+# Configuration
 BASE_URL = os.getenv("SCHEDULER_URL")
-
 if not BASE_URL:
     raise ValueError("SCHEDULER_URL not set in environment")
-
 BASE_URL = BASE_URL.rstrip("/")
 
 REGISTER_URL = f"{BASE_URL}/workers/register"
@@ -25,43 +24,18 @@ UPLOAD_OUTPUT_URL = f"{BASE_URL}/jobs/upload_output"
 HEARTBEAT_INTERVAL = 5
 JOB_POLL_INTERVAL = 10
 WORKER_ID_FILE = "worker_id.txt"
-DOCKER_HUB_USERNAME = "aorko123"
+DOCKER_HUB_USERNAME = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-
-# ENSURE OUTPUT DIR EXISTS
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Logger setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("worker")
 
-# LOGGER SETUP
-def get_logger(name: str, log_file: str = None) -> logging.Logger:
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-
-    # Avoid adding duplicate handlers if logger already exists
-    if logger.handlers:
-        return logger
-
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-
-    # Console handler (always on)
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-
-    # File handler (per-job)
-    if log_file:
-        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    return logger
-
-
-# Base logger for general worker activity (no job-specific file)
-base_logger = get_logger("worker")
-
-
-# WORKER ID (persistent)
+# Worker ID (persistent)
 if os.path.exists(WORKER_ID_FILE):
     with open(WORKER_ID_FILE, "r") as f:
         worker_id = f.read().strip()
@@ -71,274 +45,175 @@ else:
         f.write(worker_id)
 
 
-# GPU INFO
 def get_gpu_info():
+    """Retrieve primary GPU specs and VRAM availability."""
     gpus = GPUtil.getGPUs()
+    if not gpus:
+        return "Unknown", 0.0, 0.0, 0
     gpu = gpus[0]
-    gpu_type = gpu.name
-    total_vram = round(gpu.memoryTotal / 1024, 2)
-    available_vram = round(gpu.memoryFree / 1024, 2)
-    num_gpus = len(gpus)
-    return gpu_type, total_vram, available_vram, num_gpus
+    return gpu.name, round(gpu.memoryTotal / 1024, 2), round(gpu.memoryFree / 1024, 2), len(gpus)
 
 
-# REGISTER WORKER
 def register_worker():
+    """Register worker hardware capabilities with the scheduler."""
     gpu_type, total_vram, _, num_gpus = get_gpu_info()
-
-    worker_info = {
-        "worker_id": worker_id,
-        "gpu_type": gpu_type,
-        "num_gpus": num_gpus,
-        "total_vram": total_vram
-    }
-
-    resp = requests.post(REGISTER_URL, json=worker_info)
-    try:
-        response_payload = resp.json()
-    except ValueError:
-        response_payload = {
-            "status_code": resp.status_code,
-            "body": resp.text.strip() or "<empty body>"
-        }
-    base_logger.info("REGISTER RESPONSE: %s", response_payload)
-
-
-# SEND HEARTBEAT
-def send_heartbeat():
-    gpu_type, _, available_vram, _ = get_gpu_info()
-
-    heartbeat_payload = {
-        "worker_id": worker_id,
-        "gpu_type": gpu_type,
-        "available_vram": available_vram
-    }
-
-    resp = requests.post(HEARTBEAT_URL, json=heartbeat_payload)
-    base_logger.info("HEARTBEAT SENT: %s", heartbeat_payload)
-    base_logger.info("SERVER RESPONSE: %s", resp.json())
-
-
-# PULL JOB FROM SCHEDULER
-def pull_job():
-    gpu_type, _, free_vram, _ = get_gpu_info()
-
     payload = {
         "worker_id": worker_id,
         "gpu_type": gpu_type,
-        "free_vram": free_vram
+        "num_gpus": num_gpus,
+        "total_vram": total_vram,
     }
-
-    resp = requests.post(PULL_JOB_URL, json=payload, timeout=10)
-    data = resp.json()
-
-    if "message" in data:
-        base_logger.info("No runnable jobs: %s", data["message"])
-        return None
-
-    if "error" in data:
-        base_logger.error("Error from scheduler: %s", data["error"])
-        return None
-
-    return data
-
-
-# PULL DOCKER IMAGE
-def pull_docker_image(client: docker.DockerClient, job_id: str, logger: logging.Logger) -> bool:
-    image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
-    logger.info("Pulling Docker image: %s", image_name)
-
     try:
-        for line in client.api.pull(image_name, stream=True, decode=True):
-            status = line.get("status", "")
-            progress = line.get("progress", "")
-            if status:
-                logger.info("  [pull] %s %s", status, progress)
-            if "error" in line:
-                logger.error("  [pull error] %s", line["error"])
-                return False
+        resp = requests.post(REGISTER_URL, json=payload, timeout=10)
+        logger.info("Registered with scheduler: %s", resp.json())
+    except Exception as e:
+        logger.error("Failed to register worker: %s", e)
 
+
+def send_heartbeat():
+    """Send periodic heartbeat with updated VRAM stats."""
+    gpu_type, _, available_vram, _ = get_gpu_info()
+    payload = {
+        "worker_id": worker_id,
+        "gpu_type": gpu_type,
+        "available_vram": available_vram,
+    }
+    try:
+        resp = requests.post(HEARTBEAT_URL, json=payload, timeout=10)
+        logger.info("Heartbeat sent: %s", resp.json())
+    except Exception as e:
+        logger.error("Heartbeat failed: %s", e)
+
+
+def pull_job() -> dict | None:
+    """Pull next available job assignment from scheduler."""
+    gpu_type, _, free_vram, _ = get_gpu_info()
+    payload = {
+        "worker_id": worker_id,
+        "gpu_type": gpu_type,
+        "free_vram": free_vram,
+    }
+    try:
+        resp = requests.post(PULL_JOB_URL, json=payload, timeout=10)
+        data = resp.json()
+
+        if "message" in data:
+            logger.info("No runnable jobs: %s", data["message"])
+            return None
+        if "error" in data:
+            logger.error("Error from scheduler: %s", data["error"])
+            return None
+
+        return data
+    except Exception as e:
+        logger.error("Failed to pull job: %s", e)
+        return None
+
+
+def pull_docker_image(image_name: str) -> bool:
+    """Pull the job Docker image from registry."""
+    logger.info("Pulling Docker image: %s", image_name)
+    try:
+        client = docker.from_env()
+        client.images.pull(image_name)
         logger.info("Successfully pulled image: %s", image_name)
         return True
-
-    except docker.errors.APIError as e:
+    except Exception as e:
         logger.error("Failed to pull image %s: %s", image_name, e)
         return False
 
 
-# RUN SCRIPT INSIDE DOCKER
-def run_job_in_docker(client: docker.DockerClient, job_id: str, logger: logging.Logger, log_file: str):
-    image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
-
-    logger.info("Running container from image: %s", image_name)
+def upload_output_file(file_path: str, job_id: str):
+    """Upload completed job output log to scheduler."""
+    if not os.path.exists(file_path):
+        logger.error("Output file not found: %s", file_path)
+        return
 
     try:
-        container = client.containers.run(
-            image=image_name,
-            detach=True,
-            device_requests=[
-                docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
-            ],
-            environment={
-                "NVIDIA_VISIBLE_DEVICES": "all",
-                "NVIDIA_DRIVER_CAPABILITIES": "all",
-            },
-            stdout=True,
-            stderr=True,
-        )
+        with open(file_path, "rb") as f:
+            files = {"file": (os.path.basename(file_path), f)}
+            resp = requests.post(UPLOAD_OUTPUT_URL, files=files, timeout=30)
+            logger.info("Uploaded output for job %s: %s", job_id, resp.text)
+    except Exception as e:
+        logger.error("Failed to upload output file for job %s: %s", job_id, e)
 
-        logger.info("Container started: %s", container.short_id)
 
-        with open(log_file, "a", encoding="utf-8") as f:
-            for log_line in container.logs(stream=True, follow=True):
-                line = log_line.decode("utf-8", errors="replace").strip()
-                logger.info("  [container] %s", line)
-                f.write(line + "\n")
+def handle_vram_estimation(job_id: str):
+    """Handle VRAM estimation job."""
+    logger.info("VRAM estimation job received for job %s.", job_id)
 
-        result = container.wait()
-        exit_code = result.get("StatusCode", -1)
 
-        if exit_code == 0:
+def handle_training(job_id: str, image_name: str):
+    """Handle training job."""
+    logger.info("Training job received for job %s.", job_id)
+
+    cmd = ["docker", "run", "--rm", "--gpus", "all", image_name]
+    logger.info("Running training container with command: %s", " ".join(cmd))
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        log_file = os.path.join(OUTPUT_DIR, f"{job_id}.txt")
+
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(res.stdout + "\n" + res.stderr)
+
+        if res.returncode == 0:
             logger.info("Job %s completed successfully.", job_id)
         else:
-            logger.error("Job %s exited with code %d.", job_id, exit_code)
+            logger.error("Job %s failed with exit code %d.", job_id, res.returncode)
 
-        container.remove()
-
-    except docker.errors.ContainerError as e:
-        logger.error("Container error for job %s: %s", job_id, e)
-    except docker.errors.ImageNotFound:
-        logger.error("Image not found locally for job %s. Pull may have failed.", job_id)
-    except docker.errors.APIError as e:
-        logger.error("Docker API error for job %s: %s", job_id, e)
-        
-        
-        
-def upload_output_file(file_path: str, job_id: str, logger: logging.Logger):
-    try:
-        if not os.path.exists(file_path):
-            logger.error("Output file not found: %s", file_path)
-            return
-
-        with open(file_path, "rb") as f:
-            files = {
-                "file": (os.path.basename(file_path), f)
-            }
-
-            response = requests.post(UPLOAD_OUTPUT_URL, files=files, timeout=30)
-
-        try:
-            resp_json = response.json()
-        except Exception:
-            resp_json = response.text
-
-        logger.info("Upload response: %s", resp_json)
+        upload_output_file(log_file, job_id)
 
     except Exception as e:
-        logger.error("Failed to upload output file: %s", e)
+        logger.error("Execution error for job %s: %s", job_id, e)
 
 
-# -------------------------
-# JOB HANDLERS
-# -------------------------
-def handle_vram_estimation_job(job: dict):
-    job_id = job.get("job_id") or job.get("id")
-    base_logger.info("VRAM estimation requested for job %s. (Skipping execution — estimation logic pending)", job_id)
+def handle_retry(job_id: str):
+    """Handle retry job."""
+    logger.info("Retry job received for job %s.", job_id)
 
 
-def handle_training_job(job: dict):
-    job_id = job.get("job_id") or job.get("id")
-
-    if not job_id:
-        base_logger.error("Invalid job payload received: %s", job)
-        return
-
-    # Keep lifecycle logs on console; only container runtime output goes to file.
-    log_file = os.path.join(OUTPUT_DIR, f"{job_id}.txt")
-    job_logger = get_logger(f"job_{job_id}")
-
-    job_logger.info("=" * 60)
-    job_logger.info("Training job started — ID: %s", job_id)
-    job_logger.info("Log file: %s", log_file)
-
-    client = docker.from_env()
-
-    success = pull_docker_image(client, job_id, job_logger)
-    if not success:
-        job_logger.error("Aborting job %s: image pull failed.", job_id)
-        return
-
-    run_job_in_docker(client, job_id, job_logger, log_file)
-
-    job_logger.info("Job %s finished. Log saved to: %s", job_id, log_file)
-
-    # Upload output file to server
-    # upload_output_file(log_file, job_id, job_logger)
-
-
-JOB_HANDLERS = {
-    "vram_estimation": handle_vram_estimation_job,
-    "training": handle_training_job,
-}
-
-
-# -------------------------
-# PROCESS ONE JOB
-# -------------------------
 def process_job():
+    """Fetch and dispatch job based on type."""
     job = pull_job()
-    if job is None:
+    if not job:
         return
 
+    job_id = job.get("job_id") or job.get("id")
     flag = job.get("flag", "training")
-    handler = JOB_HANDLERS.get(flag)
+    image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
-    if not handler:
-        base_logger.error("Unknown job flag received '%s' for job: %s", flag, job)
+    if not pull_docker_image(image_name):
+        logger.error("Aborting job %s: image pull failed.", job_id)
         return
 
-    handler(job)
+    if flag == "vram_estimation":
+        handle_vram_estimation(job_id)
+    elif flag == "training":
+        handle_training(job_id, image_name)
+    elif flag == "retry":
+        handle_retry(job_id)
+    else:
+        logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)
 
 
-def test():
-    """
-    Run a hardcoded job without contacting the scheduler.
-    """
-    job = {
-        "job_id": "77c3f7ba-1f05-4563-bdb9-94a5557b5141",
-        "flag": "training",
-    }
-
-    base_logger.info("=" * 60)
-    base_logger.info("Running TEST MODE")
-    base_logger.info("Using image: %s/%s:latest", DOCKER_HUB_USERNAME, job["job_id"])
-
-    handle_training_job(job)
-
-# -------------------------
-# MAIN LOOP
-# -------------------------
 if __name__ == "__main__":
-    base_logger.info("Worker starting up. Output directory: %s", OUTPUT_DIR)
-    # register_worker()
+    logger.info("Worker starting. ID: %s", worker_id)
+    register_worker()
 
-    # base_logger.info("Starting worker loop...")
-    # last_heartbeat = 0
+    last_heartbeat = 0
+    while True:
+        now = time.time()
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+            try:
+                send_heartbeat()
+            except Exception as e:
+                logger.error("Heartbeat error: %s", e)
+            last_heartbeat = now
 
-    # while True:
-    #     now = time.time()
+        try:
+            process_job()
+        except Exception as e:
+            logger.error("Error processing job: %s", e)
 
-    #     if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-    #         try:
-    #             send_heartbeat()
-    #         except Exception as e:
-    #             base_logger.error("Heartbeat failed: %s", e)
-    #         last_heartbeat = time.time()
-
-    #     try:
-    #         process_job()
-    #     except Exception as e:
-    #         base_logger.error("Job processing failed: %s", e)
-
-    #     time.sleep(JOB_POLL_INTERVAL)
-    test()
+        time.sleep(JOB_POLL_INTERVAL)
