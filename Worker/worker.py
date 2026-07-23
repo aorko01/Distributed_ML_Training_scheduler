@@ -1,8 +1,11 @@
 import os
 import time
 import uuid
+import json
+import shlex
 import logging
 import subprocess
+import tempfile
 import requests
 import GPUtil
 import docker
@@ -20,12 +23,14 @@ REGISTER_URL = f"{BASE_URL}/workers/register"
 HEARTBEAT_URL = f"{BASE_URL}/workers/heartbeat"
 PULL_JOB_URL = f"{BASE_URL}/jobs/pull_job"
 UPLOAD_OUTPUT_URL = f"{BASE_URL}/jobs/upload_output"
+SAVE_VRAM_ESTIMATION_URL = f"{BASE_URL}/jobs/save_vram_estimation"
 
 HEARTBEAT_INTERVAL = 5
 JOB_POLL_INTERVAL = 10
 WORKER_ID_FILE = "worker_id.txt"
 DOCKER_HUB_USERNAME = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+VRAM_ESTIMATION_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vram_estimation.py")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Logger setup
@@ -138,9 +143,68 @@ def upload_output_file(file_path: str, job_id: str):
         logger.error("Failed to upload output file for job %s: %s", job_id, e)
 
 
-def handle_vram_estimation(job_id: str):
-    """Handle VRAM estimation job."""
-    logger.info("VRAM estimation job received for job %s.", job_id)
+def get_python_command(command: str) -> list[str] | None:
+    try:
+        command_args = json.loads(command) if command.lstrip().startswith("[") else shlex.split(command)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    for index, value in enumerate(command_args):
+        if os.path.basename(value).startswith("python"):
+            command_args = command_args[index + 1:]
+            while command_args and command_args[0].startswith("-"):
+                command_args.pop(0)
+            return command_args or None
+    return None
+
+
+def save_vram_estimation(job_id: str, report: dict):
+    payload = {
+        "job_id": job_id,
+        "vram_required": report["peak_reserved_memory"],
+        "step_time": report["step_wall_time"],
+    }
+    try:
+        response = requests.post(SAVE_VRAM_ESTIMATION_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if "error" in data:
+            raise RuntimeError(data["error"])
+        logger.info("Saved VRAM estimation for job %s: %s", job_id, data)
+    except Exception as e:
+        logger.error("Failed to save VRAM estimation for job %s: %s", job_id, e)
+
+
+def handle_vram_estimation(job_id: str, image_name: str, command: str):
+    target_command = get_python_command(command)
+    if not target_command:
+        logger.error("Job %s needs a Python command for VRAM estimation.", job_id)
+        return
+
+    with tempfile.TemporaryDirectory(prefix=f"vram_{job_id}_") as report_dir:
+        report_path = os.path.join(report_dir, "report.json")
+        cmd = [
+            "docker", "run", "--rm", "--gpus", "all",
+            "-v", f"{VRAM_ESTIMATION_SCRIPT}:/vram_estimation.py:ro",
+            "-v", f"{report_dir}:/report",
+            "--entrypoint", "python", image_name,
+            "/vram_estimation.py", "--output", "/report/report.json", *target_command,
+        ]
+        logger.info("Running VRAM estimation for job %s.", job_id)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error("VRAM estimation failed for job %s: %s", job_id, result.stderr.strip())
+            return
+        try:
+            with open(report_path, encoding="utf-8") as report_file:
+                report = json.load(report_file)
+            if report.get("step_wall_time") is None:
+                raise ValueError("no optimizer steps were observed")
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            logger.error("Invalid VRAM estimation report for job %s: %s", job_id, e)
+            return
+
+    save_vram_estimation(job_id, report)
 
 
 def handle_training(job_id: str, image_name: str):
@@ -188,7 +252,7 @@ def process_job():
         return
 
     if flag == "vram_estimation":
-        handle_vram_estimation(job_id)
+        handle_vram_estimation(job_id, image_name, job.get("command", ""))
     elif flag == "training":
         handle_training(job_id, image_name)
     elif flag == "retry":

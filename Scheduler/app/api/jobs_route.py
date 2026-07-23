@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.services import job_service
 from app.utils.file_utils import save_to_object_store
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VRAMEstimationRequest
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport
 from app.schemas.worker_schema import WorkerResource
 
 
