@@ -292,3 +292,36 @@ export async function submitJob(payload: SubmissionPayload): Promise<DashboardDa
 
   return withDelay(cloneDashboardData(state));
 }
+
+// ---------------------------------------------------------------------------
+// getJobLogs
+// ---------------------------------------------------------------------------
+// Fetches the text output for a finished job.
+//   API mode  → POST /jobs/get_output_by_id  { job_id }  → returns content field
+//   Mock mode → returns a deterministic dummy string so the UI flow works offline
+// ---------------------------------------------------------------------------
+export async function getJobLogs(jobId: string): Promise<string> {
+  if (USE_API) {
+    const data = await apiPost<{ job_id: string; status: string; content?: string; error?: string }>(
+      '/jobs/get_output_by_id',
+      { job_id: jobId },
+    );
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    return data.content ?? '(no output recorded for this job)';
+  }
+
+  return withDelay(
+    `[MOCK LOG] Job ID: ${jobId}\n` +
+    `──────────────────────────────────────────\n` +
+    `Epoch  1/10  loss=2.3418  acc=0.1234  lr=1e-3\n` +
+    `Epoch  2/10  loss=1.9203  acc=0.3561  lr=1e-3\n` +
+    `Epoch  3/10  loss=1.5871  acc=0.4912  lr=5e-4\n` +
+    `Epoch  4/10  loss=1.2240  acc=0.5803  lr=5e-4\n` +
+    `Epoch  5/10  loss=0.9917  acc=0.6447  lr=2e-4\n` +
+    `──────────────────────────────────────────\n` +
+    `[INFO] Checkpoint saved to artifacts/${jobId}/ckpt-5.pt\n` +
+    `[INFO] Training complete. Best val_acc=0.6447\n`,
+  );
+}

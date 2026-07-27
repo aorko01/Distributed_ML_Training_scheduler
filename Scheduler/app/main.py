@@ -23,3 +23,28 @@ Base.metadata.create_all(bind=engine)
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 app.include_router(scheduler_router, prefix="/scheduler", tags=["scheduler"])
 app.include_router(workers_router, prefix="/workers", tags=["workers"])
+
+# =============================================================================
+# Frontend connectivity — append-only section; original lines above untouched.
+# =============================================================================
+
+# CORS: allows the Vite dev server (port 5173) to call this API.
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Dashboard route: exposes GET /dashboard for the frontend.
+from app.api.dashboard_route import router as dashboard_router
+
+app.include_router(dashboard_router)
