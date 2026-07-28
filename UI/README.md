@@ -8,13 +8,11 @@ Run `npm i` to install the dependencies.
 
 Run `npm run dev` to start the development server.
 
-## Data mode
+## Scheduler API
 
-The dashboard runs with populated dummy data by default.
+The dashboard fetches live scheduler data from `http://localhost:8000` by default. Start the Scheduler API before launching the UI.
 
-If a backend becomes available later, set `VITE_API_BASE_URL` to the API root and the app will use:
+Set `VITE_API_BASE_URL` only when the API is hosted elsewhere. The UI uses:
 
 - `GET /dashboard`
-- `POST /jobs`
-
-If the variable is not set, the app stays in mock mode and remains fully usable.
+- `POST /jobs/submit_job`

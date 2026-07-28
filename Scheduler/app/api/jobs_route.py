@@ -1,7 +1,7 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.services import job_service
@@ -25,6 +25,10 @@ async def submit_job(
     command: str = Form(...),
     docker_base_image: str = Form(...),
     vram_required: float | None = Form(None),
+    project_title: str | None = Form(None),
+    description: str | None = Form(None),
+    torch_version: str | None = Form(None),
+    cuda_version: str | None = Form(None),
     db: Session = Depends(get_db)
 ):
     job_id = str(uuid.uuid4())  # Generate ONE shared ID here
@@ -39,15 +43,20 @@ async def submit_job(
             job_id=job_id  # Pass it in
         )
 
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     job_data = {
         "id": job_id,  # Pass it in
         "object_key": result["object_key"],
         "command": command,
         "docker_base_image": docker_base_image,
-        "config": None,
+        "config": {
+            "projectTitle": project_title,
+            "description": description,
+            "torchVersion": torch_version,
+            "cudaVersion": cuda_version,
+        },
         "vram_required": vram_required
     }
 
@@ -65,7 +74,6 @@ def update_job_to_vram_estimation_pending(
 
     except Exception as e:
         return {"error": str(e)}
-
 
 @router.get("/unbuilt_jobs")
 def get_unbuilt_jobs(db: Session = Depends(get_db)):

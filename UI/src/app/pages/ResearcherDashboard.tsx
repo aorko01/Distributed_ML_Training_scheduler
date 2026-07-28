@@ -19,7 +19,7 @@ import {
   Upload,
   XCircle,
 } from 'lucide-react';
-import { ActiveJob, DashboardData, getDashboardData, isApiMode, submitJob } from '../lib/mockApi';
+import { ActiveJob, DashboardData, getDashboardData, getJobLogs, isApiMode, submitJob } from '../lib/mockApi';
 
 const PYTORCH_CUDA_COMPAT: Record<string, string[]> = {
   '2.3': ['CUDA 11.8', 'CUDA 12.1'],
@@ -73,7 +73,7 @@ export const ResearcherDashboard = () => {
   const [showSuccessToast, setShowSuccessToast] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadedFile, setUploadedFile] = useState<string | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [projectTitle, setProjectTitle] = useState('Transformer Attention Analysis');
   const [projectDescription, setProjectDescription] = useState(
     'Benchmarking mixed precision attention kernels on large transformer workloads.',
@@ -85,6 +85,9 @@ export const ResearcherDashboard = () => {
   const [cudaVersion, setCudaVersion] = useState('CUDA 12.1');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Log viewer modal — null means closed; when set, displays fetched/mock log content.
+  const [selectedLog, setSelectedLog] = useState<{ id: string; content: string } | null>(null);
 
   const loadDashboard = async () => {
     try {
@@ -118,11 +121,11 @@ export const ResearcherDashboard = () => {
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setIsDragging(false);
-    setUploadedFile('training_bundle.zip');
+    setUploadedFile(event.dataTransfer.files.item(0));
   };
 
   const handleSubmitJob = async () => {
-    if (!projectTitle.trim() || !cudaVersion || !torchVersion || !dashboard) {
+    if (!projectTitle.trim() || !cudaVersion || !torchVersion || !uploadedFile || !dashboard) {
       return;
     }
 
@@ -169,9 +172,12 @@ export const ResearcherDashboard = () => {
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
               <Activity className="text-[#00ff41]" size={20} /> Active Experiments
             </h2>
-            <p className="text-sm text-gray-500 mt-1">Live queue state from dummy data or the API when configured.</p>
+            <p className="text-sm text-gray-500 mt-1">Live queue state from the scheduler.</p>
           </div>
-          <button className="text-sm text-[#00ff41] hover:text-[#00cc33] transition-colors inline-flex items-center gap-1">
+          <button
+            onClick={() => void loadDashboard()}
+            className="text-sm text-[#00ff41] hover:text-[#00cc33] transition-colors inline-flex items-center gap-1"
+          >
             Refresh <ArrowRight size={14} />
           </button>
         </div>
@@ -221,10 +227,34 @@ export const ResearcherDashboard = () => {
                   </td>
                   <td className="p-4 text-gray-400 text-sm">{job.created}</td>
                   <td className="p-4 text-right space-x-2">
-                    <button className="text-[#00ff41] hover:text-[#00cc33] transition-colors" title="Inspect Job">
+                    {/* Inspect Job — fetches logs and opens the inline modal */}
+                    <button
+                      className="text-[#00ff41] hover:text-[#00cc33] transition-colors"
+                      title="Inspect Job"
+                      onClick={() => {
+                        void getJobLogs(job.id).then((content) =>
+                          setSelectedLog({ id: job.id, content }),
+                        );
+                      }}
+                    >
                       <BarChart3 size={16} />
                     </button>
-                    <button className="text-gray-500 hover:text-white transition-colors" title="Download Logs">
+                    {/* Download Logs — fetches logs and triggers a .txt file download */}
+                    <button
+                      className="text-gray-500 hover:text-white transition-colors"
+                      title="Download Logs"
+                      onClick={() => {
+                        void getJobLogs(job.id).then((content) => {
+                          const blob = new Blob([content], { type: 'text/plain' });
+                          const url = URL.createObjectURL(blob);
+                          const anchor = document.createElement('a');
+                          anchor.href = url;
+                          anchor.download = `${job.id}-logs.txt`;
+                          anchor.click();
+                          URL.revokeObjectURL(url);
+                        });
+                      }}
+                    >
                       <Download size={16} />
                     </button>
                   </td>
@@ -235,6 +265,71 @@ export const ResearcherDashboard = () => {
         </div>
 
         {jobs.length === 0 && <div className="p-8 text-center text-gray-500">No active jobs. Submit a new one to begin.</div>}
+
+        {/* ── Log Viewer Modal ── rendered inside the card, above the empty-state */}
+        <AnimatePresence>
+          {selectedLog && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+              onClick={() => setSelectedLog(null)}
+            >
+              <motion.div
+                initial={{ scale: 0.92, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.92, opacity: 0 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                className="w-full max-w-2xl bg-[#121212] border border-[#00ff41]/30 rounded-2xl shadow-[0_0_40px_rgba(0,255,65,0.15)] overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* modal header */}
+                <div className="flex items-center justify-between px-6 py-4 border-b border-[#333]">
+                  <div className="flex items-center gap-2">
+                    <BarChart3 className="text-[#00ff41]" size={18} />
+                    <span className="font-bold text-white text-sm">Job Logs</span>
+                    <span className="font-mono text-xs text-gray-500 ml-2">{selectedLog.id}</span>
+                  </div>
+                  <button
+                    onClick={() => setSelectedLog(null)}
+                    className="text-gray-500 hover:text-white transition-colors"
+                    title="Close"
+                  >
+                    <XCircle size={18} />
+                  </button>
+                </div>
+                {/* log body */}
+                <pre className="p-6 text-xs text-[#00ff41] font-mono leading-relaxed overflow-auto max-h-[60vh] whitespace-pre-wrap break-all">
+                  {selectedLog.content}
+                </pre>
+                {/* modal footer */}
+                <div className="px-6 py-3 border-t border-[#333] flex justify-end gap-3">
+                  <button
+                    onClick={() => {
+                      const blob = new Blob([selectedLog.content], { type: 'text/plain' });
+                      const url = URL.createObjectURL(blob);
+                      const anchor = document.createElement('a');
+                      anchor.href = url;
+                      anchor.download = `${selectedLog.id}-logs.txt`;
+                      anchor.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border border-[#333] bg-[#1e1e1e] px-4 py-2 text-sm text-gray-300 hover:text-white hover:border-[#00ff41]/40 transition-colors"
+                  >
+                    <Download size={14} /> Download
+                  </button>
+                  <button
+                    onClick={() => setSelectedLog(null)}
+                    className="rounded-lg bg-[#00ff41]/10 border border-[#00ff41]/30 px-4 py-2 text-sm text-[#00ff41] hover:bg-[#00ff41]/20 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   };
@@ -251,7 +346,32 @@ export const ResearcherDashboard = () => {
             </h2>
             <p className="text-sm text-gray-500 mt-1">Completed jobs with outcome, artifact, and runtime details.</p>
           </div>
-          <button className="text-sm text-[#00ff41] hover:underline">Export CSV</button>
+          <button
+            className="text-sm text-[#00ff41] hover:underline"
+            onClick={() => {
+              const jobs = dashboard?.completedJobs;
+              if (!jobs || jobs.length === 0) return;
+
+              const header = 'Job ID,Project,Date,Duration,Status,Score,Artifact\n';
+              const rows = jobs
+                .map((job) =>
+                  [job.id, job.project, job.date, job.duration, job.status, job.score, job.artifact]
+                    .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+                    .join(','),
+                )
+                .join('\n');
+
+              const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+              const url = URL.createObjectURL(blob);
+              const anchor = document.createElement('a');
+              anchor.href = url;
+              anchor.download = 'job-history.csv';
+              anchor.click();
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Export CSV
+          </button>
         </div>
 
         <div className="overflow-x-auto">
@@ -299,7 +419,7 @@ export const ResearcherDashboard = () => {
             <Sparkles className="text-[#00ff41]" /> New Job Submission
           </h2>
           <p className="text-sm text-gray-500 mt-2">
-            Submit a job against dummy data now. Connect an API later and the same flow will keep working.
+            Upload a training archive to submit it to the scheduler.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-[#00ff41]/25 bg-[#00ff41]/10 px-3 py-1 text-xs text-[#00ff41]">
@@ -452,7 +572,7 @@ export const ResearcherDashboard = () => {
               type="file"
               accept=".zip"
               className="hidden"
-              onChange={(event) => event.target.files && setUploadedFile(event.target.files[0].name)}
+              onChange={(event) => setUploadedFile(event.target.files?.[0] ?? null)}
             />
 
             {uploadedFile ? (
@@ -460,7 +580,7 @@ export const ResearcherDashboard = () => {
                 <div className="w-12 h-12 rounded-full bg-[#00ff41]/20 flex items-center justify-center mb-4">
                   <CheckCircle className="text-[#00ff41]" size={24} />
                 </div>
-                <p className="text-[#00ff41] font-medium">{uploadedFile}</p>
+                <p className="text-[#00ff41] font-medium">{uploadedFile.name}</p>
                 <p className="text-xs text-gray-500 mt-1">Ready for submission</p>
               </div>
             ) : (
@@ -487,12 +607,12 @@ export const ResearcherDashboard = () => {
             onClick={() => loadDashboard()}
             className="inline-flex items-center gap-2 rounded-lg border border-[#333] bg-[#121212] px-4 py-2 text-sm text-gray-300 hover:text-white hover:border-[#00ff41]/40 transition-colors"
           >
-            <Gauge size={16} /> Reload mock/API data
+            <Gauge size={16} /> Reload scheduler data
           </button>
           <button
             onClick={handleSubmitJob}
-            disabled={isSubmitting || !projectTitle.trim() || !torchVersion || !cudaVersion}
-            className={`bg-[#00ff41] text-black font-bold py-2 px-6 rounded-lg transition-all shadow-[0_0_15px_rgba(0,255,65,0.4)] flex items-center gap-2 ${isSubmitting || !projectTitle.trim() || !torchVersion || !cudaVersion ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#00cc33]'}`}
+            disabled={isSubmitting || !projectTitle.trim() || !torchVersion || !cudaVersion || !uploadedFile}
+            className={`bg-[#00ff41] text-black font-bold py-2 px-6 rounded-lg transition-all shadow-[0_0_15px_rgba(0,255,65,0.4)] flex items-center gap-2 ${isSubmitting || !projectTitle.trim() || !torchVersion || !cudaVersion || !uploadedFile ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#00cc33]'}`}
           >
             {isSubmitting ? (
               <>
@@ -552,9 +672,9 @@ export const ResearcherDashboard = () => {
 
         <div className="p-4 border-t border-[#333] text-xs text-gray-500 space-y-2">
           <div className="flex items-center gap-2 text-[#00ff41]">
-            <ShieldCheck size={14} /> {isApiMode() ? 'API mode enabled' : 'Mock mode enabled'}
+            <ShieldCheck size={14} /> {isApiMode() ? 'Scheduler API connected' : 'Scheduler API unavailable'}
           </div>
-          <div>Configure VITE_API_BASE_URL later to connect real endpoints.</div>
+          <div>Using localhost:8000 by default; set VITE_API_BASE_URL to override it.</div>
         </div>
       </motion.aside>
 
