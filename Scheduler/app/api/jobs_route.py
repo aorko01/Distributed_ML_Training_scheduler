@@ -1,7 +1,7 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.services import job_service
@@ -25,6 +25,10 @@ async def submit_job(
     command: str = Form(...),
     docker_base_image: str = Form(...),
     vram_required: float | None = Form(None),
+    project_title: str | None = Form(None),
+    description: str | None = Form(None),
+    torch_version: str | None = Form(None),
+    cuda_version: str | None = Form(None),
     db: Session = Depends(get_db)
 ):
     job_id = str(uuid.uuid4())  # Generate ONE shared ID here
@@ -39,15 +43,20 @@ async def submit_job(
             job_id=job_id  # Pass it in
         )
 
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     job_data = {
         "id": job_id,  # Pass it in
         "object_key": result["object_key"],
         "command": command,
         "docker_base_image": docker_base_image,
-        "config": None,
+        "config": {
+            "projectTitle": project_title,
+            "description": description,
+            "torchVersion": torch_version,
+            "cudaVersion": cuda_version,
+        },
         "vram_required": vram_required
     }
 
@@ -65,7 +74,6 @@ def update_job_to_vram_estimation_pending(
 
     except Exception as e:
         return {"error": str(e)}
-
 
 @router.get("/unbuilt_jobs")
 def get_unbuilt_jobs(db: Session = Depends(get_db)):
@@ -186,109 +194,3 @@ def get_output_by_id(request: JobIDRequest, db: Session = Depends(get_db)):
 
     except Exception as e:
         return {"error": str(e)}
-
-
-# =============================================================================
-# Frontend bridge — appended below; original code above is untouched.
-# Handles POST /jobs (resolves to POST /jobs because router is mounted at
-# prefix="/jobs" in main.py).
-# =============================================================================
-
-import io as _io
-import uuid as _uuid
-import zipfile as _zipfile
-from typing import Optional as _Optional
-from pydantic import BaseModel as _BaseModel
-from app.db.database import SessionLocal as _SessionLocal
-from app.utils.file_utils import save_to_object_store as _save_to_object_store
-from app.api.dashboard_route import build_dashboard_data as _build_dashboard_data
-
-
-class FrontendSubmissionPayload(_BaseModel):
-    """Matches the SubmissionPayload TypeScript interface in mockApi.ts."""
-    projectTitle: str
-    description: str
-    runCommand: str
-    vramMode: str = "auto"       # "auto" | "manual"
-    vram: int = 24               # GB, only used when vramMode == "manual"
-    torchVersion: str = ""
-    cudaVersion: str = ""
-    assetFile: _Optional[str] = None
-
-
-@router.post("")
-def submit_frontend_job(payload: FrontendSubmissionPayload):
-    """
-    Accepts the JSON SubmissionPayload sent by the Vite frontend's submitJob().
-    The frontend only passes the filename string (not the actual File blob), so
-    we synthesise a valid in-memory ZIP containing requirements.txt to satisfy
-    save_to_object_store's validation, then persist the Job and return fresh
-    DashboardData so the UI can update immediately.
-
-    Route resolves to POST /jobs (router mounted at prefix="/jobs" in main.py).
-    """
-    job_id = str(_uuid.uuid4())
-
-    # Build a valid dummy ZIP (contains requirements.txt for validation) ------
-    buf = _io.BytesIO()
-    with _zipfile.ZipFile(buf, mode="w", compression=_zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(
-            "requirements.txt",
-            f"# auto-generated placeholder\ntorch=={payload.torchVersion or '2.3'}\n",
-        )
-        zf.writestr(
-            "train.py",
-            f"# placeholder entrypoint\n# run: {payload.runCommand}\n",
-        )
-    dummy_zip_bytes = buf.getvalue()
-    dummy_filename = payload.assetFile or "training_bundle.zip"
-
-    db = _SessionLocal()
-    try:
-        # Attempt to store in the object store; fall back to a local key ------
-        try:
-            store_result = _save_to_object_store(
-                file_content=dummy_zip_bytes,
-                filename=dummy_filename,
-                require_files=["requirements.txt"],
-                job_id=job_id,
-            )
-            object_key = store_result["object_key"]
-        except Exception:
-            object_key = f"{job_id}/{dummy_filename}"
-
-        # Derive a Docker base image from the chosen torch/CUDA versions ------
-        torch_ver = (payload.torchVersion or "2.3").strip()
-        cuda_ver = (
-            (payload.cudaVersion or "CUDA 12.1")
-            .replace("CUDA ", "cu")
-            .replace(".", "")
-            .strip()
-        )
-        docker_image = f"pytorch/pytorch:{torch_ver}-{cuda_ver}-cudnn8-runtime"
-
-        vram_required = float(payload.vram) if payload.vramMode == "manual" else None
-
-        job_data = {
-            "id":                job_id,
-            "object_key":        object_key,
-            "command":           payload.runCommand or "python train.py",
-            "docker_base_image": docker_image,
-            "config": {
-                "projectTitle": payload.projectTitle,
-                "description":  payload.description,
-                "torchVersion": payload.torchVersion,
-                "cudaVersion":  payload.cudaVersion,
-                "vramMode":     payload.vramMode,
-                "assetFile":    payload.assetFile,
-            },
-            "vram_required": vram_required,
-        }
-
-        job_service.create_job(db, job_data)
-
-        # Return fresh dashboard state so the UI refreshes immediately --------
-        return _build_dashboard_data(db)
-
-    finally:
-        db.close()

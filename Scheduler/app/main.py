@@ -19,16 +19,7 @@ app = FastAPI(
 # Create all tables (for development; in production use Alembic migrations)
 Base.metadata.create_all(bind=engine)
 
-# Include API routers
-app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
-app.include_router(scheduler_router, prefix="/scheduler", tags=["scheduler"])
-app.include_router(workers_router, prefix="/workers", tags=["workers"])
-
-# =============================================================================
-# Frontend connectivity — append-only section; original lines above untouched.
-# =============================================================================
-
-# CORS: allows the Vite dev server (port 5173) to call this API.
+# Allow the Vite development server to request the API directly.
 from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
@@ -44,7 +35,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dashboard route: exposes GET /dashboard for the frontend.
 from app.api.dashboard_route import router as dashboard_router
 
+# Include API routers.
+app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
+app.include_router(scheduler_router, prefix="/scheduler", tags=["scheduler"])
+app.include_router(workers_router, prefix="/workers", tags=["workers"])
 app.include_router(dashboard_router)
+
+
+@app.get("/health", tags=["health"])
+def health_check():
+    return {"status": "ok"}

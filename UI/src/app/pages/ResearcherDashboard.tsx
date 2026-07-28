@@ -73,7 +73,7 @@ export const ResearcherDashboard = () => {
   const [showSuccessToast, setShowSuccessToast] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadedFile, setUploadedFile] = useState<string | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [projectTitle, setProjectTitle] = useState('Transformer Attention Analysis');
   const [projectDescription, setProjectDescription] = useState(
     'Benchmarking mixed precision attention kernels on large transformer workloads.',
@@ -121,11 +121,11 @@ export const ResearcherDashboard = () => {
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setIsDragging(false);
-    setUploadedFile('training_bundle.zip');
+    setUploadedFile(event.dataTransfer.files.item(0));
   };
 
   const handleSubmitJob = async () => {
-    if (!projectTitle.trim() || !cudaVersion || !torchVersion || !dashboard) {
+    if (!projectTitle.trim() || !cudaVersion || !torchVersion || !uploadedFile || !dashboard) {
       return;
     }
 
@@ -172,7 +172,7 @@ export const ResearcherDashboard = () => {
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
               <Activity className="text-[#00ff41]" size={20} /> Active Experiments
             </h2>
-            <p className="text-sm text-gray-500 mt-1">Live queue state from dummy data or the API when configured.</p>
+            <p className="text-sm text-gray-500 mt-1">Live queue state from the scheduler.</p>
           </div>
           <button
             onClick={() => void loadDashboard()}
@@ -419,7 +419,7 @@ export const ResearcherDashboard = () => {
             <Sparkles className="text-[#00ff41]" /> New Job Submission
           </h2>
           <p className="text-sm text-gray-500 mt-2">
-            Submit a job against dummy data now. Connect an API later and the same flow will keep working.
+            Upload a training archive to submit it to the scheduler.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-[#00ff41]/25 bg-[#00ff41]/10 px-3 py-1 text-xs text-[#00ff41]">
@@ -572,7 +572,7 @@ export const ResearcherDashboard = () => {
               type="file"
               accept=".zip"
               className="hidden"
-              onChange={(event) => event.target.files && setUploadedFile(event.target.files[0].name)}
+              onChange={(event) => setUploadedFile(event.target.files?.[0] ?? null)}
             />
 
             {uploadedFile ? (
@@ -580,7 +580,7 @@ export const ResearcherDashboard = () => {
                 <div className="w-12 h-12 rounded-full bg-[#00ff41]/20 flex items-center justify-center mb-4">
                   <CheckCircle className="text-[#00ff41]" size={24} />
                 </div>
-                <p className="text-[#00ff41] font-medium">{uploadedFile}</p>
+                <p className="text-[#00ff41] font-medium">{uploadedFile.name}</p>
                 <p className="text-xs text-gray-500 mt-1">Ready for submission</p>
               </div>
             ) : (
@@ -607,12 +607,12 @@ export const ResearcherDashboard = () => {
             onClick={() => loadDashboard()}
             className="inline-flex items-center gap-2 rounded-lg border border-[#333] bg-[#121212] px-4 py-2 text-sm text-gray-300 hover:text-white hover:border-[#00ff41]/40 transition-colors"
           >
-            <Gauge size={16} /> Reload mock/API data
+            <Gauge size={16} /> Reload scheduler data
           </button>
           <button
             onClick={handleSubmitJob}
-            disabled={isSubmitting || !projectTitle.trim() || !torchVersion || !cudaVersion}
-            className={`bg-[#00ff41] text-black font-bold py-2 px-6 rounded-lg transition-all shadow-[0_0_15px_rgba(0,255,65,0.4)] flex items-center gap-2 ${isSubmitting || !projectTitle.trim() || !torchVersion || !cudaVersion ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#00cc33]'}`}
+            disabled={isSubmitting || !projectTitle.trim() || !torchVersion || !cudaVersion || !uploadedFile}
+            className={`bg-[#00ff41] text-black font-bold py-2 px-6 rounded-lg transition-all shadow-[0_0_15px_rgba(0,255,65,0.4)] flex items-center gap-2 ${isSubmitting || !projectTitle.trim() || !torchVersion || !cudaVersion || !uploadedFile ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#00cc33]'}`}
           >
             {isSubmitting ? (
               <>
@@ -672,9 +672,9 @@ export const ResearcherDashboard = () => {
 
         <div className="p-4 border-t border-[#333] text-xs text-gray-500 space-y-2">
           <div className="flex items-center gap-2 text-[#00ff41]">
-            <ShieldCheck size={14} /> {isApiMode() ? 'API mode enabled' : 'Mock mode enabled'}
+            <ShieldCheck size={14} /> {isApiMode() ? 'Scheduler API connected' : 'Scheduler API unavailable'}
           </div>
-          <div>Configure VITE_API_BASE_URL later to connect real endpoints.</div>
+          <div>Using localhost:8000 by default; set VITE_API_BASE_URL to override it.</div>
         </div>
       </motion.aside>
 
