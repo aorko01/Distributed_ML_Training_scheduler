@@ -11,6 +11,7 @@ MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
 BUCKETS = (
     os.environ.get("OBJECT_STORE_BUCKET", "uploads"),
     os.environ.get("OBJECT_OUTPUT_BUCKET", "outputs"),
+    os.environ.get("OBJECT_STORE_CHECKPOINT_BUCKET", "checkpoints"),
 )
 
 

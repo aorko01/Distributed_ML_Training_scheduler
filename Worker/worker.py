@@ -3,7 +3,10 @@ import time
 import uuid
 import json
 import shlex
+import shutil
 import logging
+import zipfile
+import threading
 import subprocess
 import tempfile
 import requests
@@ -32,6 +35,13 @@ DOCKER_HUB_USERNAME = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 VRAM_ESTIMATION_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vram_estimation.py")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Object store (checkpoint persistence)
+OBJECT_STORE_URL = os.getenv("OBJECT_STORE_URL", "http://localhost:8010").rstrip("/")
+CHECKPOINT_BUCKET = os.getenv("OBJECT_STORE_CHECKPOINT_BUCKET", "checkpoints")
+CHECKPOINT_UPLOAD_URL = f"{OBJECT_STORE_URL}/objects/upload"
+CHECKPOINT_CONTAINER_PATH = "/checkpoints"  # contract: user code checkpoints here
+CHECKPOINT_SYNC_INTERVAL = int(os.getenv("CHECKPOINT_SYNC_INTERVAL", "30"))  # seconds
 
 # Logger setup
 logging.basicConfig(
@@ -207,17 +217,149 @@ def handle_vram_estimation(job_id: str, image_name: str, command: str):
     save_vram_estimation(job_id, report)
 
 
-def handle_training(job_id: str, image_name: str):
-    """Handle training job."""
-    logger.info("Training job received for job %s.", job_id)
+def _checkpoint_object_key(job_id: str) -> str:
+    return f"{job_id}/checkpoint.zip"
 
-    cmd = ["docker", "run", "--rm", "--gpus", "all", image_name]
-    logger.info("Running training container with command: %s", " ".join(cmd))
+
+def _zip_dir(src_dir: str, zip_path: str):
+    """Zip the contents of src_dir (relative paths, no top-level folder) into zip_path."""
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(src_dir):
+            for name in files:
+                file_path = os.path.join(root, name)
+                arcname = os.path.relpath(file_path, src_dir)
+                zf.write(file_path, arcname)
+
+
+def upload_checkpoint(job_id: str, checkpoint_dir: str) -> bool:
+    """Zip the host-side checkpoint dir and push it to the object store, overwriting
+    any previous checkpoint for this job (object key is stable per job_id)."""
+    if not os.path.isdir(checkpoint_dir) or not os.listdir(checkpoint_dir):
+        return False
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        zip_path = tmp.name
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        log_file = os.path.join(OUTPUT_DIR, f"{job_id}.txt")
+        _zip_dir(checkpoint_dir, zip_path)
+        object_key = _checkpoint_object_key(job_id)
+        with open(zip_path, "rb") as f:
+            files = {"file": ("checkpoint.zip", f, "application/zip")}
+            data = {"bucket": CHECKPOINT_BUCKET, "object_key": object_key}
+            resp = requests.post(CHECKPOINT_UPLOAD_URL, data=data, files=files, timeout=60)
+        if resp.status_code >= 400:
+            logger.error(
+                "Checkpoint upload failed for job %s: %s %s", job_id, resp.status_code, resp.text
+            )
+            return False
+        logger.info("Checkpoint synced for job %s.", job_id)
+        return True
+    except Exception as e:
+        logger.error("Checkpoint upload error for job %s: %s", job_id, e)
+        return False
+    finally:
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
 
+
+def download_checkpoint(job_id: str, dest_dir: str) -> bool:
+    """Fetch the latest checkpoint zip for job_id from the object store and extract
+    it into dest_dir. Returns False (no error) if no checkpoint exists yet."""
+    object_key = _checkpoint_object_key(job_id)
+    url = f"{OBJECT_STORE_URL}/objects/{CHECKPOINT_BUCKET}/{object_key}"
+    try:
+        resp = requests.get(url, timeout=60)
+        if resp.status_code == 404:
+            logger.warning("No existing checkpoint found for job %s.", job_id)
+            return False
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error("Failed to download checkpoint for job %s: %s", job_id, e)
+        return False
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(resp.content)
+        zip_path = tmp.name
+
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(dest_dir)
+        logger.info("Checkpoint restored for job %s into %s.", job_id, dest_dir)
+        return True
+    except Exception as e:
+        logger.error("Failed to extract checkpoint for job %s: %s", job_id, e)
+        return False
+    finally:
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
+
+
+class _CheckpointSyncer:
+    """Background thread that periodically uploads a host checkpoint dir while a
+    training container is running. Started once training begins, stopped (with one
+    final sync) once the container exits, so we never lose more than one interval
+    of progress if the worker dies mid-run."""
+
+    def __init__(self, job_id: str, checkpoint_dir: str, interval: int = CHECKPOINT_SYNC_INTERVAL):
+        self.job_id = job_id
+        self.checkpoint_dir = checkpoint_dir
+        self.interval = interval
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self._stop_event.wait(self.interval):
+            upload_checkpoint(self.job_id, self.checkpoint_dir)
+
+    def start(self):
+        self._thread.start()
+
+    def stop_and_final_sync(self):
+        self._stop_event.set()
+        self._thread.join()
+        upload_checkpoint(self.job_id, self.checkpoint_dir)
+
+
+def _run_training_container(job_id: str, image_name: str, resume: bool):
+    """Shared execution path for fresh training runs and retries. Mounts a host
+    checkpoint dir into the container at CHECKPOINT_CONTAINER_PATH, optionally
+    pre-populating it from the last known checkpoint, and periodically syncs it
+    back to the object store while the container runs so a mid-training worker
+    failure loses at most CHECKPOINT_SYNC_INTERVAL seconds of progress.
+    """
+    with tempfile.TemporaryDirectory(prefix=f"ckpt_{job_id}_") as checkpoint_dir:
+        if resume:
+            download_checkpoint(job_id, checkpoint_dir)
+
+        cmd = [
+            "docker", "run", "--rm", "--gpus", "all",
+            "-v", f"{checkpoint_dir}:{CHECKPOINT_CONTAINER_PATH}",
+            image_name,
+        ]
+        logger.info(
+            "Running %s training container for job %s: %s",
+            "resumed" if resume else "fresh", job_id, " ".join(cmd),
+        )
+
+        syncer = _CheckpointSyncer(job_id, checkpoint_dir)
+        syncer.start()
+
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+        except Exception as e:
+            logger.error("Execution error for job %s: %s", job_id, e)
+            syncer.stop_and_final_sync()
+            return
+        finally:
+            if syncer._thread.is_alive():
+                syncer.stop_and_final_sync()
+
+        log_file = os.path.join(OUTPUT_DIR, f"{job_id}.txt")
         with open(log_file, "w", encoding="utf-8") as f:
             f.write(res.stdout + "\n" + res.stderr)
 
@@ -228,13 +370,20 @@ def handle_training(job_id: str, image_name: str):
 
         upload_output_file(log_file, job_id)
 
-    except Exception as e:
-        logger.error("Execution error for job %s: %s", job_id, e)
+
+def handle_training(job_id: str, image_name: str):
+    """Handle a fresh (first-attempt) training job."""
+    logger.info("Training job received for job %s.", job_id)
+    _run_training_container(job_id, image_name, resume=False)
 
 
-def handle_retry(job_id: str):
-    """Handle retry job."""
+def handle_retry(job_id: str, image_name: str):
+    """Handle a retry job: a previous worker died mid-training (missed heartbeats),
+    and the scheduler has re-assigned this job to us. Resume from the last
+    checkpoint synced to the object store instead of starting from scratch.
+    """
     logger.info("Retry job received for job %s.", job_id)
+    _run_training_container(job_id, image_name, resume=True)
 
 
 def process_job():
@@ -256,7 +405,7 @@ def process_job():
     elif flag == "training":
         handle_training(job_id, image_name)
     elif flag == "retry":
-        handle_retry(job_id)
+        handle_retry(job_id, image_name)
     else:
         logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)
 

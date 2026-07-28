@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Float, Enum, JSON
+from sqlalchemy import Column, String, DateTime, Float, Integer, Enum, JSON
 from sqlalchemy.sql import func
 import uuid
 from app.db.database import Base
@@ -10,6 +10,7 @@ class JobStatus(enum.Enum):
     VRAM_ESTIMATION_PENDING = "VRAM_ESTIMATION_PENDING"
     RUNNABLE = "RUNNABLE"
     IN_PROGRESS = "IN_PROGRESS"
+    RETRY_PENDING = "RETRY_PENDING"  # worker died mid-training; needs reassignment
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
@@ -31,6 +32,10 @@ class Job(Base):
     # VRAM estimation
     vram_required = Column(Float, nullable=True)  # in GB
     step_time = Column(Float, nullable=True)  # in seconds per step
+
+    # Fault recovery
+    assigned_worker_id = Column(String, nullable=True)  # worker currently (or last) running this job
+    retry_count = Column(Integer, nullable=False, default=0)  # number of times reassigned after worker death
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

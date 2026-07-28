@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from app.models.job_model import Job, JobStatus
 from app.schemas.worker_schema import WorkerResource
+import os
 
 
 def create_job(db: Session, job_data: dict):
@@ -164,15 +165,15 @@ async def _check_vram_estimation_strategy(db: Session, request: WorkerResource) 
     return _format_job_response(job, flag="vram_estimation")
 
 
-def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict | None:
-    """
-    Strategy 2: Find runnable training job where (vram_required + 1.0) <= available vram of pulling worker.
-    Selects the job with largest vram_required.
-    """
-    job = (
+def _find_matching_job(db: Session, status: JobStatus, request: WorkerResource):
+    """Find the best job in `status` whose vram_required (+1.0 GB safety margin)
+    fits the pulling worker's free VRAM. Jobs with unknown vram_required (not yet
+    estimated) are also eligible. Prefers the largest vram_required first (best
+    packing), then oldest first."""
+    return (
         db.query(Job)
         .filter(
-            Job.status == JobStatus.RUNNABLE,
+            Job.status == status,
             or_(
                 Job.vram_required.is_(None),
                 (Job.vram_required + 1.0) <= request.free_vram,
@@ -182,19 +183,51 @@ def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict |
         .first()
     )
 
+
+def _assign_job_to_worker(db: Session, job: Job, worker_id: str, flag: str) -> dict:
+    job.status = JobStatus.IN_PROGRESS
+    job.assigned_worker_id = worker_id
+    db.commit()
+    db.refresh(job)
+    return _format_job_response(job, flag=flag)
+
+
+def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict | None:
+    """
+    Strategy 2: Find a fresh RUNNABLE job (never started before) that fits.
+    """
+    job = _find_matching_job(db, JobStatus.RUNNABLE, request)
     if not job:
         return None
 
-    job.status = JobStatus.IN_PROGRESS
-    db.commit()
-    db.refresh(job)
+    return _assign_job_to_worker(db, job, request.worker_id, flag="training")
 
-    return _format_job_response(job, flag="training")
+
+def _check_retry_job_strategy(db: Session, request: WorkerResource) -> dict | None:
+    """
+    Strategy 3: Find a job whose previous worker died mid-training
+    (RETRY_PENDING, set by the watchdog). The worker resumes it from its last
+    checkpoint, so it's matched using the same VRAM-fit logic as a fresh job.
+    Placed ahead of fresh jobs in SCHEDULING_STRATEGIES since it represents
+    work already in flight.
+    """
+    job = _find_matching_job(db, JobStatus.RETRY_PENDING, request)
+    if not job:
+        return None
+
+    return _assign_job_to_worker(db, job, request.worker_id, flag="retry")
 
 
 # List of scheduling strategies in priority order. Easy to extend with new strategies.
+# Order rationale:
+#   1. VRAM estimation jobs are cheap, quick, and unblock scheduling for everything
+#      else, so they always jump the queue.
+#   2. Retries represent work that's already partially done (has a checkpoint) and
+#      whose recovery is time-sensitive, so they're preferred over brand-new jobs.
+#   3. Fresh jobs run last.
 SCHEDULING_STRATEGIES = [
     _check_vram_estimation_strategy,
+    _check_retry_job_strategy,
     _check_training_job_strategy,
 ]
 
@@ -234,4 +267,62 @@ def set_to_completed(db: Session, job_id: str):
     db.commit()
     db.refresh(job)
 
+    return job
+
+
+# ---------------------------------------------------------------------------
+# Fault recovery (watchdog support)
+# ---------------------------------------------------------------------------
+
+MAX_JOB_RETRIES = int(os.getenv("MAX_JOB_RETRIES", "3"))
+
+
+def get_in_progress_assignments(db: Session) -> list[tuple[str, str]]:
+    """Return (job_id, assigned_worker_id) for every job currently IN_PROGRESS.
+    Used by the watchdog to check which of these workers are still alive."""
+    rows = (
+        db.query(Job.id, Job.assigned_worker_id)
+        .filter(
+            Job.status == JobStatus.IN_PROGRESS,
+            Job.assigned_worker_id.isnot(None),
+        )
+        .all()
+    )
+    return [(row[0], row[1]) for row in rows]
+
+
+def requeue_job_after_worker_death(db: Session, job_id: str, dead_worker_id: str) -> Job | None:
+    """Called by the watchdog when a job's assigned worker has stopped sending
+    heartbeats. Re-checks the job is still assigned to that same worker (avoids
+    racing a legitimate completion/reassignment that happened concurrently),
+    then either requeues it as RETRY_PENDING (picked up again via the retry
+    scheduling strategy, resuming from its last checkpoint) or marks it FAILED
+    if it has already exhausted MAX_JOB_RETRIES -- guards against a job that
+    keeps crashing workers (e.g. a checkpoint that itself corrupts) looping
+    forever.
+    """
+    job = (
+        db.query(Job)
+        .filter(
+            Job.id == job_id,
+            Job.status == JobStatus.IN_PROGRESS,
+            Job.assigned_worker_id == dead_worker_id,
+        )
+        .first()
+    )
+    if not job:
+        # Job already moved on (completed / reassigned) since the watchdog
+        # took its snapshot -- nothing to do.
+        return None
+
+    job.assigned_worker_id = None
+
+    if job.retry_count >= MAX_JOB_RETRIES:
+        job.status = JobStatus.FAILED
+    else:
+        job.retry_count += 1
+        job.status = JobStatus.RETRY_PENDING
+
+    db.commit()
+    db.refresh(job)
     return job

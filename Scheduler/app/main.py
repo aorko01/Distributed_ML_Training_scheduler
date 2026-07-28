@@ -1,3 +1,7 @@
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from app.db.database import Base, engine
 
@@ -5,6 +9,25 @@ from app.db.database import Base, engine
 from app.api.jobs_route import router as jobs_router
 from app.api.scheduler_route import router as scheduler_router
 from app.api.worker_route import router as workers_router  # include worker registration
+from app.services.watchdog_service import run_watchdog_loop
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Create all tables (for development; in production use Alembic migrations)
+    Base.metadata.create_all(bind=engine)
+
+    watchdog_task = asyncio.create_task(run_watchdog_loop())
+    try:
+        yield
+    finally:
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
+
+
 
 # Create FastAPI app
 app = FastAPI(
@@ -16,8 +39,8 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-# Create all tables (for development; in production use Alembic migrations)
-Base.metadata.create_all(bind=engine)
+# # Create all tables (for development; in production use Alembic migrations)
+# Base.metadata.create_all(bind=engine)
 
 # Allow the Vite development server to request the API directly.
 from fastapi.middleware.cors import CORSMiddleware
