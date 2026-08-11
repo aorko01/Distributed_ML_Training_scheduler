@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { fetchPytorchVersions, type PytorchVersion } from '../services/docker';
+import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
 import { submitJob } from '../services/jobs';
-import { UploadCloud, CheckCircle2 } from 'lucide-react';
+import { UploadCloud, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 const SubmitJob: React.FC = () => {
   const [jobName, setJobName] = useState('');
@@ -10,10 +10,11 @@ const SubmitJob: React.FC = () => {
   const [loadingVersions, setLoadingVersions] = useState(true);
   const [versionError, setVersionError] = useState('');
   const [selectedPyTorch, setSelectedPyTorch] = useState('');
-  const [selectedCuda, setSelectedCuda] = useState('');
+  const [selectedCuda, setSelectedCuda] = useState<CudaVariant | null>(null);
   const [bashScript, setBashScript] = useState('python train.py --epochs 100 --batch-size 32');
-  const [fileAttached, setFileAttached] = useState(false);
+  const [zipFile, setZipFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const [requestPriority, setRequestPriority] = useState(false);
   const [priorityReason, setPriorityReason] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -28,7 +29,7 @@ const SubmitJob: React.FC = () => {
         setVersions(data);
         if (data.length > 0) {
           setSelectedPyTorch(data[0].version);
-          setSelectedCuda(data[0].cudaVersions[0]);
+          setSelectedCuda(data[0].cudaVersions[0] ?? null);
         }
       } catch (err) {
         setVersionError(err instanceof Error ? err.message : 'Failed to load PyTorch versions.');
@@ -46,7 +47,7 @@ const SubmitJob: React.FC = () => {
     if (versionData && versionData.cudaVersions.length > 0) {
       setSelectedCuda(versionData.cudaVersions[0]);
     } else {
-      setSelectedCuda('');
+      setSelectedCuda(null);
     }
   };
 
@@ -56,22 +57,39 @@ const SubmitJob: React.FC = () => {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setFileAttached(true);
+      setZipFile(e.target.files[0]);
+      setSubmitError('');
+    } else {
+      setZipFile(null);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!jobName || !selectedPyTorch || !selectedCuda) return;
-    
+    if (!zipFile) {
+      setSubmitError('Please attach your workspace archive (.zip) before submitting.');
+      return;
+    }
+
     setSubmitting(true);
-    const job = await submitJob({
-      name: jobName,
-      pytorchVersion: selectedPyTorch,
-      cudaVersion: selectedCuda
-    });
-    setSubmitting(false);
-    navigate(`/jobs/${job.id}`);
+    setSubmitError('');
+    try {
+      const job = await submitJob({
+        name: jobName,
+        command: bashScript,
+        pytorchVersion: selectedPyTorch,
+        cudaVersion: selectedCuda.cuda,
+        dockerBaseImage: selectedCuda.tag,
+        requestForPriority: requestPriority,
+        reasonForPriority: requestPriority ? priorityReason : undefined,
+      }, zipFile);
+      navigate(`/jobs/${job.id}`);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to submit job.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const availableCudas = versions.find(v => v.version === selectedPyTorch)?.cudaVersions || [];
@@ -116,17 +134,20 @@ const SubmitJob: React.FC = () => {
               )}
             </div>
             <div className="form-group">
-              <label className="form-label">CUDA Version</label>
+              <label className="form-label">CUDA / cuDNN Version</label>
               <select 
                 className="form-select"
-                value={selectedCuda}
-                onChange={e => setSelectedCuda(e.target.value)}
+                value={selectedCuda?.tag ?? ''}
+                onChange={e => {
+                  const variant = availableCudas.find(v => v.tag === e.target.value);
+                  setSelectedCuda(variant ?? null);
+                }}
                 disabled={loadingVersions || availableCudas.length === 0}
               >
                 {loadingVersions && <option>Loading CUDA versions...</option>}
                 {!loadingVersions && availableCudas.length === 0 && <option>No CUDA variants</option>}
                 {availableCudas.map(c => (
-                  <option key={c} value={c}>{c}</option>
+                  <option key={c.tag} value={c.tag}>CUDA {c.cuda} / cuDNN {c.cudnn}</option>
                 ))}
               </select>
             </div>
@@ -142,10 +163,10 @@ const SubmitJob: React.FC = () => {
                 accept=".zip"
                 onChange={handleFileChange}
               />
-              {fileAttached ? (
+              {zipFile ? (
                 <div style={{ color: 'var(--status-success)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                   <CheckCircle2 size={48} style={{ marginBottom: '1rem' }} />
-                  <p style={{ color: 'var(--text-primary)', fontWeight: 500 }}>Workspace.zip attached</p>
+                  <p style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{zipFile.name}</p>
                   <p style={{ fontSize: '0.875rem' }}>Click to replace file</p>
                 </div>
               ) : (
@@ -155,6 +176,29 @@ const SubmitJob: React.FC = () => {
                   <p style={{ fontSize: '0.875rem' }}>ZIP file containing your training scripts and data</p>
                 </div>
               )}
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.5rem',
+                marginTop: '0.75rem',
+                padding: '0.75rem',
+                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                border: '1px solid rgba(245, 158, 11, 0.35)',
+                borderRadius: '6px',
+                color: 'var(--status-warning, #f59e0b)',
+                fontSize: '0.825rem',
+                lineHeight: 1.5,
+              }}
+            >
+              <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: '0.15rem' }} />
+              <span>
+                Your ZIP must include a <strong>requirements.txt</strong>. Please pin <strong>absolute package
+                versions</strong> compatible with the selected PyTorch {selectedPyTorch || ''} and CUDA{' '}
+                {selectedCuda?.cuda || ''} to avoid version mismatch failures — Docker image building can take a
+                significant amount of time.
+              </span>
             </div>
           </div>
 
@@ -194,9 +238,24 @@ const SubmitJob: React.FC = () => {
             )}
           </div>
 
+          {submitError && (
+            <div
+              style={{
+                padding: '0.75rem',
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                color: 'var(--status-failed)',
+                borderRadius: '6px',
+                marginTop: '1rem',
+                fontSize: '0.875rem',
+              }}
+            >
+              {submitError}
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '2rem' }}>
             <button type="button" className="btn btn-secondary" onClick={() => navigate(-1)}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={submitting}>
+            <button type="submit" className="btn btn-primary" disabled={submitting || loadingVersions}>
               {submitting ? 'Submitting...' : 'Submit Job'}
             </button>
           </div>

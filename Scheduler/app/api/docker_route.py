@@ -8,7 +8,7 @@ router = APIRouter(tags=["docker"])
 DOCKER_HUB_TAGS_URL = "https://hub.docker.com/v2/repositories/pytorch/pytorch/tags/"
 
 RUNTIME_TAG_RE = re.compile(
-    r"^(?P<pytorch>[\d.]+)-cuda(?P<cuda>[\d.]+)-cudnn[\d.]+-runtime$"
+    r"^(?P<pytorch>[\d.]+)-cuda(?P<cuda>[\d.]+)-cudnn(?P<cudnn>[\d.]+)-runtime$"
 )
 
 
@@ -32,24 +32,33 @@ def _fetch_all_tags() -> list[str]:
 
 
 def _parse_runtime_tags(tags: list[str]) -> list[dict]:
-    versions: dict[str, set[str]] = {}
+    versions: dict[str, list[dict]] = {}
     for name in tags:
         match = RUNTIME_TAG_RE.match(name)
         if not match:
             continue
         pytorch = match.group("pytorch")
         cuda = match.group("cuda")
-        versions.setdefault(pytorch, set()).add(cuda)
-
-    return [
-        {
-            "version": pytorch,
-            "cudaVersions": sorted(cudas, key=_sort_key, reverse=True),
-        }
-        for pytorch, cudas in sorted(
-            versions.items(), key=lambda item: _sort_key(item[0]), reverse=True
+        cudnn = match.group("cudnn")
+        versions.setdefault(pytorch, []).append(
+            {
+                "cuda": cuda,
+                "cudnn": cudnn,
+                "tag": f"pytorch/pytorch:{name}",
+            }
         )
-    ]
+
+    result = []
+    for pytorch, variants in sorted(
+        versions.items(), key=lambda item: _sort_key(item[0]), reverse=True
+    ):
+        variants.sort(
+            key=lambda v: (_sort_key(v["cuda"]), _sort_key(v["cudnn"])),
+            reverse=True,
+        )
+        result.append({"version": pytorch, "cudaVersions": variants})
+
+    return result
 
 
 @router.get("/pytorch-tags")

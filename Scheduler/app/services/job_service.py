@@ -1,18 +1,21 @@
 from app.models.worker_model import Worker
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from app.models.job_model import Job, JobStatus
+from app.models.job_model import Job, JobStatus, JobPriority
 from app.schemas.worker_schema import WorkerResource
 
 
 def create_job(db: Session, job_data: dict):
     db_job = Job(
         id=job_data["id"],
+        user_id=job_data["user_id"],
         object_key=job_data["object_key"],
         command=job_data["command"],
         docker_base_image=job_data["docker_base_image"],
         config=job_data.get("config"),
         vram_required=job_data.get("vram_required"),
+        priority=job_data.get("priority", JobPriority.NORMAL),
+        reason_for_priority=job_data.get("reason_for_priority"),
     )
     db.add(db_job)
     # Tells the session: “I want to insert this object into the database.”
@@ -88,11 +91,14 @@ def get_not_runnable_jobs(db: Session):
     return [
         {
             "id": job.id,
+            "user_id": job.user_id,
             "object_key": job.object_key,
             "command": job.command,
             "docker_base_image": job.docker_base_image,
             "config": job.config,
             "status": job.status.value,
+            "priority": job.priority.value,
+            "reason_for_priority": job.reason_for_priority,
             "vram_required": job.vram_required,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
@@ -131,11 +137,14 @@ def _format_job_response(job: Job, flag: str) -> dict:
     return {
         "flag": flag,
         "id": job.id,
+        "user_id": job.user_id,
         "object_key": job.object_key,
         "command": job.command,
         "docker_base_image": job.docker_base_image,
         "config": job.config,
         "status": job.status.value,
+        "priority": job.priority.value,
+        "reason_for_priority": job.reason_for_priority,
         "vram_required": job.vram_required,
         "created_at": job.created_at,
         "updated_at": job.updated_at,

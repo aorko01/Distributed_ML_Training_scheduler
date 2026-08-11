@@ -8,6 +8,9 @@ from app.services import job_service
 from app.utils.file_utils import save_to_object_store
 from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport
 from app.schemas.worker_schema import WorkerResource
+from app.models.user_model import User
+from app.models.job_model import JobPriority
+from app.api.deps import get_current_active_user
 
 
 router = APIRouter(tags=["jobs"])
@@ -25,6 +28,9 @@ async def submit_job(
     command: str = Form(...),
     docker_base_image: str = Form(...),
     vram_required: float | None = Form(None),
+    request_for_priority: bool = Form(False),
+    reason_for_priority: str = Form(""),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     job_id = str(uuid.uuid4())  # Generate ONE shared ID here
@@ -42,13 +48,22 @@ async def submit_job(
     except Exception as e:
         return {"error": str(e)}
 
+    priority = (
+        JobPriority.REQUESTED
+        if request_for_priority
+        else JobPriority.NORMAL
+    )
+
     job_data = {
         "id": job_id,  # Pass it in
+        "user_id": current_user.user_id,
         "object_key": result["object_key"],
         "command": command,
         "docker_base_image": docker_base_image,
         "config": None,
-        "vram_required": vram_required
+        "vram_required": vram_required,
+        "priority": priority,
+        "reason_for_priority": reason_for_priority.strip() or None,
     }
 
     db_job = job_service.create_job(db, job_data)

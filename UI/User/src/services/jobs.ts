@@ -1,3 +1,5 @@
+import { getToken, type ApiError } from './api';
+
 export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed';
 
 export interface Job {
@@ -56,21 +58,80 @@ export const fetchJobById = async (id: string): Promise<Job | undefined> => {
   });
 };
 
-export const submitJob = async (jobData: Omit<Job, 'id' | 'status' | 'submittedAt' | 'gpuHours'>): Promise<Job> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const newJob: Job = {
-        ...jobData,
-        id: `job-${Math.floor(Math.random() * 1000) + 200}`,
-        status: 'Building',
-        submittedAt: new Date().toISOString(),
-        gpuHours: 0,
-        queuePosition: 14
-      };
-      mockJobs = [newJob, ...mockJobs];
-      resolve(newJob);
-    }, 800);
+export interface SubmitJobPayload {
+  name: string;
+  command: string;
+  pytorchVersion: string;
+  cudaVersion: string;
+  dockerBaseImage: string;
+  requestForPriority: boolean;
+  reasonForPriority?: string;
+}
+
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+
+export const submitJob = async (
+  jobData: SubmitJobPayload,
+  zipFile: File,
+): Promise<Job> => {
+  const formData = new FormData();
+  formData.append('zip_file', zipFile);
+  formData.append('command', jobData.command);
+  formData.append('docker_base_image', jobData.dockerBaseImage);
+  formData.append('request_for_priority', String(jobData.requestForPriority));
+  if (jobData.reasonForPriority) {
+    formData.append('reason_for_priority', jobData.reasonForPriority);
+  }
+
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_BASE_URL}/jobs/submit_job`, {
+    method: 'POST',
+    headers,
+    body: formData,
   });
+
+  const contentType = response.headers.get('content-type') ?? '';
+  const body = contentType.includes('application/json')
+    ? await response.json()
+    : await response.text();
+
+  if (!response.ok) {
+    const error = new Error(
+      (body && typeof body === 'object' && 'detail' in body
+        ? String((body as Record<string, unknown>).detail)
+        : `Request failed with status ${response.status}`) ||
+        `Request failed with status ${response.status}`,
+    ) as ApiError;
+    error.status = response.status;
+    throw error;
+  }
+
+  const bodyRecord = (body ?? {}) as Record<string, unknown>;
+  if (typeof bodyRecord.error === 'string') {
+    throw new Error(bodyRecord.error);
+  }
+
+  const job = body as {
+    id: string;
+    status?: string;
+    created_at?: string;
+  };
+
+  return {
+    id: job.id,
+    name: jobData.name,
+    status: (job.status as JobStatus) ?? 'Building',
+    pytorchVersion: jobData.pytorchVersion,
+    cudaVersion: jobData.cudaVersion,
+    submittedAt: job.created_at ?? new Date().toISOString(),
+    gpuHours: 0,
+    queuePosition: undefined,
+  };
 };
 
 type LogCallback = (log: { type: 'info' | 'warn' | 'error' | 'success', text: string, timestamp: string }) => void;
