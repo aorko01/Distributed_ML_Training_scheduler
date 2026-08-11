@@ -2,7 +2,7 @@ import requests
 import logging
 from config import (
     REGISTER_URL, HEARTBEAT_URL, PULL_JOB_URL,
-    SAVE_VRAM_ESTIMATION_URL, MARK_COMPLETED_URL,
+    SAVE_VRAM_ESTIMATION_URL, MARK_COMPLETED_URL, SEND_LOG_URL,
 )
 
 logger = logging.getLogger("api")
@@ -61,6 +61,20 @@ class SchedulerAPI:
             logger.info("Marked job %s completed: %s", job_id, resp.json())
         except Exception as e:
             logger.error("Failed to mark job %s completed: %s", job_id, e)
+
+    def send_logs(self, job_id: str, lines: list[str]):
+        """Stream training log lines to the scheduler for realtime UI display."""
+        if not lines:
+            return
+        try:
+            resp = requests.post(
+                f"{SEND_LOG_URL}/{job_id}",
+                json={"lines": lines},
+                timeout=5,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.debug("Failed to stream logs for job %s: %s", job_id, e)
 
     def save_vram_estimation(self, job_id: str, report: dict):
         payload = {

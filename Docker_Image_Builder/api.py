@@ -1,7 +1,7 @@
 import requests
 from urllib.parse import quote
 from config import (
-    SCHEDULER_QUEUE_URL, SCHEDULER_UPDATE_URL, 
+    SCHEDULER_QUEUE_URL, SCHEDULER_UPDATE_URL, SCHEDULER_LOG_URL,
     OBJECT_STORE_URL, OBJECT_STORE_BUCKET, logger
 )
 
@@ -15,6 +15,20 @@ def download_job_archive(object_key: str) -> bytes:
     response = requests.get(download_url, timeout=30)
     response.raise_for_status()
     return response.content
+
+def send_log_lines(job_id: str, lines: list[str]) -> None:
+    """Stream build log lines to the scheduler for realtime UI display."""
+    if not lines:
+        return
+    try:
+        response = requests.post(
+            f"{SCHEDULER_LOG_URL}/{job_id}",
+            json={"lines": lines},
+            timeout=5,
+        )
+        response.raise_for_status()
+    except Exception as e:
+        logger.debug("Failed to stream logs for job %s: %s", job_id, e)
 
 def notify_scheduler_job_ready(job_id: str) -> bool:
     payload = {"job_id": job_id}

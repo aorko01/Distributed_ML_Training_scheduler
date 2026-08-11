@@ -1,14 +1,15 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { fetchJobById, streamJobLogs, type Job } from "../services/jobs";
+import {
+  fetchJobById,
+  fetchJobLogs,
+  streamJobLogs,
+  type Job,
+  type JobStatus,
+  type LogLine,
+} from "../services/jobs";
 import LogTerminal from "../components/LogTerminal";
 import { ArrowLeft, Download, Loader2 } from "lucide-react";
-
-interface LogLine {
-  type: "info" | "warn" | "error" | "success";
-  text: string;
-  timestamp: string;
-}
 
 interface ZipEntry {
   path: string;
@@ -168,6 +169,7 @@ const JobDetails: React.FC = () => {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [liveStatus, setLiveStatus] = useState<JobStatus | undefined>(undefined);
 
   const handleDownloadOutput = () => {
     if (!job) return;
@@ -198,11 +200,40 @@ const JobDetails: React.FC = () => {
   useEffect(() => {
     if (!id || !job) return;
 
-    const stopStream = streamJobLogs(id, (log) => {
-      setLogs((prev) => [...prev, log]);
-    });
+    let cancelled = false;
+    let stopStream: (() => void) | undefined;
 
-    return () => stopStream();
+    const isFinished = job.status === "Completed" || job.status === "Failed";
+
+    const load = async () => {
+      setLogs([]);
+
+      if (isFinished) {
+        // Finished jobs: logs come purely from the object store.
+        const stored = await fetchJobLogs(id);
+        if (!cancelled) setLogs(stored);
+        return;
+      }
+
+      // Running jobs: show object-store logs first, then stream realtime logs.
+      stopStream = streamJobLogs(id, {
+        onLog: (line) => {
+          if (!cancelled) setLogs((prev) => [...prev, line]);
+        },
+        onDone: (status) => {
+          if (cancelled) return;
+          if (status === "COMPLETED") setLiveStatus("Completed");
+          else if (status === "FAILED") setLiveStatus("Failed");
+        },
+      });
+    };
+
+    load();
+
+    return () => {
+      cancelled = true;
+      stopStream?.();
+    };
   }, [id, job]);
 
   if (loading) {
@@ -269,7 +300,7 @@ const JobDetails: React.FC = () => {
           <ArrowLeft size={20} />
         </button>
         <h1 style={{ margin: 0 }}>Job: {job.name}</h1>
-        {getStatusBadge(job.status)}
+        {getStatusBadge(liveStatus ?? job.status)}
         <button
           className="btn btn-primary"
           style={{

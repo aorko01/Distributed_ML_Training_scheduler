@@ -1,12 +1,15 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
+from jose import jwt, JWTError
 from app.db.database import SessionLocal
-from app.services import job_service
+from app.services import job_service, log_service
 from app.utils.file_utils import save_to_object_store
+from app.utils.auth import SECRET_KEY, ALGORITHM
 from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport
+from app.schemas.log_schema import LogLinesRequest
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
 from app.models.job_model import Job, JobStatus, JobPriority
@@ -21,6 +24,22 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _ws_authenticate(websocket: WebSocket, db: Session) -> User | None:
+    """Authenticate a WebSocket connection from a `token` query parameter
+    (browsers cannot set headers on WebSocket connections)."""
+    token = websocket.query_params.get("token")
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str | None = payload.get("sub")
+        if user_id is None:
+            return None
+    except JWTError:
+        return None
+    return db.query(User).filter(User.user_id == user_id).first()
 
 @router.post("/submit_job")
 async def submit_job(
@@ -68,6 +87,17 @@ async def submit_job(
 
     db_job = job_service.create_job(db, job_data)
     return db_job
+
+
+@router.post("/logs/{job_id}")
+async def ingest_job_logs(job_id: str, request: LogLinesRequest):
+    """Ingest realtime log lines from the Docker Image Builder / Worker
+    and append them to the job's Redis stream."""
+    try:
+        await log_service.publish_log_lines(job_id, request.lines)
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.post("/update_job_to_vram_estimation_pending")
@@ -246,6 +276,86 @@ def get_my_jobs_count(
         return {"count": count}
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.get("/{job_id}/logs")
+def get_job_logs(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Return the full build.log stored in the object store for a job.
+    Used for finished jobs and as the 'previous logs' shown before realtime."""
+    try:
+        job = job_service.get_user_job_by_id(db, current_user.user_id, job_id)
+        if job is None:
+            return {"error": "Job not found"}
+        content = log_service.fetch_build_log_from_object_store(job_id)
+        return {"job_id": job_id, "status": job["status"], "content": content}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.websocket("/{job_id}/logs/stream")
+async def job_logs_stream(websocket: WebSocket, job_id: str):
+    """Stream a job's logs in realtime.
+
+    On first connect (no `after` query param) it sends the full Redis stream
+    history via an `init` message, then forwards new entries as `log` messages.
+    On reconnect a client passes `?after=<last stream id>` to resume without
+    re-sending already-seen lines. A `done` message is sent when the job
+    reaches a terminal status.
+    """
+    await websocket.accept()
+
+    db = SessionLocal()
+    try:
+        user = _ws_authenticate(websocket, db)
+        if user is None:
+            await websocket.close(code=4401)
+            return
+
+        job = (
+            db.query(Job)
+            .filter(Job.id == job_id, Job.user_id == user.user_id)
+            .first()
+        )
+        if job is None:
+            await websocket.close(code=4404)
+            return
+
+        after = websocket.query_params.get("after")
+        last_id = "0"
+        if after:
+            last_id = after
+        else:
+            history = await log_service.get_log_stream_history(job_id)
+            if history:
+                last_id = history[-1]["id"]
+            await websocket.send_json({"type": "init", "lines": history})
+
+        while True:
+            messages = await log_service.read_log_stream(job_id, last_id)
+            for message in messages:
+                last_id = message["id"]
+                await websocket.send_json({"type": "log", **message})
+
+            job = (
+                db.query(Job)
+                .filter(Job.id == job_id, Job.user_id == user.user_id)
+                .first()
+            )
+            if job and job.status.value in log_service.TERMINAL_STATUSES:
+                await websocket.send_json({"type": "done", "status": job.status.value})
+                await websocket.close()
+                return
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        db.close()
 
 
 @router.get("/{job_id}")

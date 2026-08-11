@@ -39,6 +39,7 @@ services:
       REDIS_PORT: 6379
       OBJECT_STORE_URL: ${OBJECT_STORE_URL:-http://localhost:8010}
       OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-uploads}
+      OBJECT_OUTPUT_BUCKET: ${OBJECT_OUTPUT_BUCKET:-outputs}
   pgadmin:
     image: dpage/pgadmin4
     container_name: app-pgadmin

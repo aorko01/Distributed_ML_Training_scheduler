@@ -12,6 +12,7 @@ from config import (
     OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET, OBJECT_STORE_BUCKET,
 )
 from database import update_base_image_usage, get_old_base_images, remove_base_image_record
+from api import send_log_lines
 
 def docker_login(client: docker.DockerClient):
     if DOCKER_HUB_PASSWORD:
@@ -137,18 +138,23 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
             for chunk in build_logs:
                 if "stream" not in chunk or not chunk["stream"].strip():
                     continue
+                chunk_lines = []
                 for stream_line in chunk["stream"].splitlines():
                     stream_line = stream_line.strip()
                     if not stream_line or not should_upload_build_line(stream_line):
                         continue
 
                     build_log_buffer.append(stream_line)
+                    chunk_lines.append(stream_line)
                     logger.info("  [build] %s", stream_line)
                     last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
+                if chunk_lines:
+                    send_log_lines(job_id, chunk_lines)
         except docker.errors.BuildError as e:
             logger.error("Build failed for job %s: %s", job_id, e)
             if str(e).strip():
                 build_log_buffer.append(str(e).strip())
+                send_log_lines(job_id, [str(e).strip()])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
             return False
 

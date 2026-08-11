@@ -10,7 +10,7 @@ import docker
 
 from config import (
     OUTPUT_DIR, VRAM_ESTIMATION_SCRIPT, DOCKER_HUB_USERNAME,
-    CONTAINER_OUTPUT_MOUNT, LOG_UPLOAD_INTERVAL,
+    CONTAINER_OUTPUT_MOUNT, LOG_UPLOAD_INTERVAL, LOG_PUSH_INTERVAL,
 )
 from api import SchedulerAPI
 from object_store import ObjectStore
@@ -105,6 +105,8 @@ class JobExecutor:
 
         self._build_log_base = None
         self._last_log_upload = None
+        self._log_push_buffer = []
+        self._last_log_push = None
         log_buffer: list[str] = []
         success = False
 
@@ -117,6 +119,8 @@ class JobExecutor:
             for line in iter(proc.stdout.readline, ""):
                 line = line.rstrip("\n")
                 log_buffer.append(line)
+                self._log_push_buffer.append(line)
+                self._flush_log_push(job_id)
                 logger.info("[job %s] %s", job_id, line)
 
                 if time.monotonic() - (self._last_log_upload or 0) >= LOG_UPLOAD_INTERVAL:
@@ -127,6 +131,7 @@ class JobExecutor:
         except Exception as e:
             logger.error("Execution error for job %s: %s", job_id, e)
 
+        self._flush_log_push(job_id, force=True)
         self._append_build_log(job_id, store, log_buffer, force=True)
         monitor.stop()
 
@@ -139,6 +144,23 @@ class JobExecutor:
             logger.error(
                 "Job %s failed; output kept at %s", job_id, job_output_dir
             )
+
+    def _flush_log_push(self, job_id: str, force: bool = False):
+        if not self._log_push_buffer:
+            return
+
+        now = time.monotonic()
+        if (
+            not force
+            and self._last_log_push is not None
+            and (now - self._last_log_push) < LOG_PUSH_INTERVAL
+        ):
+            return
+
+        lines = self._log_push_buffer
+        self._log_push_buffer = []
+        self.api.send_logs(job_id, lines)
+        self._last_log_push = now
 
     def _append_build_log(
         self, job_id: str, store: ObjectStore, log_buffer: list[str], force: bool = False

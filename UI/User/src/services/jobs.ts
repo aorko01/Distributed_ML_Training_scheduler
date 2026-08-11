@@ -213,37 +213,159 @@ export const submitJob = async (
   };
 };
 
-type LogCallback = (log: { type: 'info' | 'warn' | 'error' | 'success', text: string, timestamp: string }) => void;
+export interface LogLine {
+  type: 'info' | 'warn' | 'error' | 'success';
+  text: string;
+  timestamp: string;
+}
 
-export const streamJobLogs = (_id: string, callback: LogCallback): () => void => {
-  let count = 0;
-  const baseLogs: Array<{ type: 'info' | 'warn' | 'error' | 'success', text: string }> = [
-    { type: 'info', text: 'Initializing Docker build environment...' },
-    { type: 'info', text: `Pulling base image pytorch/pytorch...` },
-    { type: 'info', text: 'Extracting user workspace zip...' },
-    { type: 'success', text: 'Workspace mounted successfully.' },
-    { type: 'info', text: 'Running bash script...' },
-    { type: 'warn', text: 'Warning: Unused import detected in script.' },
-  ];
+const classifyLogLine = (text: string): LogLine['type'] => {
+  const lower = text.toLowerCase();
+  if (/error|exception|traceback|failed/.test(lower)) return 'error';
+  if (/warn/.test(lower)) return 'warn';
+  if (/success|completed/.test(lower)) return 'success';
+  return 'info';
+};
 
-  for (let i = 1; i <= 50; i++) {
-    baseLogs.push({ type: 'info', text: `Epoch ${i}/100: Loss ${(2.5 / Math.sqrt(i)).toFixed(4)}, Accuracy ${(40 + i).toFixed(2)}%` });
+export const fetchJobLogs = async (id: string): Promise<LogLine[]> => {
+  try {
+    const data = await api.get<{ content?: string } | { error: string }>(
+      `/jobs/${id}/logs`,
+    );
+    if (hasError(data)) return [];
+    const content = (data.content ?? '').replace(/\r\n/g, '\n').trim();
+    if (!content) return [];
+    const now = new Date().toISOString();
+    return content.split('\n').filter(Boolean).map((text) => ({
+      type: classifyLogLine(text),
+      text,
+      timestamp: now,
+    }));
+  } catch {
+    return [];
   }
-  
-  baseLogs.push({ type: 'error', text: 'Error: CUDA out of memory. Tried to allocate 128.00 MiB...' });
+};
 
-  const interval = setInterval(() => {
-    if (count < baseLogs.length) {
-      const log = baseLogs[count];
-      callback({
-        ...log,
-        timestamp: new Date().toISOString()
-      });
-      count++;
-    } else {
-      clearInterval(interval);
+interface StreamLogEntry {
+  id: string;
+  line: string;
+  ts: number;
+}
+
+export interface StreamJobLogsOptions {
+  onLog: (line: LogLine) => void;
+  onDone?: (status: string) => void;
+}
+
+const toLogLine = (entry: StreamLogEntry): LogLine => ({
+  type: classifyLogLine(entry.line),
+  text: entry.line,
+  timestamp: new Date(entry.ts).toISOString(),
+});
+
+const mergeWithStored = (stored: LogLine[], history: LogLine[]): LogLine[] => {
+  if (stored.length === 0) return history;
+
+  const storedTexts = stored.map((line) => line.text);
+  const historyTexts = history.map((line) => line.text);
+  const maxK = Math.min(storedTexts.length, historyTexts.length);
+
+  let overlap = 0;
+  for (let k = maxK; k > 0; k -= 1) {
+    if (
+      historyTexts.slice(0, k).join('\n') ===
+      storedTexts.slice(storedTexts.length - k).join('\n')
+    ) {
+      overlap = k;
+      break;
     }
-  }, 300);
+  }
 
-  return () => clearInterval(interval);
+  return history.slice(overlap);
+};
+
+export const streamJobLogs = (
+  id: string,
+  options: StreamJobLogsOptions,
+): (() => void) => {
+  const wsBaseUrl = API_BASE_URL.replace(/^http/, 'ws');
+  const token = getToken() ?? '';
+
+  let ws: WebSocket | null = null;
+  let disposed = false;
+  let finished = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastStreamId: string | null = null;
+  let storedLogs: LogLine[] = [];
+
+  const connect = () => {
+    if (disposed || finished) return;
+
+    const params = new URLSearchParams({ token });
+    if (lastStreamId) params.set('after', lastStreamId);
+
+    ws = new WebSocket(`${wsBaseUrl}/jobs/${id}/logs/stream?${params.toString()}`);
+
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data) as {
+          type: string;
+          lines?: StreamLogEntry[];
+          id?: string;
+          line?: string;
+          ts?: number;
+          status?: string;
+        };
+
+        if (message.type === 'init' && Array.isArray(message.lines)) {
+          const history = message.lines.map(toLogLine);
+          if (message.lines.length > 0) {
+            lastStreamId = message.lines[message.lines.length - 1].id;
+          }
+          mergeWithStored(storedLogs, history).forEach((line) =>
+            options.onLog(line),
+          );
+        } else if (message.type === 'log' && message.line != null) {
+          if (message.id) lastStreamId = message.id;
+          options.onLog(
+            toLogLine({
+              id: message.id ?? '',
+              line: message.line,
+              ts: message.ts ?? Date.now(),
+            }),
+          );
+        } else if (message.type === 'done') {
+          finished = true;
+          options.onDone?.(message.status ?? '');
+          ws?.close();
+        }
+      } catch {
+        // Ignore malformed messages.
+      }
+    };
+
+    ws.onclose = () => {
+      if (!disposed && !finished) {
+        reconnectTimer = setTimeout(connect, 2000);
+      }
+    };
+    ws.onerror = () => ws?.close();
+  };
+
+  const start = async () => {
+    // Show previous logs already persisted in the object store first,
+    // then connect for realtime lines.
+    storedLogs = await fetchJobLogs(id);
+    if (disposed) return;
+    storedLogs.forEach((line) => options.onLog(line));
+    connect();
+  };
+
+  start();
+
+  return () => {
+    disposed = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    if (ws) ws.close();
+  };
 };
