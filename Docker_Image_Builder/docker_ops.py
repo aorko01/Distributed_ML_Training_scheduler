@@ -1,11 +1,14 @@
 import os
 import shutil
 import tempfile
+import time
 import docker
+import requests
 
 from config import (
-    DOCKER_HUB_USERNAME, DOCKER_HUB_PASSWORD, 
-    DEBUG_SAVE_LOCAL, DEBUG_LOCAL_DIR, logger
+    DOCKER_HUB_USERNAME, DOCKER_HUB_PASSWORD,
+    DEBUG_SAVE_LOCAL, DEBUG_LOCAL_DIR, logger,
+    OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET, OBJECT_STORE_BUCKET,
 )
 from database import update_base_image_usage, get_old_base_images, remove_base_image_record
 
@@ -47,6 +50,56 @@ def save_debug_copy(job_id: str, build_dir: str) -> None:
     except Exception as e:
         logger.error("Failed to save debug copy for job %s: %s", job_id, e)
 
+
+def upload_build_logs(job_id: str, log_text: str) -> str:
+    bucket_name = OBJECT_OUTPUT_BUCKET or OBJECT_STORE_BUCKET
+    object_key = f"{job_id}/build.log"
+    payload = log_text.encode("utf-8")
+
+    try:
+        response = requests.post(
+            f"{OBJECT_STORE_URL}/objects/upload",
+            data={"bucket": bucket_name, "object_key": object_key},
+            files={"file": ("build.log", payload, "text/plain")},
+            timeout=30,
+        )
+        response.raise_for_status()
+        logger.info("Uploaded build logs for job %s to %s/%s", job_id, bucket_name, object_key)
+    except Exception as exc:
+        logger.warning("Failed to upload build logs for job %s: %s", job_id, exc)
+
+    return object_key
+
+
+def should_upload_build_line(line: str) -> bool:
+    if not line:
+        return False
+
+    normalized = line.strip().lower()
+    if not normalized:
+        return False
+
+    if normalized.startswith("waiting"):
+        return False
+
+    if "pushing" in normalized or normalized.startswith("push"):
+        return False
+
+    return True
+
+
+def maybe_upload_build_logs(job_id: str, log_text: str, last_upload_time: float | None, force: bool = False) -> float | None:
+    if not log_text:
+        return last_upload_time
+
+    now = time.monotonic()
+    if not force and last_upload_time is not None and (now - last_upload_time) < 60:
+        return last_upload_time
+
+    upload_build_logs(job_id, log_text)
+    return now
+
+
 def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> bool:
     image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
@@ -71,21 +124,36 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
             save_debug_copy(job_id, build_dir)
 
         logger.info("Building image %s ...", image_tag)
+        build_log_buffer = []
+        last_upload_time = None
         try:
             _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True)
             for chunk in build_logs:
                 if "stream" in chunk and chunk["stream"].strip():
-                    logger.info("  [build] %s", chunk["stream"].strip())
+                    stream_line = chunk["stream"].strip()
+                    if not should_upload_build_line(stream_line):
+                        continue
+
+                    build_log_buffer.append(stream_line)
+                    logger.info("  [build] %s", stream_line)
+                    last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
         except docker.errors.BuildError as e:
             logger.error("Build failed for job %s: %s", job_id, e)
+            if str(e).strip():
+                build_log_buffer.append(str(e).strip())
+            maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
             return False
+
+        if build_log_buffer:
+            maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
         # Push image
         logger.info("Pushing image %s ...", image_tag)
         push_output = client.images.push(repository=f"{DOCKER_HUB_USERNAME}/{job_id}", tag="latest", stream=True, decode=True)
         for chunk in push_output:
             if "status" in chunk:
-                logger.info("  [push] %s %s", chunk["status"], chunk.get("progress", ""))
+                status_line = f"{chunk['status']} {chunk.get('progress', '')}".strip()
+                logger.info("  [push] %s", status_line)
             if "error" in chunk:
                 logger.error("Push error for job %s: %s", job_id, chunk["error"])
                 return False
