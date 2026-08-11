@@ -1,10 +1,12 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import Base, engine
 
 # Import routers
 from app.api.jobs_route import router as jobs_router
 from app.api.scheduler_route import router as scheduler_router
-from app.api.worker_route import router as workers_router  # include worker registration
+from app.api.worker_route import router as workers_router
+from app.api.auth_route import router as auth_router
 
 # Create FastAPI app
 app = FastAPI(
@@ -16,6 +18,15 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
+# CORS: allow all origins for now
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Create all tables (for development; in production use Alembic migrations)
 Base.metadata.create_all(bind=engine)
 
@@ -23,3 +34,4 @@ Base.metadata.create_all(bind=engine)
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 app.include_router(scheduler_router, prefix="/scheduler", tags=["scheduler"])
 app.include_router(workers_router, prefix="/workers", tags=["workers"])
+app.include_router(auth_router, tags=["auth"])

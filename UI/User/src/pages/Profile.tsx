@@ -1,33 +1,46 @@
 import React, { useState, useEffect } from 'react';
-import { getProfile, updateProfile } from '../services/auth';
+import { getProfile, updateProfile, type User as UserProfile } from '../services/auth';
 import { User, Loader2, CheckCircle2 } from 'lucide-react';
 
 const Profile: React.FC = () => {
-  const [profile, setProfile] = useState<{ username: string, name: string, email: string } | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    const data = getProfile();
-    if (data) {
-      setProfile(data);
-      setName(data.name || '');
-      setEmail(data.email || '');
-    }
-    setLoading(false);
+    const loadProfile = async () => {
+      try {
+        const data = await getProfile();
+        setProfile(data);
+        setName(data.name || '');
+        setEmail(data.email || '');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load profile.');
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadProfile();
   }, []);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setSaved(false);
-    await updateProfile({ name, email });
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    setError('');
+    try {
+      await updateProfile({ name, email });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update profile.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (loading) {
@@ -58,6 +71,11 @@ const Profile: React.FC = () => {
         </div>
 
         <form onSubmit={handleSave}>
+          {error && (
+            <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'var(--status-failed)', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.875rem' }}>
+              {error}
+            </div>
+          )}
           <div className="form-group">
             <label className="form-label">Full Name</label>
             <input 

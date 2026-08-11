@@ -1,76 +1,53 @@
+import { api, getToken, setToken, clearToken, setUsername, getUsername, clearUsername } from './api';
+
+export interface User {
+  user_id: string;
+  username: string;
+  email: string;
+  name: string | null;
+  is_active: boolean;
+  is_superuser: boolean;
+  created_at: string;
+}
+
+interface TokenResponse {
+  access_token: string;
+  token_type: string;
+}
+
 export const isAuthenticated = (): boolean => {
-  return localStorage.getItem('auth_token') !== null;
+  return getToken() !== null;
 };
 
-// Mock user database
-const users: Record<string, any> = {
-  admin: { password: 'admin', name: 'Admin User', email: 'admin@distributeml.com' }
+export const login = async (username: string, password: string): Promise<void> => {
+  const token = await api.post<TokenResponse>('/auth/login', { username, password });
+  setToken(token.access_token);
+  setUsername(username);
 };
 
-export const login = (username: string, password: string): Promise<boolean> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const user = users[username];
-      if (user && user.password === password) {
-        localStorage.setItem('auth_token', `dummy_token_${username}`);
-        localStorage.setItem('username', username);
-        resolve(true);
-      } else {
-        resolve(false);
-      }
-    }, 500);
-  });
+export const register = async (
+  username: string,
+  password: string,
+  name: string,
+  email: string,
+): Promise<void> => {
+  await api.post('/auth/register', { username, email, password, name: name || null });
+  const token = await api.post<TokenResponse>('/auth/login', { username, password });
+  setToken(token.access_token);
+  setUsername(username);
 };
 
-export const register = (username: string, password: string, name: string, email: string): Promise<boolean> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      if (users[username]) {
-        resolve(false); // User exists
-      } else {
-        users[username] = { password, name, email };
-        localStorage.setItem('auth_token', `dummy_token_${username}`);
-        localStorage.setItem('username', username);
-        resolve(true);
-      }
-    }, 500);
-  });
+export const logout = (): void => {
+  clearToken();
+  clearUsername();
 };
 
-export const logout = () => {
-  localStorage.removeItem('auth_token');
-  localStorage.removeItem('username');
+export const getProfile = async (): Promise<User> => {
+  return api.get<User>('/auth/me');
 };
 
-export const getProfile = () => {
-  const username = localStorage.getItem('username');
-  if (!username) return null;
-  const user = users[username];
-  if (!user) return null;
-  
-  // Also load from local storage to persist profile updates during this mock session
-  const storedProfile = localStorage.getItem(`profile_${username}`);
-  if (storedProfile) {
-    return JSON.parse(storedProfile);
-  }
-  
-  return { username, name: user.name, email: user.email };
+export const updateProfile = async (profile: { name: string; email: string }): Promise<User> => {
+  return api.patch<User>('/auth/me', profile);
 };
 
-export const updateProfile = (profile: { name: string, email: string }): Promise<boolean> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const username = localStorage.getItem('username');
-      if (username) {
-        if (users[username]) {
-          users[username].name = profile.name;
-          users[username].email = profile.email;
-        }
-        localStorage.setItem(`profile_${username}`, JSON.stringify({ username, ...profile }));
-        resolve(true);
-      } else {
-        resolve(false);
-      }
-    }, 400);
-  });
-};
+export { getUsername };

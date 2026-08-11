@@ -21,13 +21,14 @@ const Login: React.FC = () => {
     setLoading(true);
     setError('');
 
-    const success = await login(username, password);
-    if (success) {
+    try {
+      await login(username, password);
       navigate('/');
-    } else {
-      setError('Invalid credentials. Use admin/admin for demo.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Invalid username or password.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (

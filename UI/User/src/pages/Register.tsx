@@ -23,13 +23,14 @@ const Register: React.FC = () => {
     setLoading(true);
     setError('');
 
-    const success = await register(username, password, name, email);
-    if (success) {
+    try {
+      await register(username, password, name, email);
       navigate('/');
-    } else {
-      setError('Username already exists.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Registration failed. Please try again.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
