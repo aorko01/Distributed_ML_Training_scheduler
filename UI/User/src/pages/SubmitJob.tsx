@@ -7,6 +7,8 @@ import { UploadCloud, CheckCircle2 } from 'lucide-react';
 const SubmitJob: React.FC = () => {
   const [jobName, setJobName] = useState('');
   const [versions, setVersions] = useState<PytorchVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(true);
+  const [versionError, setVersionError] = useState('');
   const [selectedPyTorch, setSelectedPyTorch] = useState('');
   const [selectedCuda, setSelectedCuda] = useState('');
   const [bashScript, setBashScript] = useState('python train.py --epochs 100 --batch-size 32');
@@ -19,11 +21,19 @@ const SubmitJob: React.FC = () => {
 
   useEffect(() => {
     const loadVersions = async () => {
-      const data = await fetchPytorchVersions();
-      setVersions(data);
-      if (data.length > 0) {
-        setSelectedPyTorch(data[0].version);
-        setSelectedCuda(data[0].cudaVersions[0]);
+      setLoadingVersions(true);
+      setVersionError('');
+      try {
+        const data = await fetchPytorchVersions();
+        setVersions(data);
+        if (data.length > 0) {
+          setSelectedPyTorch(data[0].version);
+          setSelectedCuda(data[0].cudaVersions[0]);
+        }
+      } catch (err) {
+        setVersionError(err instanceof Error ? err.message : 'Failed to load PyTorch versions.');
+      } finally {
+        setLoadingVersions(false);
       }
     };
     loadVersions();
@@ -91,11 +101,19 @@ const SubmitJob: React.FC = () => {
                 className="form-select"
                 value={selectedPyTorch}
                 onChange={handlePyTorchChange}
+                disabled={loadingVersions || versions.length === 0}
               >
+                {loadingVersions && <option>Loading versions...</option>}
+                {versionError && <option>Failed to load versions</option>}
                 {versions.map(v => (
                   <option key={v.version} value={v.version}>{v.version}</option>
                 ))}
               </select>
+              {versionError && (
+                <p style={{ fontSize: '0.75rem', color: 'var(--status-failed)', marginTop: '0.25rem' }}>
+                  {versionError}
+                </p>
+              )}
             </div>
             <div className="form-group">
               <label className="form-label">CUDA Version</label>
@@ -103,8 +121,10 @@ const SubmitJob: React.FC = () => {
                 className="form-select"
                 value={selectedCuda}
                 onChange={e => setSelectedCuda(e.target.value)}
-                disabled={availableCudas.length === 0}
+                disabled={loadingVersions || availableCudas.length === 0}
               >
+                {loadingVersions && <option>Loading CUDA versions...</option>}
+                {!loadingVersions && availableCudas.length === 0 && <option>No CUDA variants</option>}
                 {availableCudas.map(c => (
                   <option key={c} value={c}>{c}</option>
                 ))}
