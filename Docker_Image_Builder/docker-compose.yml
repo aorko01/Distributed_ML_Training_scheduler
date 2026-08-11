@@ -8,7 +8,7 @@ services:
     volumes:
       # Mount the Docker socket so we can build images from inside the container
       - /var/run/docker.sock:/var/run/docker.sock
-      # Persist the processed-jobs tracker across restarts
+      # Persist the processed-jobs and base-images tracker across restarts
       - builder-data:/data
       - ./debug_jobs:/app/debug_jobs   
 

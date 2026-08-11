@@ -20,6 +20,7 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY builder.py .
+# Copy all python source modules
+COPY *.py ./
 
 CMD ["python", "-u", "builder.py"]
