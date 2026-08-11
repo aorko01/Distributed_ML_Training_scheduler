@@ -8,7 +8,7 @@ import types
 
 import torch
 
-
+# Configuration from environment
 PATIENCE = int(os.environ.get("VRAM_PROBE_PATIENCE", "2"))
 MIN_STEPS = int(os.environ.get("VRAM_PROBE_MIN_STEPS", "2"))
 MAX_STEPS = int(os.environ.get("VRAM_PROBE_MAX_STEPS", "20"))
@@ -37,6 +37,7 @@ def estimate(target, target_args):
             torch.cuda.synchronize()
             now = time.perf_counter()
             peak_reserved_memory = torch.cuda.max_memory_reserved() / 1e9
+            
             if state["last_step_time"] is not None:
                 step_times.append(now - state["last_step_time"])
             state["last_step_time"] = now
@@ -61,15 +62,14 @@ def estimate(target, target_args):
 
     try:
         runpy.run_path(target, run_name="__main__")
-    except ProbeDone:
-        pass
-    except SystemExit:
+    except (ProbeDone, SystemExit):
         pass
     finally:
         torch.optim.Optimizer.__init__ = original_init
 
     durations = step_times[TIMING_WARMUP_STEPS:] or step_times
     step_wall_time = sum(durations) / len(durations) if durations else None
+    
     return {
         "peak_reserved_memory": round(torch.cuda.max_memory_reserved() / 1e9, 3),
         "step_wall_time": round(step_wall_time, 4) if step_wall_time is not None else None,
