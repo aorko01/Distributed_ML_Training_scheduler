@@ -13,13 +13,21 @@ BASE_URL = BASE_URL.rstrip("/")
 REGISTER_URL = f"{BASE_URL}/workers/register"
 HEARTBEAT_URL = f"{BASE_URL}/workers/heartbeat"
 PULL_JOB_URL = f"{BASE_URL}/jobs/pull_job"
-UPLOAD_OUTPUT_URL = f"{BASE_URL}/jobs/upload_output"
 SAVE_VRAM_ESTIMATION_URL = f"{BASE_URL}/jobs/save_vram_estimation"
+MARK_COMPLETED_URL = f"{BASE_URL}/jobs/mark_completed"
+
+# Object Store
+OBJECT_STORE_URL = os.getenv("OBJECT_STORE_URL", "http://localhost:8010").rstrip("/")
+OBJECT_OUTPUT_BUCKET = os.getenv("OBJECT_OUTPUT_BUCKET", "outputs")
 
 # Intervals and Auth
 HEARTBEAT_INTERVAL = 5
 JOB_POLL_INTERVAL = 10
 DOCKER_HUB_USERNAME = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
+
+# Container execution
+CONTAINER_OUTPUT_MOUNT = os.getenv("CONTAINER_OUTPUT_MOUNT", "/output")
+LOG_UPLOAD_INTERVAL = int(os.getenv("LOG_UPLOAD_INTERVAL", "60"))
 
 # File Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

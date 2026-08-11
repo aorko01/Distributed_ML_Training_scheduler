@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -71,6 +72,9 @@ def upload_build_logs(job_id: str, log_text: str) -> str:
     return object_key
 
 
+_STEP_PREFIX_RE = re.compile(r"^#\d+\s+")
+
+
 def should_upload_build_line(line: str) -> bool:
     if not line:
         return False
@@ -79,10 +83,12 @@ def should_upload_build_line(line: str) -> bool:
     if not normalized:
         return False
 
+    normalized = _STEP_PREFIX_RE.sub("", normalized)
+
     if normalized.startswith("waiting"):
         return False
 
-    if "pushing" in normalized or normalized.startswith("push"):
+    if normalized.startswith("push") or "pushing" in normalized:
         return False
 
     return True
@@ -129,9 +135,11 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         try:
             _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True)
             for chunk in build_logs:
-                if "stream" in chunk and chunk["stream"].strip():
-                    stream_line = chunk["stream"].strip()
-                    if not should_upload_build_line(stream_line):
+                if "stream" not in chunk or not chunk["stream"].strip():
+                    continue
+                for stream_line in chunk["stream"].splitlines():
+                    stream_line = stream_line.strip()
+                    if not stream_line or not should_upload_build_line(stream_line):
                         continue
 
                     build_log_buffer.append(stream_line)

@@ -1,13 +1,20 @@
 import os
 import json
 import shlex
+import shutil
 import logging
 import subprocess
 import tempfile
+import time
 import docker
 
-from config import OUTPUT_DIR, VRAM_ESTIMATION_SCRIPT, DOCKER_HUB_USERNAME
+from config import (
+    OUTPUT_DIR, VRAM_ESTIMATION_SCRIPT, DOCKER_HUB_USERNAME,
+    CONTAINER_OUTPUT_MOUNT, LOG_UPLOAD_INTERVAL,
+)
 from api import SchedulerAPI
+from object_store import ObjectStore
+from output_monitor import OutputFileMonitor
 
 logger = logging.getLogger("executor")
 
@@ -81,24 +88,87 @@ class JobExecutor:
 
     def handle_training(self, job_id: str, image_name: str):
         logger.info("Training job received for job %s.", job_id)
-        cmd = ["docker", "run", "--rm", "--gpus", "all", image_name]
+
+        job_output_dir = os.path.join(OUTPUT_DIR, job_id)
+        os.makedirs(job_output_dir, exist_ok=True)
+
+        store = ObjectStore()
+        monitor = OutputFileMonitor(job_id, job_output_dir, store)
+        monitor.start()
+
+        cmd = [
+            "docker", "run", "--rm", "--gpus", "all",
+            "-v", f"{job_output_dir}:{CONTAINER_OUTPUT_MOUNT}",
+            image_name,
+        ]
         logger.info("Running container: %s", " ".join(cmd))
 
+        self._build_log_base = None
+        self._last_log_upload = None
+        log_buffer: list[str] = []
+        success = False
+
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            log_file = os.path.join(OUTPUT_DIR, f"{job_id}.txt")
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
 
-            with open(log_file, "w", encoding="utf-8") as f:
-                f.write(res.stdout + "\n" + res.stderr)
+            for line in iter(proc.stdout.readline, ""):
+                line = line.rstrip("\n")
+                log_buffer.append(line)
+                logger.info("[job %s] %s", job_id, line)
 
-            if res.returncode == 0:
-                logger.info("Job %s completed successfully.", job_id)
-            else:
-                logger.error("Job %s failed with exit code %d.", job_id, res.returncode)
+                if time.monotonic() - (self._last_log_upload or 0) >= LOG_UPLOAD_INTERVAL:
+                    self._append_build_log(job_id, store, log_buffer)
 
-            self.api.upload_output(job_id, log_file)
+            proc.wait()
+            success = proc.returncode == 0
         except Exception as e:
             logger.error("Execution error for job %s: %s", job_id, e)
+
+        self._append_build_log(job_id, store, log_buffer, force=True)
+        monitor.stop()
+
+        if success:
+            logger.info("Job %s completed successfully.", job_id)
+            self.api.mark_job_completed(job_id)
+            shutil.rmtree(job_output_dir, ignore_errors=True)
+            logger.info("Deleted output directory for job %s.", job_id)
+        else:
+            logger.error(
+                "Job %s failed; output kept at %s", job_id, job_output_dir
+            )
+
+    def _append_build_log(
+        self, job_id: str, store: ObjectStore, log_buffer: list[str], force: bool = False
+    ):
+        if not log_buffer:
+            return
+
+        now = time.monotonic()
+        if (
+            not force
+            and self._last_log_upload is not None
+            and (now - self._last_log_upload) < LOG_UPLOAD_INTERVAL
+        ):
+            return
+
+        if self._build_log_base is None:
+            existing = store.download(f"{job_id}/build.log")
+            self._build_log_base = (
+                existing.decode("utf-8", errors="replace") if existing else ""
+            )
+
+        content = self._build_log_base
+        if content and not content.endswith("\n"):
+            content += "\n"
+        content += "\n".join(log_buffer) + "\n"
+
+        if store.upload_bytes(
+            f"{job_id}/build.log", content.encode("utf-8"), "text/plain"
+        ):
+            self._last_log_upload = now
 
     def process_job(self, job: dict):
         job_id = job.get("job_id") or job.get("id")

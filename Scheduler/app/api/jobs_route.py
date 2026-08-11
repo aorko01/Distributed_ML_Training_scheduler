@@ -134,6 +134,15 @@ def update_job_to_runnable(request: JobIDRequest, db: Session = Depends(get_db))
         return {"error": str(e)}
 
 
+@router.post("/mark_completed")
+def mark_job_completed(request: JobIDRequest, db: Session = Depends(get_db)):
+    try:
+        job = job_service.set_to_completed(db, request.job_id)
+        return {"job_id": job.id, "status": job.status.value}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.post("/upload_output")
 async def upload_output_file(
     file: UploadFile = File(...), db: Session = Depends(get_db)

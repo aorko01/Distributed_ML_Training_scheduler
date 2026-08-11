@@ -1,9 +1,8 @@
-import os
 import requests
 import logging
 from config import (
-    REGISTER_URL, HEARTBEAT_URL, PULL_JOB_URL, 
-    UPLOAD_OUTPUT_URL, SAVE_VRAM_ESTIMATION_URL
+    REGISTER_URL, HEARTBEAT_URL, PULL_JOB_URL,
+    SAVE_VRAM_ESTIMATION_URL, MARK_COMPLETED_URL,
 )
 
 logger = logging.getLogger("api")
@@ -55,18 +54,13 @@ class SchedulerAPI:
             logger.error("Failed to pull job: %s", e)
             return None
 
-    def upload_output(self, job_id: str, file_path: str):
-        if not os.path.exists(file_path):
-            logger.error("Output file not found: %s", file_path)
-            return
-
+    def mark_job_completed(self, job_id: str):
         try:
-            with open(file_path, "rb") as f:
-                files = {"file": (os.path.basename(file_path), f)}
-                resp = requests.post(UPLOAD_OUTPUT_URL, files=files, timeout=30)
-                logger.info("Uploaded output for job %s: %s", job_id, resp.text)
+            resp = requests.post(MARK_COMPLETED_URL, json={"job_id": job_id}, timeout=10)
+            resp.raise_for_status()
+            logger.info("Marked job %s completed: %s", job_id, resp.json())
         except Exception as e:
-            logger.error("Failed to upload output file for job %s: %s", job_id, e)
+            logger.error("Failed to mark job %s completed: %s", job_id, e)
 
     def save_vram_estimation(self, job_id: str, report: dict):
         payload = {
