@@ -9,7 +9,7 @@ from app.utils.file_utils import save_to_object_store
 from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
-from app.models.job_model import JobPriority
+from app.models.job_model import Job, JobStatus, JobPriority
 from app.api.deps import get_current_active_user
 
 
@@ -194,10 +194,61 @@ def get_output_by_id(request: JobIDRequest, db: Session = Depends(get_db)):
         with open(file_path, "r") as f:
             content = f.read()
 
-        job = db.query(job_service.Job).filter(job_service.Job.id == job_id).first()
+        job = db.query(Job).filter(Job.id == job_id).first()
         status = job.status.value if job else "UNKNOWN"
 
         return {"job_id": job_id, "status": status, "content": content}
 
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/queue_length")
+def get_queue_length(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        count = job_service.get_runnable_jobs_count(db)
+        return {"queue_length": count}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/mine")
+def get_my_jobs(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        jobs = job_service.get_user_jobs(db, current_user.user_id)
+        return {"jobs": jobs}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/mine/count")
+def get_my_jobs_count(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        count = job_service.get_user_jobs_count(db, current_user.user_id)
+        return {"count": count}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/{job_id}")
+def get_job_by_id(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        job = job_service.get_user_job_by_id(db, current_user.user_id, job_id)
+        if job is None:
+            return {"error": "Job not found"}
+        return job
     except Exception as e:
         return {"error": str(e)}

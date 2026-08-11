@@ -244,3 +244,67 @@ def set_to_completed(db: Session, job_id: str):
     db.refresh(job)
 
     return job
+
+
+def get_runnable_jobs_count(db: Session) -> int:
+    """Total number of jobs waiting in the queue (RUNNABLE)."""
+    return db.query(Job).filter(Job.status == JobStatus.RUNNABLE).count()
+
+
+def get_user_jobs(db: Session, user_id: str):
+    jobs = (
+        db.query(Job)
+        .filter(Job.user_id == user_id)
+        .order_by(Job.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": job.id,
+            "user_id": job.user_id,
+            "object_key": job.object_key,
+            "command": job.command,
+            "docker_base_image": job.docker_base_image,
+            "config": job.config,
+            "status": job.status.value,
+            "priority": job.priority.value,
+            "reason_for_priority": job.reason_for_priority,
+            "vram_required": job.vram_required,
+            "step_time": job.step_time,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+        }
+        for job in jobs
+    ]
+
+
+def get_user_jobs_count(db: Session, user_id: str) -> int:
+    return db.query(Job).filter(Job.user_id == user_id).count()
+
+
+def get_user_job_by_id(db: Session, user_id: str, job_id: str):
+    job = (
+        db.query(Job)
+        .filter(Job.id == job_id, Job.user_id == user_id)
+        .first()
+    )
+
+    if not job:
+        return None
+
+    return {
+        "id": job.id,
+        "user_id": job.user_id,
+        "object_key": job.object_key,
+        "command": job.command,
+        "docker_base_image": job.docker_base_image,
+        "config": job.config,
+        "status": job.status.value,
+        "priority": job.priority.value,
+        "reason_for_priority": job.reason_for_priority,
+        "vram_required": job.vram_required,
+        "step_time": job.step_time,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }

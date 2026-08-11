@@ -1,27 +1,51 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchClusterStats, type ClusterStats } from '../services/stats';
-import { fetchJobs, type Job } from '../services/jobs';
+import { fetchJobs, type Job, type JobStatus } from '../services/jobs';
 import { Activity, Clock, Server, CheckCircle2, Loader2 } from 'lucide-react';
+
+type StatusFilter = 'All' | JobStatus;
+type SortKey = 'newest' | 'oldest' | 'name' | 'gpuHours';
 
 const Dashboard: React.FC = () => {
   const [stats, setStats] = useState<ClusterStats | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
+  const [sortBy, setSortBy] = useState<SortKey>('newest');
   const navigate = useNavigate();
 
   useEffect(() => {
     const loadData = async () => {
-      const [statsData, jobsData] = await Promise.all([
-        fetchClusterStats(),
-        fetchJobs()
-      ]);
-      setStats(statsData);
-      setJobs(jobsData);
-      setLoading(false);
+      try {
+        const [statsData, jobsData] = await Promise.all([
+          fetchClusterStats(),
+          fetchJobs()
+        ]);
+        setStats(statsData);
+        setJobs(jobsData);
+      } finally {
+        setLoading(false);
+      }
     };
     loadData();
   }, []);
+
+  const visibleJobs = useMemo(() => {
+    const filtered = statusFilter === 'All'
+      ? jobs
+      : jobs.filter(job => job.status === statusFilter);
+
+    return [...filtered].sort((a, b) => {
+      switch (sortBy) {
+        case 'oldest': return new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime();
+        case 'name': return a.name.localeCompare(b.name);
+        case 'gpuHours': return b.gpuHours - a.gpuHours;
+        case 'newest':
+        default: return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
+      }
+    });
+  }, [jobs, statusFilter, sortBy]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -69,10 +93,10 @@ const Dashboard: React.FC = () => {
           </div>
           <div className="metric-card">
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <div className="metric-title">Active Jobs</div>
+              <div className="metric-title">Job Count</div>
               <CheckCircle2 size={20} color="var(--text-secondary)" />
             </div>
-            <div className="metric-value">{stats.activeJobs}</div>
+            <div className="metric-value">{stats.jobCount}</div>
           </div>
           <div className="metric-card">
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -84,30 +108,72 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      <h2>Recent Jobs</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
+        <h2 style={{ margin: 0 }}>My Jobs</h2>
+        <div style={{ display: 'flex', gap: '1rem' }}>
+          <div>
+            <label className="form-label">Filter</label>
+            <select
+              className="form-select"
+              style={{ width: 'auto', padding: '0.5rem 1rem' }}
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value as StatusFilter)}
+            >
+              <option value="All">All Statuses</option>
+              <option value="Pending">Pending</option>
+              <option value="Building">Building</option>
+              <option value="Running">Running</option>
+              <option value="Completed">Completed</option>
+              <option value="Failed">Failed</option>
+            </select>
+          </div>
+          <div>
+            <label className="form-label">Sort By</label>
+            <select
+              className="form-select"
+              style={{ width: 'auto', padding: '0.5rem 1rem' }}
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value as SortKey)}
+            >
+              <option value="newest">Newest First</option>
+              <option value="oldest">Oldest First</option>
+              <option value="name">Name (A-Z)</option>
+              <option value="gpuHours">GPU Hours</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <div className="table-container">
         <table>
           <thead>
             <tr>
-              <th>Job ID</th>
               <th>Name</th>
               <th>Status</th>
               <th>Environment</th>
+              <th>Device</th>
               <th>Submitted At</th>
               <th>GPU Hrs</th>
             </tr>
           </thead>
           <tbody>
-            {jobs.map(job => (
+            {visibleJobs.length === 0 && (
+              <tr>
+                <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                  No jobs match the current filters.
+                </td>
+              </tr>
+            )}
+            {visibleJobs.map(job => (
               <tr 
                 key={job.id} 
                 className="job-row"
                 onClick={() => navigate(`/jobs/${job.id}`)}
               >
-                <td><span style={{ fontFamily: 'monospace' }}>{job.id}</span></td>
                 <td style={{ fontWeight: 500 }}>{job.name}</td>
                 <td>{getStatusBadge(job.status)}</td>
                 <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
+                <td><span style={{ fontFamily: 'monospace' }}>{job.device}</span></td>
                 <td>{formatDate(job.submittedAt)}</td>
                 <td>{job.gpuHours.toFixed(2)}</td>
               </tr>

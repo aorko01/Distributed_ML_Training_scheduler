@@ -1,4 +1,4 @@
-import { getToken, type ApiError } from './api';
+import { api, getToken, type ApiError } from './api';
 
 export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed';
 
@@ -10,8 +10,67 @@ export interface Job {
   cudaVersion: string;
   submittedAt: string;
   gpuHours: number;
+  device: string;
   queuePosition?: number;
 }
+
+interface BackendJob {
+  id: string;
+  user_id: string;
+  object_key: string;
+  command: string;
+  docker_base_image: string;
+  config: unknown;
+  status: string;
+  priority: string;
+  reason_for_priority: string | null;
+  vram_required: number | null;
+  step_time: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const DUMMY_DEVICES = ['A100 80GB', 'H100 80GB', 'L4 24GB', 'V100 16GB'];
+
+const mapStatus = (status: string): JobStatus => {
+  switch (status) {
+    case 'NOT_RUNNABLE': return 'Pending';
+    case 'VRAM_ESTIMATION_PENDING': return 'Building';
+    case 'RUNNABLE': return 'Pending';
+    case 'IN_PROGRESS': return 'Running';
+    case 'COMPLETED': return 'Completed';
+    case 'FAILED': return 'Failed';
+    default: return 'Pending';
+  }
+};
+
+const parseEnvironment = (image: string): { pytorchVersion: string; cudaVersion: string } => {
+  const tag = image.split(':').pop() ?? '';
+  const match = tag.match(/^(?<pytorch>[\d.]+)-cuda(?<cuda>[\d.]+)-cudnn.*-runtime$/);
+  return {
+    pytorchVersion: match?.groups?.pytorch ?? 'unknown',
+    cudaVersion: match?.groups?.cuda ?? 'unknown',
+  };
+};
+
+const getJobName = (job: BackendJob): string => {
+  const firstLine = job.command.split('\n').map(line => line.trim()).find(line => line.length > 0);
+  return firstLine ?? job.id;
+};
+
+const mapJob = (job: BackendJob, index: number): Job => {
+  const env = parseEnvironment(job.docker_base_image);
+  return {
+    id: job.id,
+    name: getJobName(job),
+    status: mapStatus(job.status),
+    pytorchVersion: env.pytorchVersion,
+    cudaVersion: env.cudaVersion,
+    submittedAt: job.created_at,
+    gpuHours: 0,
+    device: DUMMY_DEVICES[index % DUMMY_DEVICES.length],
+  };
+};
 
 let mockJobs: Job[] = [
   {
@@ -22,6 +81,7 @@ let mockJobs: Job[] = [
     cudaVersion: '12.1',
     submittedAt: new Date(Date.now() - 3600000).toISOString(),
     gpuHours: 1.2,
+    device: 'A100 80GB',
     queuePosition: 0
   },
   {
@@ -32,6 +92,7 @@ let mockJobs: Job[] = [
     cudaVersion: '11.8',
     submittedAt: new Date(Date.now() - 86400000).toISOString(),
     gpuHours: 14.5,
+    device: 'H100 80GB',
     queuePosition: 0
   },
   {
@@ -42,20 +103,37 @@ let mockJobs: Job[] = [
     cudaVersion: '11.8',
     submittedAt: new Date(Date.now() - 7200000).toISOString(),
     gpuHours: 0.1,
+    device: 'L4 24GB',
     queuePosition: 0
   }
 ];
 
+const hasError = (body: unknown): body is { error: string } => {
+  return body !== null && typeof body === 'object' && 'error' in body;
+};
+
 export const fetchJobs = async (): Promise<Job[]> => {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve([...mockJobs]), 500);
-  });
+  try {
+    const data = await api.get<{ jobs?: BackendJob[] } | { error: string }>('/jobs/mine');
+    if (hasError(data)) {
+      throw new Error(data.error);
+    }
+    return (data.jobs ?? []).map(mapJob);
+  } catch {
+    return [...mockJobs];
+  }
 };
 
 export const fetchJobById = async (id: string): Promise<Job | undefined> => {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve(mockJobs.find(j => j.id === id)), 300);
-  });
+  try {
+    const data = await api.get<BackendJob | { error: string }>(`/jobs/${id}`);
+    if (hasError(data)) {
+      throw new Error(data.error);
+    }
+    return mapJob(data as BackendJob, 0);
+  } catch {
+    return mockJobs.find(j => j.id === id);
+  }
 };
 
 export interface SubmitJobPayload {
@@ -130,6 +208,7 @@ export const submitJob = async (
     cudaVersion: jobData.cudaVersion,
     submittedAt: job.created_at ?? new Date().toISOString(),
     gpuHours: 0,
+    device: DUMMY_DEVICES[0],
     queuePosition: undefined,
   };
 };
