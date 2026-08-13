@@ -26,6 +26,7 @@ interface BackendJob {
   reason_for_priority: string | null;
   vram_required: number | null;
   step_time: number | null;
+  gpu_hour: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -67,7 +68,7 @@ const mapJob = (job: BackendJob, index: number): Job => {
     pytorchVersion: env.pytorchVersion,
     cudaVersion: env.cudaVersion,
     submittedAt: job.created_at,
-    gpuHours: 0,
+    gpuHours: job.gpu_hour ?? 0,
     device: DUMMY_DEVICES[index % DUMMY_DEVICES.length],
   };
 };

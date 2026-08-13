@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from app.models.worker_model import Worker
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
@@ -195,6 +197,7 @@ def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict |
         return None
 
     job.status = JobStatus.IN_PROGRESS
+    job.started_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(job)
 
@@ -240,6 +243,13 @@ def set_to_completed(db: Session, job_id: str):
 
     job.status = JobStatus.COMPLETED
 
+    if job.started_at is not None:
+        started_at = job.started_at
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        elapsed_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        job.gpu_hour = max(elapsed_seconds, 0.0) / 3600.0
+
     db.commit()
     db.refresh(job)
 
@@ -272,6 +282,7 @@ def get_user_jobs(db: Session, user_id: str):
             "reason_for_priority": job.reason_for_priority,
             "vram_required": job.vram_required,
             "step_time": job.step_time,
+            "gpu_hour": job.gpu_hour,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
         }
@@ -281,6 +292,12 @@ def get_user_jobs(db: Session, user_id: str):
 
 def get_user_jobs_count(db: Session, user_id: str) -> int:
     return db.query(Job).filter(Job.user_id == user_id).count()
+
+
+def get_user_gpu_hours(db: Session, user_id: str) -> float:
+    """Sum the gpu_hour of every job belonging to the user."""
+    jobs = db.query(Job).filter(Job.user_id == user_id).all()
+    return sum(job.gpu_hour for job in jobs if job.gpu_hour is not None)
 
 
 def get_user_job_by_id(db: Session, user_id: str, job_id: str):
@@ -305,6 +322,7 @@ def get_user_job_by_id(db: Session, user_id: str, job_id: str):
         "reason_for_priority": job.reason_for_priority,
         "vram_required": job.vram_required,
         "step_time": job.step_time,
+        "gpu_hour": job.gpu_hour,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }

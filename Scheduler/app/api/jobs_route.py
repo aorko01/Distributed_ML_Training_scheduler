@@ -278,6 +278,18 @@ def get_my_jobs_count(
         return {"error": str(e)}
 
 
+@router.get("/mine/gpu_hours")
+def get_my_jobs_gpu_hours(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        gpu_hours = job_service.get_user_gpu_hours(db, current_user.user_id)
+        return {"gpu_hours": gpu_hours}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.get("/{job_id}/logs")
 def get_job_logs(
     job_id: str,

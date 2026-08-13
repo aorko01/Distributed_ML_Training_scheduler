@@ -46,5 +46,9 @@ class Job(Base):
     vram_required = Column(Float, nullable=True)  # in GB
     step_time = Column(Float, nullable=True)  # in seconds per step
 
+    # Runtime accounting
+    gpu_hour = Column(Float, nullable=True)  # GPU hours used, set when the job completes
+    started_at = Column(DateTime(timezone=True), nullable=True)  # when the job started running (IN_PROGRESS)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

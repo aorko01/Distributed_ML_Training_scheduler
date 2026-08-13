@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.core.redis import redis_client
 from app.models.worker_model import Worker
 from app.db.database import SessionLocal
@@ -6,6 +7,12 @@ from app.schemas.heartbeat_schema import HeartbeatSchema
 import time
 
 HEARTBEAT_TTL = 15
+
+
+def get_total_gpus(db: Session) -> int:
+    """Total number of GPUs across all registered workers."""
+    total = db.query(func.coalesce(func.sum(Worker.num_gpus), 0)).scalar()
+    return int(total)
 
 def register_or_update_worker_service(db: Session, worker_info):
     """Registers or updates a worker in DB (sync)"""

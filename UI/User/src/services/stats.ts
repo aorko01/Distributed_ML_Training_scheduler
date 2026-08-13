@@ -7,28 +7,27 @@ export interface ClusterStats {
   totalNodes: number;
 }
 
-const DUMMY_GPU_HOURS = 1245.5;
-const DUMMY_TOTAL_NODES = 8;
-
 export const fetchClusterStats = async (): Promise<ClusterStats> => {
   try {
-    const [queueRes, countRes] = await Promise.all([
+    const [queueRes, countRes, gpuHoursRes, totalGpusRes] = await Promise.all([
       api.get<{ queue_length?: number }>('/jobs/queue_length'),
       api.get<{ count?: number }>('/jobs/mine/count'),
+      api.get<{ gpu_hours?: number }>('/jobs/mine/gpu_hours'),
+      api.get<{ total_gpus?: number }>('/workers/total_gpus'),
     ]);
 
     return {
       queueLength: queueRes.queue_length ?? 0,
-      gpuHoursUsed: DUMMY_GPU_HOURS,
+      gpuHoursUsed: gpuHoursRes.gpu_hours ?? 0,
       jobCount: countRes.count ?? 0,
-      totalNodes: DUMMY_TOTAL_NODES,
+      totalNodes: totalGpusRes.total_gpus ?? 0,
     };
   } catch {
     return {
-      queueLength: 14,
-      gpuHoursUsed: DUMMY_GPU_HOURS,
-      jobCount: 3,
-      totalNodes: DUMMY_TOTAL_NODES,
+      queueLength: 0,
+      gpuHoursUsed: 0,
+      jobCount: 0,
+      totalNodes: 0,
     };
   }
 };

@@ -29,3 +29,10 @@ async def worker_heartbeat(Heartbeat: HeartbeatSchema):
     if not success:
         raise HTTPException(status_code=404, detail="Worker not registered")
     return HeartbeatResponse(status="success", worker_id=Heartbeat.worker_id)
+
+
+@router.get("/total_gpus")
+def get_total_gpus(db: Session = Depends(get_db)):
+    """Returns the total number of GPUs across all registered workers."""
+    total = worker_service.get_total_gpus(db)
+    return {"total_gpus": total}
