@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -63,15 +63,12 @@ def _completion_time(job: Job) -> datetime | None:
 
 def _bucket_daily(completed: list[tuple[datetime, str]]) -> list[dict]:
     now = datetime.now(timezone.utc)
-    hour = now.hour - (now.hour % 4)
-    start = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     buckets = {
-        start - timedelta(hours=h): 0
-        for h in range(20, -1, -4)
+        datetime.combine(now.date(), time(hour=h), tzinfo=timezone.utc): 0
+        for h in range(0, 24, 4)
     }
     for ts, _ in completed:
-        hour = ts.hour - (ts.hour % 4)
-        key = ts.replace(hour=hour, minute=0, second=0, microsecond=0)
+        key = ts.replace(minute=0, second=0, microsecond=0)
         if key in buckets:
             buckets[key] += 1
     return [
@@ -110,16 +107,10 @@ def _bucket_monthly(completed: list[tuple[datetime, str]]) -> list[dict]:
 
 def _bucket_yearly(completed: list[tuple[datetime, str]]) -> list[dict]:
     now = datetime.now(timezone.utc)
-    # Build the last 12 calendar months
-    month_keys = []
-    for i in range(12):
-        month = now.month - i
-        year = now.year
-        while month <= 0:
-            month += 12
-            year -= 1
-        month_keys.append(datetime(year, month, 1, tzinfo=timezone.utc))
-    buckets = {key: 0 for key in month_keys}
+    buckets = {
+        datetime(now.year, month, 1, tzinfo=timezone.utc): 0
+        for month in range(1, 13)
+    }
     for ts, _ in completed:
         key = ts.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         if key in buckets:
