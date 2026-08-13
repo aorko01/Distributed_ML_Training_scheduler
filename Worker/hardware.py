@@ -1,4 +1,5 @@
 import os
+import socket
 import uuid
 import GPUtil
 from config import WORKER_ID_FILE
@@ -14,16 +15,69 @@ def get_or_create_worker_id() -> str:
         f.write(new_id)
     return new_id
 
+def get_hostname() -> str:
+    return socket.gethostname()
+
+def get_ip_address() -> str:
+    """Resolve the primary non-loopback IP address of this host."""
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 80))
+            ip = probe.getsockname()[0]
+        finally:
+            probe.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
+
+def get_cpu_load() -> float:
+    """Current CPU load as a percentage of all cores."""
+    try:
+        load = os.getloadavg()[0]
+        cores = os.cpu_count() or 1
+        return round(min(100.0, load / cores * 100.0), 2)
+    except Exception:
+        return 0.0
+
+def get_mem_usage() -> float:
+    """Current system memory usage as a percentage."""
+    try:
+        with open("/proc/meminfo", "r") as f:
+            meminfo = {}
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    meminfo[parts[0].rstrip(":")] = int(parts[1])
+        mem_total = meminfo.get("MemTotal", 0)
+        mem_available = meminfo.get("MemAvailable", 0)
+        if mem_total <= 0:
+            return 0.0
+        used = (mem_total - mem_available) / mem_total * 100.0
+        return round(min(100.0, max(0.0, used)), 2)
+    except Exception:
+        return 0.0
+
 def get_gpu_info():
-    """Retrieve primary GPU specs and VRAM availability."""
+    """Retrieve primary GPU specs, VRAM availability, and average GPU load."""
     gpus = GPUtil.getGPUs()
     if not gpus:
-        return "Unknown", 0.0, 0.0, 0
+        return "Unknown", 0.0, 0.0, 0, 0.0
     
-    gpu = gpus[0]
+    gpu = gpus[0] if len(gpus) == 1 else max(gpus, key=lambda g: g.memoryTotal)
     gpu_name = gpu.name
     total_vram = round(gpu.memoryTotal / 1024, 2)
     free_vram = round(gpu.memoryFree / 1024, 2)
     num_gpus = len(gpus)
+    avg_gpu_load = round(sum(g.load for g in gpus) / num_gpus * 100.0, 2)
     
-    return gpu_name, total_vram, free_vram, num_gpus
+    return gpu_name, total_vram, free_vram, num_gpus, avg_gpu_load
+
+def collect_node_info() -> dict:
+    """Collect host-level metrics reported to the scheduler."""
+    return {
+        "hostname": get_hostname(),
+        "ip_address": get_ip_address(),
+        "cpu_load": get_cpu_load(),
+        "mem_usage": get_mem_usage(),
+    }

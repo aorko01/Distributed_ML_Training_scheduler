@@ -1,20 +1,20 @@
 export type NodeStatus = 'online' | 'offline' | 'draining';
-export type NodeSortKey = 'name' | 'load' | 'mem' | 'gpus' | 'vram' | 'running' | 'uptime';
+export type NodeSortKey = 'name' | 'load' | 'mem' | 'gpus' | 'vram' | 'running';
 export type NodeFilter = 'all' | NodeStatus;
 
 export interface ClusterNode {
   id: string;
   name: string;
   ip: string;
-  region: string;
   gpuModel: string;
   gpuCount: number;
   vramPerGpu: number;
   status: NodeStatus;
   load: number;
+  gpuLoad: number;
+  cpuLoad: number;
   mem: number;
   runningJobs: number;
-  uptimeHours: number;
   sshPort: number;
 }
 
@@ -71,14 +71,14 @@ export interface ClusterOverview {
   distribution: ResourceDistribution;
 }
 
-const NODE_POOLS: { region: string; ipBase: string; gpu: string; vram: number; count: number; nodes: number }[] = [
-  { region: 'us-east-1', ipBase: '10.0.1.', gpu: 'NVIDIA A100 80GB', vram: 80, count: 8, nodes: 6 },
-  { region: 'us-east-1', ipBase: '10.0.2.', gpu: 'NVIDIA H100 80GB', vram: 80, count: 8, nodes: 4 },
-  { region: 'us-west-2', ipBase: '10.0.3.', gpu: 'NVIDIA A100 40GB', vram: 40, count: 4, nodes: 5 },
-  { region: 'eu-central-1', ipBase: '10.0.4.', gpu: 'NVIDIA RTX A6000 48GB', vram: 48, count: 2, nodes: 3 },
-  { region: 'eu-central-1', ipBase: '10.0.5.', gpu: 'NVIDIA A40 48GB', vram: 48, count: 4, nodes: 4 },
-  { region: 'ap-southeast-1', ipBase: '10.0.6.', gpu: 'NVIDIA A100 80GB', vram: 80, count: 8, nodes: 3 },
-  { region: 'ap-southeast-1', ipBase: '10.0.7.', gpu: 'NVIDIA RTX 4090 24GB', vram: 24, count: 2, nodes: 5 },
+const NODE_POOLS: { ipBase: string; gpu: string; vram: number; count: number; nodes: number }[] = [
+  { ipBase: '10.0.1.', gpu: 'NVIDIA A100 80GB', vram: 80, count: 8, nodes: 6 },
+  { ipBase: '10.0.2.', gpu: 'NVIDIA H100 80GB', vram: 80, count: 8, nodes: 4 },
+  { ipBase: '10.0.3.', gpu: 'NVIDIA A100 40GB', vram: 40, count: 4, nodes: 5 },
+  { ipBase: '10.0.4.', gpu: 'NVIDIA RTX A6000 48GB', vram: 48, count: 2, nodes: 3 },
+  { ipBase: '10.0.5.', gpu: 'NVIDIA A40 48GB', vram: 48, count: 4, nodes: 4 },
+  { ipBase: '10.0.6.', gpu: 'NVIDIA A100 80GB', vram: 80, count: 8, nodes: 3 },
+  { ipBase: '10.0.7.', gpu: 'NVIDIA RTX 4090 24GB', vram: 24, count: 2, nodes: 5 },
 ];
 
 const NODE_NAMES = ['ares', 'atlas', 'boron', 'carbon', 'cobalt', 'cygnus', 'draco', 'gauss', 'helios', 'ion', 'kepler', 'laplace', 'lyra', 'nebula', 'orion', 'pulsar', 'quantum', 'rigel', 'sirius', 'tensor', 'vega', 'volt', 'xenon', 'yottabyte', 'zephyr', 'astro', 'core', 'delta', 'epsilon', 'fusion'];
@@ -111,20 +111,19 @@ export const nodes: ClusterNode[] = NODE_POOLS.flatMap((pool, poolIdx) =>
     const load = status === 'offline' ? 0 : Math.min(100, Math.round(25 + Math.random() * 70));
     const mem = status === 'offline' ? 0 : Math.min(100, Math.round(15 + Math.random() * 80));
     const runningJobs = status === 'offline' ? 0 : Math.max(0, Math.round(load / 28));
-    const uptimeHours = status === 'offline' ? 0 : Math.round(200 + Math.random() * 9000);
     return {
       id: `node-${global}`,
-      name: `${pool.region}-${NODE_NAMES[(global + poolIdx * 5) % NODE_NAMES.length]}`,
+      name: `node-${NODE_NAMES[(global + poolIdx * 5) % NODE_NAMES.length]}`,
       ip: `${pool.ipBase}${i + 10}`,
-      region: pool.region,
       gpuModel: pool.gpu,
       gpuCount: pool.count,
       vramPerGpu: pool.vram,
       status,
       load,
+      gpuLoad: load,
+      cpuLoad: status === 'offline' ? 0 : Math.min(100, Math.round(10 + Math.random() * 50)),
       mem,
       runningJobs,
-      uptimeHours,
       sshPort: 22,
     };
   }),

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Search, Server, Terminal, Unplug } from 'lucide-react';
 import {
   nodes as seedNodes,
@@ -6,6 +6,7 @@ import {
   type NodeStatus,
   type NodeSortKey,
 } from '../data/mock';
+import { fetchNodes, type ApiNode } from '../services/api';
 
 type StatusFilter = 'all' | NodeStatus;
 
@@ -19,23 +20,62 @@ const getStatusBadge = (status: NodeStatus) => (
   <span className={`badge badge-${status}`}>{STATUS_LABEL[status]}</span>
 );
 
+const roundMetric = (value: number | null | undefined, fallback = 0): number =>
+  value == null ? fallback : Math.round(value);
+
+const toClusterNode = (node: ApiNode): ClusterNode => ({
+  id: node.worker_id,
+  name: node.hostname || node.worker_id.slice(0, 8),
+  ip: node.ip_address || '—',
+  gpuModel: node.gpu_type || 'Unknown',
+  gpuCount: node.num_gpus || 0,
+  vramPerGpu: node.total_vram || 0,
+  status: node.status === 'online' ? 'online' : 'offline',
+  load: roundMetric(node.gpu_load),
+  gpuLoad: roundMetric(node.gpu_load),
+  cpuLoad: roundMetric(node.cpu_load),
+  mem: roundMetric(node.mem_usage),
+  runningJobs: node.running_jobs || 0,
+  sshPort: 22,
+});
+
+const REFRESH_INTERVAL_MS = 5000;
+
 const Nodes: React.FC = () => {
   const [nodeList, setNodeList] = useState<ClusterNode[]>(seedNodes);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [regionFilter, setRegionFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<NodeSortKey>('name');
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
-  const regions = useMemo(
-    () => Array.from(new Set(nodeList.map((n) => n.region))).sort(),
-    [nodeList],
-  );
+  useEffect(() => {
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const apiNodes = await fetchNodes();
+        if (!cancelled) {
+          setNodeList(apiNodes.map(toClusterNode));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Failed to load nodes:', err);
+          setNodeList(seedNodes);
+        }
+      }
+    };
+
+    void refresh();
+    const interval = window.setInterval(refresh, REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const visibleNodes = useMemo(() => {
     const filtered = nodeList.filter((n) => {
       if (statusFilter !== 'all' && n.status !== statusFilter) return false;
-      if (regionFilter !== 'all' && n.region !== regionFilter) return false;
       if (search.trim()) {
         const q = search.toLowerCase();
         if (!`${n.name} ${n.ip} ${n.gpuModel}`.toLowerCase().includes(q)) return false;
@@ -50,12 +90,11 @@ const Nodes: React.FC = () => {
         case 'gpus': return b.gpuCount - a.gpuCount;
         case 'vram': return b.vramPerGpu - a.vramPerGpu;
         case 'running': return b.runningJobs - a.runningJobs;
-        case 'uptime': return b.uptimeHours - a.uptimeHours;
         case 'name':
         default: return a.name.localeCompare(b.name);
       }
     });
-  }, [nodeList, statusFilter, regionFilter, search, sortKey]);
+  }, [nodeList, statusFilter, search, sortKey]);
 
   const showFeedback = (msg: string) => {
     setActionFeedback(msg);
@@ -111,20 +150,6 @@ const Nodes: React.FC = () => {
             </select>
           </div>
           <div className="toolbar-group">
-            <label className="form-label">Region</label>
-            <select
-              className="form-select"
-              style={{ width: 'auto', padding: '0.5rem 1rem' }}
-              value={regionFilter}
-              onChange={(e) => setRegionFilter(e.target.value)}
-            >
-              <option value="all">All Regions</option>
-              {regions.map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-          </div>
-          <div className="toolbar-group">
             <label className="form-label">Sort By</label>
             <select
               className="form-select"
@@ -138,7 +163,6 @@ const Nodes: React.FC = () => {
               <option value="gpus">GPU Count</option>
               <option value="vram">VRAM / GPU</option>
               <option value="running">Running Jobs</option>
-              <option value="uptime">Uptime</option>
             </select>
           </div>
         </div>
@@ -163,21 +187,19 @@ const Nodes: React.FC = () => {
           <thead>
             <tr>
               <th>Node</th>
-              <th>Region</th>
               <th>Status</th>
               <th>GPU</th>
               <th>VRAM</th>
               <th>Load</th>
               <th>Mem</th>
               <th>Jobs</th>
-              <th>Uptime</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {visibleNodes.length === 0 && (
               <tr>
-                <td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
+                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
                   No nodes match the current filters.
                 </td>
               </tr>
@@ -195,7 +217,6 @@ const Nodes: React.FC = () => {
                     </div>
                   </div>
                 </td>
-                <td>{node.region}</td>
                 <td>{getStatusBadge(node.status)}</td>
                 <td style={{ fontSize: '0.8125rem' }}>{node.gpuModel} ×{node.gpuCount}</td>
                 <td>{node.vramPerGpu} GB</td>
@@ -216,7 +237,6 @@ const Nodes: React.FC = () => {
                   </div>
                 </td>
                 <td>{node.runningJobs}</td>
-                <td>{node.uptimeHours > 0 ? `${(node.uptimeHours / 24).toFixed(1)}d` : '—'}</td>
                 <td>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button

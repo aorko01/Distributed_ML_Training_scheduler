@@ -5,6 +5,12 @@ class WorkerInfo(BaseModel):
     gpu_type: str
     num_gpus: int
     total_vram: float
+    available_vram: float | None = None
+    hostname: str | None = None
+    ip_address: str | None = None
+    gpu_load: float | None = None
+    cpu_load: float | None = None
+    mem_usage: float | None = None
 
 class WorkerResponse(BaseModel):
     message: str
@@ -15,3 +21,19 @@ class WorkerResource(BaseModel):
     worker_id: str
     gpu_type: str
     free_vram:float
+
+class WorkerNodeInfo(BaseModel):
+    worker_id: str
+    hostname: str | None = None
+    ip_address: str | None = None
+    gpu_type: str
+    num_gpus: int
+    total_vram: float
+    available_vram: float | None = None
+    gpu_load: float | None = None
+    cpu_load: float | None = None
+    mem_usage: float | None = None
+    status: str
+    running_jobs: int
+    first_seen: str | None = None
+    last_registered: str | None = None

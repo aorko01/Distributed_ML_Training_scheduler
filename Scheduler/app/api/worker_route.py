@@ -36,3 +36,10 @@ def get_total_gpus(db: Session = Depends(get_db)):
     """Returns the total number of GPUs across all registered workers."""
     total = worker_service.get_total_gpus(db)
     return {"total_gpus": total}
+
+
+@router.get("/nodes")
+async def get_nodes(db: Session = Depends(get_db)):
+    """Returns all registered workers with live status and resource metrics."""
+    workers = await worker_service.get_all_workers(db)
+    return {"nodes": workers}

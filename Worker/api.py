@@ -11,12 +11,13 @@ class SchedulerAPI:
     def __init__(self, worker_id: str):
         self.worker_id = worker_id
 
-    def register_worker(self, gpu_type: str, num_gpus: int, total_vram: float):
+    def register_worker(self, gpu_type: str, num_gpus: int, total_vram: float, node_info: dict):
         payload = {
             "worker_id": self.worker_id,
             "gpu_type": gpu_type,
             "num_gpus": num_gpus,
             "total_vram": total_vram,
+            **node_info,
         }
         try:
             resp = requests.post(REGISTER_URL, json=payload, timeout=10)
@@ -24,11 +25,12 @@ class SchedulerAPI:
         except Exception as e:
             logger.error("Failed to register worker: %s", e)
 
-    def send_heartbeat(self, gpu_type: str, available_vram: float):
+    def send_heartbeat(self, gpu_type: str, available_vram: float, node_info: dict):
         payload = {
             "worker_id": self.worker_id,
             "gpu_type": gpu_type,
             "available_vram": available_vram,
+            **node_info,
         }
         resp = requests.post(HEARTBEAT_URL, json=payload, timeout=10)
         logger.info("Heartbeat sent: %s", resp.json())
