@@ -18,6 +18,7 @@ class JobResponse(BaseModel):
     status: str
     priority: JobPriority
     reason_for_priority: Optional[str] = None
+    device: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

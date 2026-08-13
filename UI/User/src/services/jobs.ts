@@ -54,6 +54,10 @@ const parseEnvironment = (image: string): { pytorchVersion: string; cudaVersion:
   };
 };
 
+const parseDevice = (job: BackendJob): string => {
+  return job.device ?? 'N/A';
+};
+
 const getJobName = (job: BackendJob): string => {
   const firstLine = job.command.split('\n').map(line => line.trim()).find(line => line.length > 0);
   return firstLine ?? job.id;
@@ -69,7 +73,7 @@ const mapJob = (job: BackendJob, index: number): Job => {
     cudaVersion: env.cudaVersion,
     submittedAt: job.created_at,
     gpuHours: job.gpu_hour ?? 0,
-    device: DUMMY_DEVICES[index % DUMMY_DEVICES.length],
+    device: parseDevice(job),
   };
 };
 

@@ -49,6 +49,7 @@ class Job(Base):
     # Runtime accounting
     gpu_hour = Column(Float, nullable=True)  # GPU hours used, set when the job completes
     started_at = Column(DateTime(timezone=True), nullable=True)  # when the job started running (IN_PROGRESS)
+    device = Column(String, nullable=True)  # device the job is running on (saved when worker pulls for running)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

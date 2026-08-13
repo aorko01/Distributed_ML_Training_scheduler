@@ -172,11 +172,11 @@ const Dashboard: React.FC = () => {
               >
                 <td style={{ fontWeight: 500 }}>{job.name}</td>
                 <td>{getStatusBadge(job.status)}</td>
-                <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
-                <td><span style={{ fontFamily: 'monospace' }}>{job.device}</span></td>
-                <td>{formatDate(job.submittedAt)}</td>
-                <td>{job.gpuHours.toFixed(2)}</td>
-              </tr>
+                 <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
+                 <td><span style={{ fontFamily: 'monospace' }}>{job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}</span></td>
+                 <td>{formatDate(job.submittedAt)}</td>
+                 <td>{job.gpuHours.toFixed(2)}</td>
+               </tr>
             ))}
           </tbody>
         </table>

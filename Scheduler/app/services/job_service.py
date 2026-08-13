@@ -104,6 +104,7 @@ def get_not_runnable_jobs(db: Session):
             "vram_required": job.vram_required,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
+            "device": job.device,
         }
         for job in jobs
     ]
@@ -150,6 +151,7 @@ def _format_job_response(job: Job, flag: str) -> dict:
         "vram_required": job.vram_required,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
+        "device": job.device,
     }
 
 
@@ -198,6 +200,7 @@ def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict |
 
     job.status = JobStatus.IN_PROGRESS
     job.started_at = datetime.now(timezone.utc)
+    job.device = request.gpu_type  # Save the device when worker pulls for running
     db.commit()
     db.refresh(job)
 
@@ -283,6 +286,7 @@ def get_user_jobs(db: Session, user_id: str):
             "vram_required": job.vram_required,
             "step_time": job.step_time,
             "gpu_hour": job.gpu_hour,
+            "device": job.device,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
         }
@@ -323,6 +327,7 @@ def get_user_job_by_id(db: Session, user_id: str, job_id: str):
         "vram_required": job.vram_required,
         "step_time": job.step_time,
         "gpu_hour": job.gpu_hour,
+        "device": job.device,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }
