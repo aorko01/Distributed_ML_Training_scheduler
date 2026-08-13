@@ -5,6 +5,7 @@ class WorkerInfo(BaseModel):
     gpu_type: str
     num_gpus: int
     total_vram: float
+    gpus_in_use: int | None = None
     available_vram: float | None = None
     hostname: str | None = None
     ip_address: str | None = None

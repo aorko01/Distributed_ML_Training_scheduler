@@ -1,13 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Server, Gauge, ListOrdered, Cpu, TrendingUp } from 'lucide-react';
 import RingChart from '../components/RingChart';
 import BarChart from '../components/BarChart';
 import {
-  clusterOverview,
-  throughput,
+  clusterOverview as mockOverview,
+  throughput as mockThroughput,
   type ThroughputPeriod,
   type ThroughputPoint,
 } from '../data/mock';
+import {
+  fetchOverview,
+  fetchThroughput,
+  type OverviewStats,
+} from '../services/api';
 
 const PERIODS: { value: ThroughputPeriod; label: string }[] = [
   { value: 'daily', label: 'Daily' },
@@ -16,19 +21,59 @@ const PERIODS: { value: ThroughputPeriod; label: string }[] = [
   { value: 'yearly', label: 'Yearly' },
 ];
 
+const REFRESH_INTERVAL_MS = 5000;
+
 const Overview: React.FC = () => {
   const [period, setPeriod] = useState<ThroughputPeriod>('weekly');
-  const [throughputData, setThroughputData] = useState<ThroughputPoint[]>(throughput[period]);
+  const [stats, setStats] = useState<OverviewStats>({
+    nodes_online: mockOverview.nodesOnline,
+    nodes_total: mockOverview.nodesTotal,
+    cluster_load: mockOverview.clusterLoad,
+    queue_depth: mockOverview.queueDepth,
+    gpus_allocated: mockOverview.gpusAllocated,
+    gpus_total: mockOverview.gpusTotal,
+  });
+  const [throughputData, setThroughputData] = useState<ThroughputPoint[]>(mockThroughput[period]);
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const [overview, throughput] = await Promise.all([fetchOverview(), fetchThroughput()]);
+        if (cancelled) return;
+        setStats(overview);
+        setThroughputData(throughput[period]);
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Failed to load cluster overview:', err);
+        }
+      }
+    };
+
+    void refresh();
+    const interval = window.setInterval(refresh, REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [period]);
 
   const handlePeriodChange = (next: ThroughputPeriod) => {
     setPeriod(next);
-    setThroughputData(throughput[next]);
     setSelectedPoint(null);
   };
 
-  const { nodesOnline, nodesTotal, clusterLoad, queueDepth, gpusAllocated, gpusTotal, distribution } =
-    clusterOverview;
+  const { nodesOnline, nodesTotal, clusterLoad, queueDepth, gpusAllocated, gpusTotal, distribution } = {
+    nodesOnline: stats.nodes_online,
+    nodesTotal: stats.nodes_total,
+    clusterLoad: stats.cluster_load,
+    queueDepth: stats.queue_depth,
+    gpusAllocated: stats.gpus_allocated,
+    gpusTotal: stats.gpus_total,
+    distribution: mockOverview.distribution,
+  };
 
   const distributionSegments = [
     { label: 'Batch Training', value: distribution.batch, color: 'var(--batch-color)' },
@@ -37,6 +82,8 @@ const Overview: React.FC = () => {
   ];
 
   const totalDistribution = distribution.batch + distribution.experimentation + distribution.idle;
+
+  const gpuUsagePercent = gpusTotal > 0 ? Math.round((gpusAllocated / gpusTotal) * 100) : 0;
 
   const selectedDatum =
     selectedPoint !== null ? throughputData[selectedPoint] : throughputData[throughputData.length - 1];
@@ -66,10 +113,10 @@ const Overview: React.FC = () => {
             <span className="metric-title">Cluster Load</span>
             <Gauge size={20} color="var(--text-secondary)" />
           </div>
-          <div className="metric-value">{clusterLoad}%</div>
+          <div className="metric-value">{Math.round(clusterLoad)}%</div>
           <div className="metric-sub">
             <div className="progress-bar-track" style={{ marginTop: '0.5rem' }}>
-              <div className="progress-bar-fill load" style={{ width: `${clusterLoad}%` }} />
+              <div className="progress-bar-fill load" style={{ width: `${Math.min(100, clusterLoad)}%` }} />
             </div>
           </div>
         </div>
@@ -97,10 +144,7 @@ const Overview: React.FC = () => {
           </div>
           <div className="metric-sub">
             <div className="progress-bar-track" style={{ marginTop: '0.5rem' }}>
-              <div
-                className="progress-bar-fill mem"
-                style={{ width: `${Math.round((gpusAllocated / gpusTotal) * 100)}%` }}
-              />
+              <div className="progress-bar-fill mem" style={{ width: `${gpuUsagePercent}%` }} />
             </div>
           </div>
         </div>

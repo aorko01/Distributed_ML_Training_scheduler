@@ -10,6 +10,7 @@ class Worker(Base):
     gpu_type = Column(String, nullable=False)
     num_gpus = Column(Integer, nullable=False)
     total_vram = Column(Float, nullable=False)
+    gpus_in_use = Column(Integer, nullable=True)
     available_vram = Column(Float, nullable=True)
     hostname = Column(String, nullable=True)
     ip_address = Column(String, nullable=True)

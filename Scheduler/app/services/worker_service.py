@@ -18,7 +18,7 @@ def get_total_gpus(db: Session) -> int:
 
 def _apply_worker_metrics(worker: Worker, metrics: dict):
     """Apply optional host/resource metrics to a Worker ORM instance."""
-    for field in ("hostname", "ip_address", "available_vram", "gpu_load", "cpu_load", "mem_usage"):
+    for field in ("hostname", "ip_address", "available_vram", "gpus_in_use", "gpu_load", "cpu_load", "mem_usage"):
         value = metrics.get(field)
         if value is not None:
             setattr(worker, field, value)
@@ -74,6 +74,8 @@ async def _update_redis_worker(key: str, Heartbeat: HeartbeatSchema):
         "gpu_type": Heartbeat.gpu_type,
         "last_heartbeat": int(time.time()),
     }
+    if Heartbeat.gpus_in_use is not None:
+        mapping["gpus_in_use"] = Heartbeat.gpus_in_use
     if Heartbeat.gpu_load is not None:
         mapping["gpu_load"] = Heartbeat.gpu_load
     if Heartbeat.cpu_load is not None:
@@ -96,6 +98,7 @@ async def _update_db_worker_metrics(Heartbeat: HeartbeatSchema):
                     "hostname": Heartbeat.hostname,
                     "ip_address": Heartbeat.ip_address,
                     "available_vram": Heartbeat.available_vram,
+                    "gpus_in_use": Heartbeat.gpus_in_use,
                     "gpu_load": Heartbeat.gpu_load,
                     "cpu_load": Heartbeat.cpu_load,
                     "mem_usage": Heartbeat.mem_usage,
@@ -125,6 +128,7 @@ async def get_all_workers(db: Session) -> list[dict]:
                 "gpu_type": worker.gpu_type,
                 "num_gpus": worker.num_gpus,
                 "total_vram": worker.total_vram,
+                "gpus_in_use": worker.gpus_in_use,
                 "available_vram": worker.available_vram,
                 "gpu_load": worker.gpu_load,
                 "cpu_load": worker.cpu_load,

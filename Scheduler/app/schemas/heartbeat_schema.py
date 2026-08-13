@@ -4,6 +4,7 @@ class HeartbeatSchema(BaseModel):
     worker_id: str
     gpu_type:str
     available_vram: float
+    gpus_in_use: int | None = None
     gpu_load: float | None = None
     cpu_load: float | None = None
     mem_usage: float | None = None

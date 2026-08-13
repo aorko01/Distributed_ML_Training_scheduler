@@ -73,6 +73,18 @@ def get_gpu_info():
     
     return gpu_name, total_vram, free_vram, num_gpus, avg_gpu_load
 
+def count_gpus_in_use() -> int:
+    """Number of GPUs currently busy enough to be considered allocated."""
+    try:
+        gpus = GPUtil.getGPUs()
+    except Exception:
+        return 0
+    busy = 0
+    for gpu in gpus:
+        if gpu.load > 0.01 or gpu.memoryUsed > 64:
+            busy += 1
+    return busy
+
 def collect_node_info() -> dict:
     """Collect host-level metrics reported to the scheduler."""
     return {

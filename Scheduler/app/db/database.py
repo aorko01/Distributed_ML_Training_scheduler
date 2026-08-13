@@ -51,3 +51,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # Any class that represents a table in your database should inherit from Base
 # -------------------------------------------------
 Base = declarative_base()
+
+
+def run_migrations():
+    """Apply lightweight additive schema migrations on startup
+    (for development; production should use Alembic)."""
+    from sqlalchemy import text
+
+    statements = [
+        "ALTER TABLE workers ADD COLUMN IF NOT EXISTS gpus_in_use INTEGER",
+    ]
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))

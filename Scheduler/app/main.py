@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.db.database import Base, engine
+from app.db.database import Base, engine, run_migrations
 
 # Import routers
 from app.api.jobs_route import router as jobs_router
@@ -30,6 +30,7 @@ app.add_middleware(
 
 # Create all tables (for development; in production use Alembic migrations)
 Base.metadata.create_all(bind=engine)
+run_migrations()
 
 # Include API routers
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
