@@ -136,13 +136,11 @@ export const nodes: ClusterNode[] = NODE_POOLS.flatMap((pool, poolIdx) =>
 const THROUGHPUT_BASE: Record<ThroughputPeriod, ThroughputPoint[]> = {
   daily: [
     { label: '00:00', jobs: 2 },
-    { label: '03:00', jobs: 4 },
-    { label: '06:00', jobs: 6 },
-    { label: '09:00', jobs: 11 },
+    { label: '04:00', jobs: 4 },
+    { label: '08:00', jobs: 6 },
     { label: '12:00', jobs: 14 },
-    { label: '15:00', jobs: 12 },
-    { label: '18:00', jobs: 17 },
-    { label: '21:00', jobs: 9 },
+    { label: '16:00', jobs: 17 },
+    { label: '20:00', jobs: 9 },
   ],
   weekly: [
     { label: 'Mon', jobs: 42 },

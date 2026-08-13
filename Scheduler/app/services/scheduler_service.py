@@ -63,12 +63,15 @@ def _completion_time(job: Job) -> datetime | None:
 
 def _bucket_daily(completed: list[tuple[datetime, str]]) -> list[dict]:
     now = datetime.now(timezone.utc)
+    hour = now.hour - (now.hour % 4)
+    start = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     buckets = {
-        now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=h): 0
-        for h in range(23, -1, -1)
+        start - timedelta(hours=h): 0
+        for h in range(20, -1, -4)
     }
     for ts, _ in completed:
-        key = ts.replace(minute=0, second=0, microsecond=0)
+        hour = ts.hour - (ts.hour % 4)
+        key = ts.replace(hour=hour, minute=0, second=0, microsecond=0)
         if key in buckets:
             buckets[key] += 1
     return [
