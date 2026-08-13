@@ -9,6 +9,7 @@ export interface ClusterNode {
   gpuModel: string;
   gpuCount: number;
   vramPerGpu: number;
+  availableVram: number;
   status: NodeStatus;
   load: number;
   gpuLoad: number;
@@ -111,6 +112,8 @@ export const nodes: ClusterNode[] = NODE_POOLS.flatMap((pool, poolIdx) =>
     const load = status === 'offline' ? 0 : Math.min(100, Math.round(25 + Math.random() * 70));
     const mem = status === 'offline' ? 0 : Math.min(100, Math.round(15 + Math.random() * 80));
     const runningJobs = status === 'offline' ? 0 : Math.max(0, Math.round(load / 28));
+    const availableVram =
+      status === 'offline' ? 0 : Math.max(0, Math.round(pool.vram * (1 - (load / 100) * 0.9)));
     return {
       id: `node-${global}`,
       name: `node-${NODE_NAMES[(global + poolIdx * 5) % NODE_NAMES.length]}`,
@@ -118,6 +121,7 @@ export const nodes: ClusterNode[] = NODE_POOLS.flatMap((pool, poolIdx) =>
       gpuModel: pool.gpu,
       gpuCount: pool.count,
       vramPerGpu: pool.vram,
+      availableVram,
       status,
       load,
       gpuLoad: load,

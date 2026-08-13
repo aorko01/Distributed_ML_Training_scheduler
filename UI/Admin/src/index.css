@@ -562,6 +562,7 @@ tr.row-clickable:hover {
 
 .progress-bar-fill.load { background-color: var(--accent-primary); }
 .progress-bar-fill.mem { background-color: #a855f7; }
+.progress-bar-fill.vram { background-color: #22c55e; }
 
 /* Util */
 .fade-in {

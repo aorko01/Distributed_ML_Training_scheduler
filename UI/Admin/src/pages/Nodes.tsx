@@ -23,6 +23,11 @@ const getStatusBadge = (status: NodeStatus) => (
 const roundMetric = (value: number | null | undefined, fallback = 0): number =>
   value == null ? fallback : Math.round(value);
 
+const usingVramPercent = (node: ClusterNode): number => {
+  if (!node.vramPerGpu) return 0;
+  return Math.min(100, Math.round(((node.vramPerGpu - node.availableVram) / node.vramPerGpu) * 100));
+};
+
 const toClusterNode = (node: ApiNode): ClusterNode => ({
   id: node.worker_id,
   name: node.hostname || node.worker_id.slice(0, 8),
@@ -30,6 +35,7 @@ const toClusterNode = (node: ApiNode): ClusterNode => ({
   gpuModel: node.gpu_type || 'Unknown',
   gpuCount: node.num_gpus || 0,
   vramPerGpu: node.total_vram || 0,
+  availableVram: roundMetric(node.available_vram),
   status: node.status === 'online' ? 'online' : 'offline',
   load: roundMetric(node.gpu_load),
   gpuLoad: roundMetric(node.gpu_load),
@@ -190,6 +196,7 @@ const Nodes: React.FC = () => {
               <th>Status</th>
               <th>GPU</th>
               <th>VRAM</th>
+              <th>Using VRAM</th>
               <th>Load</th>
               <th>Mem</th>
               <th>Jobs</th>
@@ -199,7 +206,7 @@ const Nodes: React.FC = () => {
           <tbody>
             {visibleNodes.length === 0 && (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
+                <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
                   No nodes match the current filters.
                 </td>
               </tr>
@@ -220,6 +227,14 @@ const Nodes: React.FC = () => {
                 <td>{getStatusBadge(node.status)}</td>
                 <td style={{ fontSize: '0.8125rem' }}>{node.gpuModel} ×{node.gpuCount}</td>
                 <td>{node.vramPerGpu} GB</td>
+                <td style={{ minWidth: 110 }}>
+                  <div className="progress-bar-track">
+                    <div className="progress-bar-fill vram" style={{ width: `${usingVramPercent(node)}%` }} />
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                    {usingVramPercent(node)}% used
+                  </div>
+                </td>
                 <td style={{ minWidth: 110 }}>
                   <div className="progress-bar-track">
                     <div className="progress-bar-fill load" style={{ width: `${node.load}%` }} />

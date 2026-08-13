@@ -17,9 +17,12 @@ def main():
     executor = JobExecutor(api)
 
     # Register node
-    gpu_type, total_vram, _, num_gpus, gpu_load = get_gpu_info()
+    gpu_type, total_vram, free_vram, num_gpus, gpu_load = get_gpu_info()
     node_info = collect_node_info()
-    api.register_worker(gpu_type, num_gpus, total_vram, {**node_info, "gpu_load": gpu_load})
+    api.register_worker(
+        gpu_type, num_gpus, total_vram,
+        {**node_info, "gpu_load": gpu_load, "available_vram": free_vram},
+    )
 
     last_heartbeat = 0
 
