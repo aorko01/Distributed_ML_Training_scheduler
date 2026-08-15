@@ -11,32 +11,30 @@ MAX_JOB_HISTORY = 50
 MAX_EVENTS = 100
 
 
+def _append_event_locked(level: str, message: str):
+    global _events
+    _events.append({
+        "time": time.strftime("%H:%M:%S", time.localtime()),
+        "level": level,
+        "message": message,
+    })
+    _events = _events[-MAX_EVENTS:]
+
+
 def record_job(job: dict):
     global _job_history
     with _lock:
         _job_history.append(job)
         _job_history = _job_history[-MAX_JOB_HISTORY:]
-        _events.append({
-            "time": time.strftime("%H:%M:%S", time.localtime()),
-            "level": "success" if job.get("status") == "completed" else "error",
-            "message": f"Job {job.get('id', '?')} {job.get('status', '?')}",
-        })
-        _trim_events()
+        _append_event_locked(
+            "success" if job.get("status") == "completed" else "error",
+            f"Job {job.get('id', '?')} {job.get('status', '?')}",
+        )
 
 
 def record_event(level: str, message: str):
     with _lock:
-        _events.append({
-            "time": time.strftime("%H:%M:%S", time.localtime()),
-            "level": level,
-            "message": message,
-        })
-        _trim_events()
-
-
-def _trim_events():
-    global _events
-    _events = _events[-MAX_EVENTS:]
+        _append_event_locked(level, message)
 
 
 def record_heartbeat(ok: bool, error: str | None = None):
@@ -44,7 +42,7 @@ def record_heartbeat(ok: bool, error: str | None = None):
     with _lock:
         _last_heartbeat_success = time.time() if ok else _last_heartbeat_success
         _last_heartbeat_error = error if not ok else None
-        record_event(
+        _append_event_locked(
             "success" if ok else "error",
             "Heartbeat sent" if ok else f"Heartbeat failed: {error}" if error else "Heartbeat failed",
         )
