@@ -1,0 +1,34 @@
+{
+  "name": "distributeml-worker-ui",
+  "version": "0.1.0",
+  "description": "Cross-platform desktop UI for the Distributed ML worker agent (dummy UI, no worker IPC yet)",
+  "main": "./out/main/index.js",
+  "author": "Distributed ML Training Scheduler",
+  "homepage": "https://github.com/anomalyco/opencode",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "lint": "oxlint",
+    "build": "npm run typecheck && electron-vite build"
+  },
+  "dependencies": {
+    "lucide-react": "^1.31.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "electron": "^43.4.0",
+    "electron-vite": "^5.0.0",
+    "oxlint": "^1.75.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6"
+  }
+}

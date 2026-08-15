@@ -68,7 +68,8 @@ def _bucket_daily(completed: list[tuple[datetime, str]]) -> list[dict]:
         for h in range(0, 24, 4)
     }
     for ts, _ in completed:
-        key = ts.replace(minute=0, second=0, microsecond=0)
+        start_hour = (ts.hour // 4) * 4
+        key = ts.replace(hour=start_hour, minute=0, second=0, microsecond=0)
         if key in buckets:
             buckets[key] += 1
     return [
