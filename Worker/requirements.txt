@@ -1,4 +1,7 @@
 python-dotenv
-requests 
+requests
 GPUtil
 docker
+psutil
+fastapi
+uvicorn[standard]

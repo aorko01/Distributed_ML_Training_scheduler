@@ -10,6 +10,35 @@ if not BASE_URL:
     raise ValueError("SCHEDULER_URL not set in environment")
 BASE_URL = BASE_URL.rstrip("/")
 
+_scheduler_url = BASE_URL
+
+
+def get_scheduler_url() -> str:
+    return _scheduler_url
+
+
+def set_scheduler_url(url: str):
+    global _scheduler_url
+    _scheduler_url = url.strip().rstrip("/") or _scheduler_url
+
+
+def persist_env(pairs: dict):
+    """Overwrite env values in the .env file (keeps existing keys)."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                lines = f.readlines()
+        keys = set(pairs.keys())
+        kept = [ln for ln in lines if not ln.split("=", 1)[0].strip() in keys]
+        with open(env_path, "w") as f:
+            f.writelines(kept)
+            for key, value in pairs.items():
+                f.write(f"{key}={value}\n")
+    except Exception as e:
+        logging.getLogger("config").error("Failed to persist .env: %s", e)
+
 REGISTER_URL = f"{BASE_URL}/workers/register"
 HEARTBEAT_URL = f"{BASE_URL}/workers/heartbeat"
 PULL_JOB_URL = f"{BASE_URL}/jobs/pull_job"

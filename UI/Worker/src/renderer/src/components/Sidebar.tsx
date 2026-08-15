@@ -1,21 +1,19 @@
 import React from 'react'
-import { Cpu, LayoutDashboard, Terminal, Wifi, WifiOff } from 'lucide-react'
+import { Cpu, LayoutDashboard, Wifi, WifiOff } from 'lucide-react'
 
-export type View = 'dashboard' | 'logs'
+export type View = 'dashboard'
 
 interface SidebarProps {
   view: View
-  onNavigate: (view: View) => void
   connected: boolean
   platform: string
 }
 
 const NAV_ITEMS: { key: View; label: string; icon: typeof LayoutDashboard }[] = [
-  { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { key: 'logs', label: 'Logs', icon: Terminal }
+  { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }
 ]
 
-const Sidebar: React.FC<SidebarProps> = ({ view, onNavigate, connected, platform }) => (
+const Sidebar: React.FC<SidebarProps> = ({ view, connected, platform }) => (
   <aside className="sidebar">
     <div className="sidebar-header">
       <div className="logo-mark">
@@ -32,7 +30,6 @@ const Sidebar: React.FC<SidebarProps> = ({ view, onNavigate, connected, platform
         <button
           key={key}
           className={`nav-item${view === key ? ' active' : ''}`}
-          onClick={() => onNavigate(key)}
         >
           <Icon size={17} />
           {label}

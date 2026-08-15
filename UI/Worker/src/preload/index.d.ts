@@ -1,5 +1,6 @@
 export interface WorkerApi {
   platform: string
+  workerApiUrl: string
   versions: {
     electron: string
     chrome: string

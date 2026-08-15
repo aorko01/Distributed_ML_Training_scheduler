@@ -10,11 +10,13 @@ import docker
 
 from config import (
     OUTPUT_DIR, VRAM_ESTIMATION_SCRIPT, DOCKER_HUB_USERNAME,
-    CONTAINER_OUTPUT_MOUNT, LOG_UPLOAD_INTERVAL, LOG_PUSH_INTERVAL,
+    CONTAINER_OUTPUT_MOUNT,
 )
 from api import SchedulerAPI
 from object_store import ObjectStore
 from output_monitor import OutputFileMonitor
+from telemetry import record_job, record_event
+import runtime_config
 
 logger = logging.getLogger("executor")
 
@@ -25,6 +27,24 @@ class JobExecutor:
             self.docker_client = docker.from_env()
         except Exception as e:
             logger.error("Failed to connect to Docker daemon: %s", e)
+
+    @staticmethod
+    def _record_job(job_id: str, image_name: str, flag: str, status: str,
+                    started_at: float, vram_estimate_gb: float = 0.0):
+        job_type = "estimation" if flag == "vram_estimation" else "training"
+        record_job({
+            "id": job_id,
+            "image": image_name,
+            "type": job_type,
+            "status": status,
+            "vramEstimateGb": vram_estimate_gb,
+            "startedAt": time.strftime("%H:%M:%S", time.localtime(started_at)),
+            "durationSec": int(time.time() - started_at),
+        })
+        record_event(
+            "success" if status == "completed" else "error",
+            f"Job {job_id} ({job_type}) {status}",
+        )
 
     def pull_docker_image(self, image_name: str) -> bool:
         logger.info("Pulling Docker image: %s", image_name)
@@ -53,9 +73,11 @@ class JobExecutor:
         return None
 
     def handle_vram_estimation(self, job_id: str, image_name: str, command: str):
+        started_at = time.time()
         target_command = self._parse_python_command(command)
         if not target_command:
             logger.error("Job %s needs a Python command for VRAM estimation.", job_id)
+            self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
             return
 
         with tempfile.TemporaryDirectory(prefix=f"vram_{job_id}_") as report_dir:
@@ -69,10 +91,12 @@ class JobExecutor:
             ]
             
             logger.info("Running VRAM estimation for job %s.", job_id)
+            record_event("info", f"Job {job_id} VRAM estimation started")
             result = subprocess.run(cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
                 logger.error("VRAM estimation failed for job %s: %s", job_id, result.stderr.strip())
+                self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
                 return
             
             try:
@@ -85,9 +109,15 @@ class JobExecutor:
                 return
 
         self.api.save_vram_estimation(job_id, report)
+        self._record_job(
+            job_id, image_name, "vram_estimation", "completed",
+            started_at, round(report.get("peak_reserved_memory", 0.0), 2),
+        )
 
     def handle_training(self, job_id: str, image_name: str):
+        started_at = time.time()
         logger.info("Training job received for job %s.", job_id)
+        record_event("info", f"Job {job_id} training started")
 
         job_output_dir = os.path.join(OUTPUT_DIR, job_id)
         os.makedirs(job_output_dir, exist_ok=True)
@@ -123,7 +153,7 @@ class JobExecutor:
                 self._flush_log_push(job_id)
                 logger.info("[job %s] %s", job_id, line)
 
-                if time.monotonic() - (self._last_log_upload or 0) >= LOG_UPLOAD_INTERVAL:
+                if time.monotonic() - (self._last_log_upload or 0) >= runtime_config.get("log_upload_interval"):
                     self._append_build_log(job_id, store, log_buffer)
 
             proc.wait()
@@ -140,10 +170,12 @@ class JobExecutor:
             self.api.mark_job_completed(job_id)
             shutil.rmtree(job_output_dir, ignore_errors=True)
             logger.info("Deleted output directory for job %s.", job_id)
+            self._record_job(job_id, image_name, "training", "completed", started_at)
         else:
             logger.error(
                 "Job %s failed; output kept at %s", job_id, job_output_dir
             )
+            self._record_job(job_id, image_name, "training", "failed", started_at)
 
     def _flush_log_push(self, job_id: str, force: bool = False):
         if not self._log_push_buffer:
@@ -153,7 +185,7 @@ class JobExecutor:
         if (
             not force
             and self._last_log_push is not None
-            and (now - self._last_log_push) < LOG_PUSH_INTERVAL
+            and (now - self._last_log_push) < runtime_config.get("log_push_interval")
         ):
             return
 
@@ -172,7 +204,7 @@ class JobExecutor:
         if (
             not force
             and self._last_log_upload is not None
-            and (now - self._last_log_upload) < LOG_UPLOAD_INTERVAL
+            and (now - self._last_log_upload) < runtime_config.get("log_upload_interval")
         ):
             return
 

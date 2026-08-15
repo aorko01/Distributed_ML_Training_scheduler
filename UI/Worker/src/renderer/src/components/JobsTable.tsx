@@ -1,6 +1,6 @@
 import React from 'react'
 import { CheckCircle2, ListVideo, XCircle } from 'lucide-react'
-import { formatDuration, type JobRecord } from '../data/mock'
+import { formatDuration, type JobRecord } from '../types'
 
 interface JobsTableProps {
   jobs: JobRecord[]

@@ -1,48 +1,27 @@
 import React, { useState } from 'react'
-import Sidebar, { type View } from './components/Sidebar'
-import DisconnectModal from './components/DisconnectModal'
+import Sidebar from './components/Sidebar'
+import ConfigModal from './components/ConfigModal'
 import Dashboard from './views/Dashboard'
-import Logs from './views/Logs'
-import { mockWorker } from './data/mock'
+import { useWorkerData } from './hooks/useWorkerData'
 
 const App: React.FC = () => {
-  const [view, setView] = useState<View>('dashboard')
-  const [connected, setConnected] = useState(true)
-  const [showModal, setShowModal] = useState(false)
-
-  const handleConfirmDisconnect = () => {
-    setConnected(false)
-    setShowModal(false)
-  }
-
+  const data = useWorkerData()
+  const [showConfig, setShowConfig] = useState(false)
   const platform = window.worker?.platform ?? 'unknown'
 
   return (
     <div className="app-container">
-      <Sidebar
-        view={view}
-        onNavigate={setView}
-        connected={connected}
-        platform={platform}
-      />
+      <Sidebar view="dashboard" connected={data.connected} platform={platform} />
 
       <main className="main-content">
-        {view === 'dashboard' ? (
-          <Dashboard
-            connected={connected}
-            onDisconnect={() => setShowModal(true)}
-            onReconnect={() => setConnected(true)}
-          />
-        ) : (
-          <Logs connected={connected} />
-        )}
+        <Dashboard {...data} onOpenConfig={() => setShowConfig(true)} />
       </main>
 
-      {showModal ? (
-        <DisconnectModal
-          workerId={mockWorker.workerId}
-          onConfirm={handleConfirmDisconnect}
-          onCancel={() => setShowModal(false)}
+      {showConfig && data.config ? (
+        <ConfigModal
+          config={data.config}
+          onSave={data.updateConfig}
+          onClose={() => setShowConfig(false)}
         />
       ) : null}
     </div>

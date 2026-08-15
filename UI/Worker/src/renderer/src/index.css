@@ -792,3 +792,114 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 }
+
+/* Per-GPU grid */
+.gpus-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+@media (min-width: 900px) {
+  .gpus-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Config modal */
+.modal-config {
+  width: 520px;
+}
+
+.config-body {
+  align-items: stretch;
+  text-align: left;
+}
+
+.config-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.config-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.config-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.config-input {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  padding: 0.5rem 0.65rem;
+  font-size: 0.85rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.config-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+.config-error {
+  width: 100%;
+  font-size: 0.8rem;
+  color: var(--status-failed);
+  background-color: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+}
+
+/* Event feed */
+.event-feed-card {
+  min-width: 0;
+}
+
+.event-feed {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+  font-size: 0.8rem;
+}
+
+/* Spinner */
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

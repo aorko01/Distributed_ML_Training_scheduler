@@ -53,7 +53,28 @@ This Worker component is a distributed machine learning training worker that exe
   - Registers with scheduler
   - Runs heartbeat thread
   - Runs job processing thread
+  - Starts the embedded telemetry API server
   - Handles graceful shutdown
+
+### 9. Telemetry API (`server.py`)
+- Embedded FastAPI server (default `http://127.0.0.1:8600`, configurable via `WORKER_API_HOST`/`WORKER_API_PORT`)
+- Provides live worker telemetry for the desktop UI:
+  - `GET /api/worker` — static worker/hardware info
+  - `GET /api/metrics` — CPU, memory, GPU, VRAM, disk/network I/O
+  - `GET /api/gpus` — per-GPU detail (load, VRAM, temp)
+  - `GET /api/jobs` — job history recorded by the executor
+  - `GET /api/events` — recent worker events
+  - `GET /api/status` — scheduler connection state + paused flag
+  - `GET|PUT /api/config` — view/edit runtime config (intervals, scheduler URL)
+  - `POST /api/control/pause|resume` — pause/resume heartbeats and job polling
+  - `WS /ws/metrics` — 1s push of metrics + GPUs
+
+### 10. Shared Telemetry State (`telemetry.py`)
+- In-memory store of job history, events, heartbeat status, and pause flag shared between the worker loops, executor, and API server.
+
+### 11. Runtime Config (`runtime_config.py`, `io_monitor.py`)
+- `runtime_config.py` holds mutable runtime intervals (heartbeat, job poll, log push/upload) that the worker loops and executor read live.
+- `io_monitor.py` computes disk/network throughput rates for the metrics API.
 
 ## Execution Flow
 1. Worker starts and registers with scheduler

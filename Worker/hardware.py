@@ -1,7 +1,10 @@
 import os
 import socket
 import uuid
+import shutil
+import platform
 import GPUtil
+import psutil
 from config import WORKER_ID_FILE
 
 def get_or_create_worker_id() -> str:
@@ -84,6 +87,70 @@ def count_gpus_in_use() -> int:
         if gpu.load > 0.01 or gpu.memoryUsed > 64:
             busy += 1
     return busy
+
+def get_gpus_info() -> list[dict]:
+    """Per-GPU specs and live usage for dashboard rendering."""
+    try:
+        gpus = GPUtil.getGPUs()
+    except Exception:
+        return []
+    result = []
+    for index, gpu in enumerate(gpus):
+        total = round(gpu.memoryTotal / 1024, 2)
+        free = round(gpu.memoryFree / 1024, 2)
+        result.append({
+            "index": index,
+            "name": gpu.name,
+            "load": round(gpu.load * 100.0, 2),
+            "vramUsedGb": round(max(0.0, total - free), 2),
+            "vramFreeGb": free,
+            "vramTotalGb": total,
+            "temperatureC": round(gpu.temperature, 1) if gpu.temperature else 0.0,
+            "inUse": gpu.load > 0.01 or gpu.memoryUsed > 64,
+        })
+    return result
+
+def get_gpu_temperature() -> float:
+    """Current GPU temperature in Celsius (0 if unavailable)."""
+    try:
+        gpus = GPUtil.getGPUs()
+    except Exception:
+        return 0.0
+    if not gpus:
+        return 0.0
+    temps = [g.temperature for g in gpus if g.temperature]
+    if not temps:
+        return 0.0
+    return round(sum(temps) / len(temps), 1)
+
+def get_mem_total_gb() -> float:
+    try:
+        return round(psutil.virtual_memory().total / (1024 ** 3), 1)
+    except Exception:
+        return 0.0
+
+def docker_available() -> bool:
+    return shutil.which("docker") is not None
+
+def cuda_available() -> bool:
+    if shutil.which("nvidia-smi") is not None:
+        return True
+    try:
+        return bool(GPUtil.getGPUs())
+    except Exception:
+        return False
+
+def get_os_info() -> str:
+    try:
+        os_name = platform.system()
+        os_release = platform.release()
+        if os_name == "Linux":
+            return f"{os_name} {os_release}"
+        if os_name == "Darwin":
+            return f"macOS {platform.mac_ver()[0]}"
+        return f"{os_name} {os_release}"
+    except Exception:
+        return platform.system()
 
 def collect_node_info() -> dict:
     """Collect host-level metrics reported to the scheduler."""

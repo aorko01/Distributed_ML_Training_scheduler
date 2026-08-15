@@ -1,11 +1,13 @@
 import requests
 import logging
-from config import (
-    REGISTER_URL, HEARTBEAT_URL, PULL_JOB_URL,
-    SAVE_VRAM_ESTIMATION_URL, MARK_COMPLETED_URL, SEND_LOG_URL,
-)
+import config
 
 logger = logging.getLogger("api")
+
+
+def _url(path: str) -> str:
+    return f"{config.get_scheduler_url()}{path}"
+
 
 class SchedulerAPI:
     def __init__(self, worker_id: str):
@@ -20,7 +22,7 @@ class SchedulerAPI:
             **node_info,
         }
         try:
-            resp = requests.post(REGISTER_URL, json=payload, timeout=10)
+            resp = requests.post(_url("/workers/register"), json=payload, timeout=10)
             logger.info("Registered with scheduler: %s", resp.json())
         except Exception as e:
             logger.error("Failed to register worker: %s", e)
@@ -32,7 +34,7 @@ class SchedulerAPI:
             "available_vram": available_vram,
             **node_info,
         }
-        resp = requests.post(HEARTBEAT_URL, json=payload, timeout=10)
+        resp = requests.post(_url("/workers/heartbeat"), json=payload, timeout=10)
         logger.info("Heartbeat sent: %s", resp.json())
 
     def pull_job(self, gpu_type: str, free_vram: float) -> dict | None:
@@ -42,7 +44,7 @@ class SchedulerAPI:
             "free_vram": free_vram,
         }
         try:
-            resp = requests.post(PULL_JOB_URL, json=payload, timeout=10)
+            resp = requests.post(_url("/jobs/pull_job"), json=payload, timeout=10)
             data = resp.json()
 
             if "message" in data:
@@ -58,7 +60,7 @@ class SchedulerAPI:
 
     def mark_job_completed(self, job_id: str):
         try:
-            resp = requests.post(MARK_COMPLETED_URL, json={"job_id": job_id}, timeout=10)
+            resp = requests.post(_url("/jobs/mark_completed"), json={"job_id": job_id}, timeout=10)
             resp.raise_for_status()
             logger.info("Marked job %s completed: %s", job_id, resp.json())
         except Exception as e:
@@ -70,7 +72,7 @@ class SchedulerAPI:
             return
         try:
             resp = requests.post(
-                f"{SEND_LOG_URL}/{job_id}",
+                f"{_url('/jobs/logs')}/{job_id}",
                 json={"lines": lines},
                 timeout=5,
             )
@@ -85,7 +87,7 @@ class SchedulerAPI:
             "step_time": report["step_wall_time"],
         }
         try:
-            response = requests.post(SAVE_VRAM_ESTIMATION_URL, json=payload, timeout=10)
+            response = requests.post(_url("/jobs/save_vram_estimation"), json=payload, timeout=10)
             response.raise_for_status()
             logger.info("Saved VRAM estimation for job %s: %s", job_id, response.json())
         except Exception as e:
