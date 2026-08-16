@@ -16,6 +16,8 @@ from api import SchedulerAPI
 from object_store import ObjectStore
 from output_monitor import OutputFileMonitor
 from telemetry import record_job, record_event
+from checkpoint import checkpoint_manager, checkpointing_enabled
+from job_registry import JobEntry, registry
 import runtime_config
 
 logger = logging.getLogger("executor")
@@ -114,7 +116,8 @@ class JobExecutor:
             started_at, round(report.get("peak_reserved_memory", 0.0), 2),
         )
 
-    def handle_training(self, job_id: str, image_name: str):
+    def handle_training(self, job_id: str, image_name: str,
+                        checkpoint_interval: float | None = None):
         started_at = time.time()
         logger.info("Training job received for job %s.", job_id)
         record_event("info", f"Job {job_id} training started")
@@ -126,6 +129,26 @@ class JobExecutor:
         monitor = OutputFileMonitor(job_id, job_output_dir, store)
         monitor.start()
 
+        self._build_log_base = None
+        self._last_log_upload = None
+        self._log_push_buffer = []
+        self._last_log_push = None
+        self._job_log_buffer: list[str] = []
+        self._last_log_ts = None
+
+        if checkpointing_enabled():
+            self._run_training_checkpointable(
+                job_id, image_name, job_output_dir, store, monitor,
+                started_at, checkpoint_interval,
+            )
+        else:
+            self._run_training_legacy(
+                job_id, image_name, job_output_dir, store, monitor, started_at,
+            )
+
+    def _run_training_legacy(self, job_id: str, image_name: str,
+                             job_output_dir: str, store: ObjectStore,
+                             monitor: OutputFileMonitor, started_at: float):
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
             "-v", f"{job_output_dir}:{CONTAINER_OUTPUT_MOUNT}",
@@ -133,13 +156,7 @@ class JobExecutor:
         ]
         logger.info("Running container: %s", " ".join(cmd))
 
-        self._build_log_base = None
-        self._last_log_upload = None
-        self._log_push_buffer = []
-        self._last_log_push = None
-        log_buffer: list[str] = []
         success = False
-
         try:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -148,13 +165,13 @@ class JobExecutor:
 
             for line in iter(proc.stdout.readline, ""):
                 line = line.rstrip("\n")
-                log_buffer.append(line)
+                self._job_log_buffer.append(line)
                 self._log_push_buffer.append(line)
                 self._flush_log_push(job_id)
                 logger.info("[job %s] %s", job_id, line)
 
                 if time.monotonic() - (self._last_log_upload or 0) >= runtime_config.get("log_upload_interval"):
-                    self._append_build_log(job_id, store, log_buffer)
+                    self._append_build_log(job_id, store, self._job_log_buffer)
 
             proc.wait()
             success = proc.returncode == 0
@@ -162,9 +179,128 @@ class JobExecutor:
             logger.error("Execution error for job %s: %s", job_id, e)
 
         self._flush_log_push(job_id, force=True)
-        self._append_build_log(job_id, store, log_buffer, force=True)
+        self._append_build_log(job_id, store, self._job_log_buffer, force=True)
         monitor.stop()
+        self._finalize_job(job_id, image_name, job_output_dir, started_at, success)
 
+    def _run_training_checkpointable(self, job_id: str, image_name: str,
+                                     job_output_dir: str, store: ObjectStore,
+                                     monitor: OutputFileMonitor,
+                                     started_at: float,
+                                     checkpoint_interval: float | None):
+        container_name = f"dmlts-{job_id}"
+        entry = JobEntry(
+            job_id, container_name, image_name,
+            checkpoint_manager.job_checkpoint_dir(job_id),
+        )
+        entry.output_dir = job_output_dir
+        entry.store = store
+        entry.monitor = monitor
+        if checkpoint_interval is not None:
+            entry.checkpoint_interval = float(checkpoint_interval)
+        registry.add(entry)
+
+        success = False
+        try:
+            self._cleanup_container(container_name)
+            run_cmd = [
+                "docker", "run", "-d", "--name", container_name,
+                "--gpus", "all",
+                "-v", f"{job_output_dir}:{CONTAINER_OUTPUT_MOUNT}",
+                image_name,
+            ]
+            logger.info("Starting container: %s", " ".join(run_cmd))
+            res = subprocess.run(run_cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                logger.error("Failed to start container for job %s: %s",
+                             job_id, res.stderr.strip())
+                self._record_job(job_id, image_name, "training", "failed", started_at)
+                return
+            record_event("info", f"Job {job_id} container started ({container_name})")
+            success = self._monitor_container(entry)
+        except Exception as e:
+            logger.error("Execution error for job %s: %s", job_id, e)
+        finally:
+            self._flush_log_push(job_id, force=True)
+            self._append_build_log(job_id, store, self._job_log_buffer, force=True)
+            monitor.stop()
+            self._cleanup_container(container_name)
+            registry.remove(job_id)
+
+        self._finalize_job(job_id, image_name, job_output_dir, started_at, success)
+
+    def _monitor_container(self, entry: JobEntry) -> bool:
+        """Follow logs across pause/restore cycles until the job terminates."""
+        while True:
+            state = checkpoint_manager.container_state(entry.container)
+            if state == "running":
+                self._follow_container_logs(entry)
+                continue
+            if state == "exited":
+                if self._is_paused_exit(entry):
+                    time.sleep(1.0)
+                    continue
+                exit_code = checkpoint_manager.container_exit_code(entry.container)
+                logger.info("Container %s exited with code %s",
+                            entry.container, exit_code)
+                return exit_code == 0
+            if state == "missing":
+                logger.error("Container %s is missing", entry.container)
+                return False
+            time.sleep(1.0)
+
+    def _follow_container_logs(self, entry: JobEntry):
+        cmd = ["docker", "logs", "-f", "-t"]
+        if self._last_log_ts is not None:
+            cmd += ["--since", self._last_log_ts]
+        cmd.append(entry.container)
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+        except Exception as e:
+            logger.error("Failed to follow logs for %s: %s", entry.container, e)
+            return
+
+        for raw in iter(proc.stdout.readline, ""):
+            line = raw.rstrip("\n")
+            ts, content = self._split_log_line(line)
+            if ts is not None:
+                self._last_log_ts = ts
+            else:
+                content = line
+            self._job_log_buffer.append(content)
+            self._log_push_buffer.append(content)
+            self._flush_log_push(entry.job_id)
+            logger.info("[job %s] %s", entry.job_id, content)
+
+            if time.monotonic() - (self._last_log_upload or 0) >= runtime_config.get("log_upload_interval"):
+                self._append_build_log(entry.job_id, entry.store, self._job_log_buffer)
+        proc.wait()
+
+    @staticmethod
+    def _split_log_line(line: str) -> tuple[str | None, str]:
+        ts, sep, rest = line.partition(" ")
+        if not sep or not ts.endswith("Z"):
+            return None, line
+        _, _, rest = rest.partition(" ")
+        _, sep, content = rest.partition(" ")
+        return ts, content if sep else ""
+
+    def _is_paused_exit(self, entry: JobEntry) -> bool:
+        with entry.lock:
+            return entry.state in ("paused", "checkpointing", "restoring")
+
+    @staticmethod
+    def _cleanup_container(container_name: str):
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True, text=True,
+        )
+
+    def _finalize_job(self, job_id: str, image_name: str, job_output_dir: str,
+                      started_at: float, success: bool):
         if success:
             logger.info("Job %s completed successfully.", job_id)
             self.api.mark_job_completed(job_id)
@@ -239,7 +375,10 @@ class JobExecutor:
         if flag == "vram_estimation":
             self.handle_vram_estimation(job_id, image_name, job.get("command", ""))
         elif flag == "training":
-            self.handle_training(job_id, image_name)
+            self.handle_training(
+                job_id, image_name,
+                checkpoint_interval=job.get("checkpoint_interval"),
+            )
         elif flag == "retry":
             logger.info("Retry job received for job %s.", job_id)
         else:

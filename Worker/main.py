@@ -7,6 +7,7 @@ from hardware import get_or_create_worker_id, get_gpu_info, collect_node_info, c
 from api import SchedulerAPI
 from executor import JobExecutor
 from telemetry import record_heartbeat, record_event, is_paused
+from checkpoint import checkpoint_manager, checkpointing_enabled
 import runtime_config
 import server
 
@@ -48,6 +49,17 @@ def job_loop(executor: JobExecutor, api: SchedulerAPI, stop_event: threading.Eve
             logger.error("Error processing job: %s", e)
         stop_event.wait(runtime_config.get("job_poll_interval"))
 
+def checkpoint_loop(stop_event: threading.Event):
+    """Periodic auto-snapshot of running jobs (checkpoint_interval seconds)."""
+    logger.info("Checkpoint thread started.")
+    while not stop_event.is_set():
+        try:
+            if not is_paused() and checkpointing_enabled():
+                checkpoint_manager.periodic_snapshots()
+        except Exception as e:
+            logger.error("Checkpoint loop error: %s", e)
+        stop_event.wait(1.0)
+
 def main():
     worker_id = get_or_create_worker_id()
     logger.info("Worker starting. ID: %s", worker_id)
@@ -75,6 +87,15 @@ def main():
     )
     heartbeat_thread.start()
     job_thread.start()
+
+    if checkpointing_enabled():
+        checkpoint_thread = threading.Thread(
+            target=checkpoint_loop, args=(stop_event,),
+            name="checkpoint", daemon=True,
+        )
+        checkpoint_thread.start()
+        logger.info("Checkpoint loop enabled (interval %ss).",
+                    runtime_config.get("checkpoint_interval"))
 
     api_host = os.getenv("WORKER_API_HOST", "127.0.0.1")
     api_port = int(os.getenv("WORKER_API_PORT", "8600"))

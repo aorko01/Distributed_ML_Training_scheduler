@@ -19,6 +19,13 @@ from hardware import (
     get_gpu_temperature, docker_available, cuda_available, get_os_info,
     get_gpus_info,
 )
+from checkpoint import (
+    CheckpointError,
+    checkpoint_manager,
+    checkpointing_enabled,
+    docker_checkpoint_supported,
+)
+from job_registry import registry
 
 logger = logging.getLogger("server")
 
@@ -101,6 +108,7 @@ class ConfigState(BaseModel):
     jobPollIntervalSec: float
     logPushIntervalSec: float
     logUploadIntervalSec: float
+    checkpointIntervalSec: float
 
 
 class Status(BaseModel):
@@ -212,6 +220,7 @@ def get_config():
         jobPollIntervalSec=runtime_config.get("job_poll_interval"),
         logPushIntervalSec=runtime_config.get("log_push_interval"),
         logUploadIntervalSec=runtime_config.get("log_upload_interval"),
+        checkpointIntervalSec=runtime_config.get("checkpoint_interval"),
     )
 
 
@@ -221,6 +230,7 @@ class ConfigUpdate(BaseModel):
     jobPollIntervalSec: float | None = None
     logPushIntervalSec: float | None = None
     logUploadIntervalSec: float | None = None
+    checkpointIntervalSec: float | None = None
 
 
 @app.put("/api/config", response_model=ConfigState)
@@ -234,6 +244,8 @@ def update_config(update: ConfigUpdate):
         pairs["log_push_interval"] = update.logPushIntervalSec
     if update.logUploadIntervalSec is not None:
         pairs["log_upload_interval"] = update.logUploadIntervalSec
+    if update.checkpointIntervalSec is not None:
+        pairs["checkpoint_interval"] = update.checkpointIntervalSec
     runtime_config.set_many(pairs)
 
     if update.schedulerUrl is not None and update.schedulerUrl.strip() != config_module.get_scheduler_url():
@@ -250,15 +262,129 @@ def update_config(update: ConfigUpdate):
 @app.post("/api/control/pause")
 def pause():
     telemetry.set_paused(True)
-    telemetry.record_event("warn", "Worker paused by user — heartbeats and job polling stopped")
+    telemetry.record_event(
+        "warn",
+        "Worker paused by user — heartbeats and job polling stopped; "
+        "checkpointing running jobs",
+    )
+    if checkpointing_enabled():
+        threading.Thread(
+            target=_pause_all_jobs, daemon=True, name="pause-all-checkpoints"
+        ).start()
     return _build_status()
 
 
 @app.post("/api/control/resume")
 def resume():
     telemetry.set_paused(False)
-    telemetry.record_event("info", "Worker resumed")
+    telemetry.record_event("info", "Worker resumed; restoring paused jobs")
+    if checkpointing_enabled():
+        threading.Thread(
+            target=_resume_all_jobs, daemon=True, name="resume-all-checkpoints"
+        ).start()
     return _build_status()
+
+
+def _pause_job_bg(job_id: str):
+    try:
+        entry = checkpoint_manager.pause_job(job_id)
+        telemetry.record_event(
+            "warn",
+            f"Job {job_id} checkpointed and paused "
+            f"(checkpoint {entry.latest_checkpoint})",
+        )
+    except CheckpointError as e:
+        telemetry.record_event("error", f"Failed to checkpoint job {job_id}: {e}")
+
+
+def _resume_job_bg(job_id: str):
+    try:
+        entry = checkpoint_manager.resume_job(job_id)
+        telemetry.record_event(
+            "info",
+            f"Job {job_id} restored from checkpoint {entry.latest_checkpoint}",
+        )
+    except CheckpointError as e:
+        telemetry.record_event("error", f"Failed to restore job {job_id}: {e}")
+
+
+def _pause_all_jobs():
+    results = checkpoint_manager.pause_all()
+    for job_id, result in results.items():
+        if "error" in result:
+            telemetry.record_event(
+                "error", f"Failed to checkpoint job {job_id}: {result['error']}"
+            )
+        else:
+            telemetry.record_event("warn", f"Job {job_id} checkpointed and paused")
+
+
+def _resume_all_jobs():
+    results = checkpoint_manager.resume_all()
+    for job_id, result in results.items():
+        if "error" in result:
+            telemetry.record_event(
+                "error", f"Failed to restore job {job_id}: {result['error']}"
+            )
+        else:
+            telemetry.record_event("info", f"Job {job_id} restored")
+
+
+@app.get("/api/checkpoint")
+def checkpoint_overview():
+    return {
+        "checkpoint_enabled": checkpointing_enabled(),
+        "docker_checkpoint_supported": docker_checkpoint_supported(),
+        "gpu_fingerprint": checkpoint_manager.fingerprint,
+        "jobs": [e.to_dict() for e in registry.all()],
+    }
+
+
+@app.get("/api/checkpoint/{job_id}")
+def checkpoint_status(job_id: str):
+    info = checkpoint_manager.checkpoint_info(job_id)
+    entry = registry.get(job_id)
+    if entry:
+        info["job"] = entry.to_dict()
+    return info
+
+
+@app.post("/api/checkpoint/{job_id}")
+def checkpoint_job(job_id: str):
+    if not checkpointing_enabled():
+        return {"error": "checkpointing is disabled"}
+    entry = registry.get(job_id)
+    if not entry:
+        return {"error": f"No running job with id {job_id}"}
+    with entry.lock:
+        if entry.state == "paused":
+            return {"error": f"Job {job_id} is already paused"}
+        if entry.state != "running":
+            return {"error": f"Job {job_id} is {entry.state}; cannot pause now"}
+    threading.Thread(
+        target=_pause_job_bg, args=(job_id,),
+        daemon=True, name=f"cp-pause-{job_id}",
+    ).start()
+    return {"status": "started", "job_id": job_id, "state": entry.state}
+
+
+@app.post("/api/checkpoint/{job_id}/restore")
+def restore_job(job_id: str):
+    if not checkpointing_enabled():
+        return {"error": "checkpointing is disabled"}
+    entry = registry.get(job_id)
+    if not entry:
+        return {"error": f"No job with id {job_id}"}
+    with entry.lock:
+        if entry.state == "running":
+            return {"error": f"Job {job_id} is already running"}
+        if entry.state != "paused":
+            return {"error": f"Job {job_id} is {entry.state}; cannot restore now"}
+    threading.Thread(
+        target=_resume_job_bg, args=(job_id,),
+        daemon=True, name=f"cp-resume-{job_id}",
+    ).start()
+    return {"status": "started", "job_id": job_id, "state": entry.state}
 
 
 def _dump(model: BaseModel) -> dict:

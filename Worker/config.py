@@ -60,14 +60,32 @@ CONTAINER_OUTPUT_MOUNT = os.getenv("CONTAINER_OUTPUT_MOUNT", "/output")
 LOG_UPLOAD_INTERVAL = int(os.getenv("LOG_UPLOAD_INTERVAL", "60"))
 LOG_PUSH_INTERVAL = float(os.getenv("LOG_PUSH_INTERVAL", "1.0"))
 
+# Checkpoint / restore (best-effort fallback layer, not primary fault recovery)
+# CHECKPOINT_ENABLED: master switch. When disabled, training containers are run
+# exactly as before (docker run --rm) and checkpointing endpoints are no-ops.
+# CHECKPOINT_INTERVAL: seconds between automatic snapshots of running training
+# jobs. 0 disables periodic checkpointing (manual endpoints still work). This
+# value is tunable at runtime via /api/config (checkpointIntervalSec).
+# CHECKPOINT_MODE: how a manual pause stores the snapshot:
+#   "stop_restart"   — checkpoint leaves the container stopped (frozen);
+#                      restore uses `docker start --checkpoint`.
+#   "leave_running"  — checkpoint keeps the container running with CUDA
+#                      suspended; restore stops it and starts from the dump.
+CHECKPOINT_ENABLED = os.getenv("CHECKPOINT_ENABLED", "1").lower() in ("1", "true", "yes")
+CHECKPOINT_INTERVAL = float(os.getenv("CHECKPOINT_INTERVAL", "0"))
+CHECKPOINT_MODE = os.getenv("CHECKPOINT_MODE", "stop_restart")
+CUDA_CHECKPOINT_BIN = os.getenv("CUDA_CHECKPOINT_BIN", "cuda-checkpoint")
+
 # File Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKER_ID_FILE = os.path.join(BASE_DIR, "worker_id.txt")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 VRAM_ESTIMATION_SCRIPT = os.path.join(BASE_DIR, "vram_estimation.py")
+CHECKPOINT_DIR = os.path.join(BASE_DIR, "checkpoints")
 
 # Ensure output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 # Central Logger Configuration
 logging.basicConfig(

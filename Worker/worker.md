@@ -65,14 +65,33 @@ This Worker component is a distributed machine learning training worker that exe
   - `GET /api/jobs` — job history recorded by the executor
   - `GET /api/events` — recent worker events
   - `GET /api/status` — scheduler connection state + paused flag
-  - `GET|PUT /api/config` — view/edit runtime config (intervals, scheduler URL)
-  - `POST /api/control/pause|resume` — pause/resume heartbeats and job polling
+  - `GET|PUT /api/config` — view/edit runtime config (intervals, scheduler URL, `checkpointIntervalSec`)
+  - `POST /api/control/pause|resume` — pause/resume heartbeats and job polling (also checkpoints / restores running jobs)
   - `WS /ws/metrics` — 1s push of metrics + GPUs
 
-### 10. Shared Telemetry State (`telemetry.py`)
+### 10. Checkpoint / Restore (`checkpoint.py`, `job_registry.py`)
+- Best-effort fallback layer (NOT primary fault recovery) so a GPU training job can be paused and resumed without the user writing any checkpointing code.
+- Flow: before pausing, `cuda-checkpoint suspend` suspends CUDA and evicts GPU memory to host RAM, then `docker checkpoint create` (CRIU) freezes and dumps the whole container to `checkpoints/<job_id>/`. Restore uses `docker start --checkpoint <name> <container>`, then `cuda-checkpoint resume` reloads the GPU state.
+- Job-level API: `POST /api/checkpoint/<job_id>` (pause + snapshot), `POST /api/checkpoint/<job_id>/restore`, `GET /api/checkpoint`, `GET /api/checkpoint/<job_id>`.
+- Worker-level `POST /api/control/pause` also snapshots all running jobs; `resume` restores them.
+- Periodic auto-snapshot: every `checkpoint_interval` seconds each running job is snapshotted via a stop-restart cycle. The interval is tunable at runtime (`PUT /api/config {checkpointIntervalSec: <seconds>}`, `0` disables) or via the `CHECKPOINT_INTERVAL` env var. A per-job override is honored when the scheduler includes `checkpoint_interval` in the job payload.
+- Constraints: restore requires the same GPU model AND driver version (validated against `checkpoints/<job_id>/meta.json`; restore is refused on mismatch). Reliable for single-GPU jobs; same-node multi-GPU is coordinated (all containers frozen before any dump); multi-node needs an external coordinator (not implemented).
+
+### 11. Checkpoint Configuration
+- `CHECKPOINT_ENABLED` (`1` default) — master switch; when `0` the worker runs containers exactly as before (`docker run --rm`) and checkpoint endpoints are no-ops.
+- `CHECKPOINT_INTERVAL` (`0` default) — seconds between automatic snapshots per running job; `0` disables periodic snapshots (manual endpoints still work). Tunable at runtime.
+- `CHECKPOINT_MODE` (`stop_restart` default) — `stop_restart` leaves the container stopped after a manual checkpoint; `leave_running` keeps it running with CUDA suspended.
+- `CUDA_CHECKPOINT_BIN` (`cuda-checkpoint` default) — path to the NVIDIA cuda-checkpoint binary.
+- `CHECKPOINT_DIR` — where snapshots are stored (default `./checkpoints`, per job at `checkpoints/<job_id>/`).
+
+### 12. Checkpoint Registry (`job_registry.py`)
+- In-memory registry of running jobs shared between the executor (owns the container lifecycle) and the checkpoint manager (pause/resume/periodic snapshots).
+- Each job tracks its state: `running` → `checkpointing` → `paused` → `restoring` → `running`.
+
+### 13. Shared Telemetry State (`telemetry.py`)
 - In-memory store of job history, events, heartbeat status, and pause flag shared between the worker loops, executor, and API server.
 
-### 11. Runtime Config (`runtime_config.py`, `io_monitor.py`)
+### 14. Runtime Config (`runtime_config.py`, `io_monitor.py`)
 - `runtime_config.py` holds mutable runtime intervals (heartbeat, job poll, log push/upload) that the worker loops and executor read live.
 - `io_monitor.py` computes disk/network throughput rates for the metrics API.
 
