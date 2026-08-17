@@ -5,3 +5,4 @@ docker
 psutil
 fastapi
 uvicorn[standard]
+setuptools

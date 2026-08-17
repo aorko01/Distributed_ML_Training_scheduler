@@ -53,6 +53,23 @@ class OutputFileMonitor(threading.Thread):
             for name in files:
                 self._maybe_upload(os.path.join(root, name))
 
+    def pending_uploads(self) -> list[str]:
+        """Paths still on disk that have not been successfully uploaded."""
+        if not os.path.isdir(self.output_dir):
+            return []
+        pending = []
+        for root, _dirs, files in os.walk(self.output_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                if path in self._exclude:
+                    continue
+                object_key = f"{self.job_id}/{os.path.relpath(path, self.output_dir)}"
+                with self._lock:
+                    if object_key in self._uploaded:
+                        continue
+                pending.append(path)
+        return pending
+
     def _maybe_upload(self, file_path: str):
         if file_path in self._exclude:
             return

@@ -11,14 +11,12 @@ import docker
 
 from config import (
     OUTPUT_DIR, VRAM_ESTIMATION_SCRIPT, DOCKER_HUB_USERNAME,
-    CONTAINER_OUTPUT_MOUNT,
+    CONTAINER_OUTPUT_MOUNT, CONTAINER_AS_ROOT,
 )
 from api import SchedulerAPI
 from object_store import ObjectStore
 from output_monitor import OutputFileMonitor
 from telemetry import record_job, record_event
-from checkpoint import checkpoint_manager, checkpointing_enabled
-from job_registry import JobEntry, registry
 import runtime_config
 
 logger = logging.getLogger("executor")
@@ -120,6 +118,18 @@ class JobExecutor:
         return workdir, baseline
 
     @staticmethod
+    def _container_user_args() -> list[str]:
+        """Run containers as the worker's UID/GID so files written into the
+        output mount are owned by the worker (readable for upload, deletable
+        on cleanup). Falls back to root (no args) when CONTAINER_AS_ROOT=1."""
+        if CONTAINER_AS_ROOT:
+            return []
+        return [
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "-e", "HOME=/tmp",
+        ]
+
+    @staticmethod
     def _parse_python_command(command: str) -> list[str] | None:
         """Extract purely the python execution arguments from a command string."""
         try:
@@ -177,8 +187,7 @@ class JobExecutor:
             started_at, round(report.get("peak_reserved_memory", 0.0), 2),
         )
 
-    def handle_training(self, job_id: str, image_name: str,
-                        checkpoint_interval: float | None = None):
+    def handle_training(self, job_id: str, image_name: str):
         started_at = time.time()
         logger.info("Training job received for job %s.", job_id)
         record_event("info", f"Job {job_id} training started")
@@ -197,25 +206,19 @@ class JobExecutor:
         self._log_push_buffer = []
         self._last_log_push = None
         self._job_log_buffer: list[str] = []
-        self._last_log_ts = None
 
-        if checkpointing_enabled():
-            self._run_training_checkpointable(
-                job_id, image_name, job_output_dir, mount_target, store, monitor,
-                started_at, checkpoint_interval,
-            )
-        else:
-            self._run_training_legacy(
-                job_id, image_name, job_output_dir, mount_target, store,
-                monitor, started_at,
-            )
+        self._run_training(
+            job_id, image_name, job_output_dir, mount_target, store,
+            monitor, started_at,
+        )
 
-    def _run_training_legacy(self, job_id: str, image_name: str,
+    def _run_training(self, job_id: str, image_name: str,
                              job_output_dir: str, mount_target: str,
                              store: ObjectStore, monitor: OutputFileMonitor,
                              started_at: float):
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
+            *self._container_user_args(),
             "-v", f"{job_output_dir}:{mount_target}",
             image_name,
         ]
@@ -246,140 +249,53 @@ class JobExecutor:
         self._flush_log_push(job_id, force=True)
         self._append_build_log(job_id, store, self._job_log_buffer, force=True)
         monitor.stop()
-        self._finalize_job(job_id, image_name, job_output_dir, started_at, success)
+        self._finalize_job(job_id, image_name, job_output_dir, monitor,
+                           started_at, success)
 
-    def _run_training_checkpointable(self, job_id: str, image_name: str,
-                                     job_output_dir: str, mount_target: str,
-                                     store: ObjectStore,
-                                     monitor: OutputFileMonitor,
-                                     started_at: float,
-                                     checkpoint_interval: float | None):
-        container_name = f"dmlts-{job_id}"
-        entry = JobEntry(
-            job_id, container_name, image_name,
-            checkpoint_manager.job_checkpoint_dir(job_id),
-        )
-        entry.output_dir = job_output_dir
-        entry.store = store
-        entry.monitor = monitor
-        if checkpoint_interval is not None:
-            entry.checkpoint_interval = float(checkpoint_interval)
-        registry.add(entry)
-
-        success = False
+    def _remove_output_dir(self, job_output_dir: str) -> bool:
+        """Delete a job output dir, falling back to a root docker helper when
+        it contains files/dirs owned by the container's root user."""
+        shutil.rmtree(job_output_dir, ignore_errors=True)
+        if not os.path.exists(job_output_dir):
+            return True
         try:
-            self._cleanup_container(container_name)
-            run_cmd = [
-                "docker", "run", "-d", "--name", container_name,
-                "--gpus", "all",
-                "-v", f"{job_output_dir}:{mount_target}",
-                image_name,
-            ]
-            logger.info("Starting container: %s", " ".join(run_cmd))
-            res = subprocess.run(run_cmd, capture_output=True, text=True)
-            if res.returncode != 0:
-                logger.error("Failed to start container for job %s: %s",
-                             job_id, res.stderr.strip())
-                self._record_job(job_id, image_name, "training", "failed", started_at)
-                return
-            record_event("info", f"Job {job_id} container started ({container_name})")
-            success = self._monitor_container(entry)
-        except Exception as e:
-            logger.error("Execution error for job %s: %s", job_id, e)
-        finally:
-            self._flush_log_push(job_id, force=True)
-            self._append_build_log(job_id, store, self._job_log_buffer, force=True)
-            monitor.stop()
-            self._cleanup_container(container_name)
-            registry.remove(job_id)
-
-        self._finalize_job(job_id, image_name, job_output_dir, started_at, success)
-
-    def _monitor_container(self, entry: JobEntry) -> bool:
-        """Follow logs across pause/restore cycles until the job terminates."""
-        while True:
-            state = checkpoint_manager.container_state(entry.container)
-            if state == "running":
-                self._follow_container_logs(entry)
-                continue
-            if state == "exited":
-                if self._is_paused_exit(entry):
-                    time.sleep(1.0)
-                    continue
-                exit_code = checkpoint_manager.container_exit_code(entry.container)
-                logger.info("Container %s exited with code %s",
-                            entry.container, exit_code)
-                return exit_code == 0
-            if state == "missing":
-                logger.error("Container %s is missing", entry.container)
-                return False
-            time.sleep(1.0)
-
-    def _follow_container_logs(self, entry: JobEntry):
-        cmd = ["docker", "logs", "-f", "-t"]
-        if self._last_log_ts is not None:
-            cmd += ["--since", self._last_log_ts]
-        cmd.append(entry.container)
-        try:
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
+            subprocess.run(
+                [
+                    "docker", "run", "--rm",
+                    "-v", f"{job_output_dir}:/cleanup",
+                    "alpine", "rm", "-rf", "/cleanup",
+                ],
+                check=True, capture_output=True, text=True, timeout=180,
             )
+            return not os.path.exists(job_output_dir)
         except Exception as e:
-            logger.error("Failed to follow logs for %s: %s", entry.container, e)
-            return
-
-        for raw in iter(proc.stdout.readline, ""):
-            line = raw.rstrip("\n")
-            ts, content = self._split_log_line(line)
-            if ts is not None:
-                self._last_log_ts = ts
-            else:
-                content = line
-            self._job_log_buffer.append(content)
-            self._log_push_buffer.append(content)
-            self._flush_log_push(entry.job_id)
-            logger.info("[job %s] %s", entry.job_id, content)
-
-            if time.monotonic() - (self._last_log_upload or 0) >= runtime_config.get("log_upload_interval"):
-                self._append_build_log(entry.job_id, entry.store, self._job_log_buffer)
-        proc.wait()
-
-    @staticmethod
-    def _split_log_line(line: str) -> tuple[str | None, str]:
-        ts, sep, rest = line.partition(" ")
-        if not sep or not ts.endswith("Z"):
-            return None, line
-        _, _, rest = rest.partition(" ")
-        _, sep, content = rest.partition(" ")
-        return ts, content if sep else ""
-
-    def _is_paused_exit(self, entry: JobEntry) -> bool:
-        with entry.lock:
-            return entry.state in ("paused", "checkpointing", "restoring")
-
-    @staticmethod
-    def _cleanup_container(container_name: str):
-        subprocess.run(
-            ["docker", "rm", "-f", container_name],
-            capture_output=True, text=True,
-        )
+            logger.warning("Docker-assisted cleanup failed for %s: %s",
+                           job_output_dir, e)
+            return False
 
     def _finalize_job(self, job_id: str, image_name: str, job_output_dir: str,
-                      started_at: float, success: bool):
+                      monitor: OutputFileMonitor, started_at: float,
+                      success: bool):
+        monitor.flush()
+        pending = monitor.pending_uploads()
+        if pending:
+            logger.warning(
+                "Job %s: %d file(s) failed to upload to object store; "
+                "keeping output dir at %s",
+                job_id, len(pending), job_output_dir,
+            )
+        elif self._remove_output_dir(job_output_dir):
+            logger.info("Deleted output directory for job %s.", job_id)
+        else:
+            logger.warning("Could not fully delete output dir for job %s: %s",
+                           job_id, job_output_dir)
+
         if success:
             logger.info("Job %s completed successfully.", job_id)
             self.api.mark_job_completed(job_id)
-            shutil.rmtree(job_output_dir, ignore_errors=True)
-            logger.info("Deleted output directory for job %s.", job_id)
             self._record_job(job_id, image_name, "training", "completed", started_at)
         else:
-            logger.error(
-                "Job %s failed; uploading all output to object store.", job_id
-            )
-            monitor.flush()
-            shutil.rmtree(job_output_dir, ignore_errors=True)
-            logger.info("Deleted output directory for job %s.", job_id)
+            logger.error("Job %s failed.", job_id)
             self._record_job(job_id, image_name, "training", "failed", started_at)
 
     def _flush_log_push(self, job_id: str, force: bool = False):
@@ -441,10 +357,7 @@ class JobExecutor:
         if flag == "vram_estimation":
             self.handle_vram_estimation(job_id, image_name, job.get("command", ""))
         elif flag == "training":
-            self.handle_training(
-                job_id, image_name,
-                checkpoint_interval=job.get("checkpoint_interval"),
-            )
+            self.handle_training(job_id, image_name)
         elif flag == "retry":
             logger.info("Retry job received for job %s.", job_id)
         else:

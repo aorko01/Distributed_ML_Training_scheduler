@@ -1,6 +1,7 @@
 import io
 import os
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -12,6 +13,9 @@ MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
 MINIO_ROOT_USER = os.environ.get("MINIO_ROOT_USER", "minioadmin")
 MINIO_ROOT_PASSWORD = os.environ.get("MINIO_ROOT_PASSWORD", "minioadmin")
 MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
+# Endpoint used to build presigned URLs. Must be reachable by clients (workers),
+# so it cannot be the Docker-internal "minio:9000".
+MINIO_PUBLIC_ENDPOINT = os.environ.get("MINIO_PUBLIC_ENDPOINT", "localhost:9000")
 
 
 def get_client() -> Minio:
@@ -20,6 +24,16 @@ def get_client() -> Minio:
         access_key=MINIO_ROOT_USER,
         secret_key=MINIO_ROOT_PASSWORD,
         secure=MINIO_SECURE,
+    )
+
+
+def get_public_client() -> Minio:
+    return Minio(
+        MINIO_PUBLIC_ENDPOINT,
+        access_key=MINIO_ROOT_USER,
+        secret_key=MINIO_ROOT_PASSWORD,
+        secure=MINIO_SECURE,
+        region="us-east-1",
     )
 
 
@@ -64,6 +78,27 @@ async def upload_object(
     }
 
 
+@app.post("/objects/presign_upload")
+def presign_upload(
+    bucket: str = Form(...),
+    object_key: str = Form(...),
+    expires: int = Form(3600),
+):
+    client = get_client()
+
+    if not client.bucket_exists(bucket):
+        raise HTTPException(status_code=404, detail=f"Bucket '{bucket}' not found")
+
+    try:
+        url = get_public_client().presigned_put_object(
+            bucket, object_key, expires=timedelta(seconds=expires)
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"url": url, "bucket": bucket, "object_key": object_key}
+
+
 @app.get("/objects/{bucket}/{object_key:path}")
 def download_object(bucket: str, object_key: str):
     client = get_client()
@@ -76,8 +111,19 @@ def download_object(bucket: str, object_key: str):
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    def iter_response(resp):
+        try:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            resp.close()
+            resp.release_conn()
+
     return StreamingResponse(
-        response,
+        iter_response(response),
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{object_key.split("/")[-1]}"'
