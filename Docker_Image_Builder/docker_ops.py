@@ -112,13 +112,45 @@ def emit_build_lines(job_id: str, build_log_buffer: list[str], lines: list[str])
 
     Keeps the in-memory buffer and the realtime UI stream in sync so both the
     object-store build.log and the scheduler log show the same ordered output.
+    Lines containing embedded newlines (e.g. the Dockerfile) are split so each
+    appears as its own log entry.
     """
-    if not lines:
+    normalized = []
+    for line in lines:
+        normalized.extend(str(line).splitlines() or [""])
+    if not normalized:
         return
+    lines = normalized
     build_log_buffer.extend(lines)
     send_log_lines(job_id, lines)
     for line in lines:
         logger.info("  [build] %s", line)
+
+
+def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
+    """Extract the raw docker build output from a BuildError.
+
+    The exception's message only carries a one-line summary; the full log
+    (pip resolution errors, conflicting versions, stack traces, etc.) lives
+    in the `build_log` attribute. Returns cleaned, de-duplicated lines.
+    """
+    lines = []
+    for entry in getattr(error, "build_log", None) or []:
+        if not isinstance(entry, dict):
+            continue
+        text = entry.get("stream") or entry.get("error") or entry.get("status")
+        if not text:
+            continue
+        for raw_line in str(text).replace("\r", "\n").splitlines():
+            line = raw_line.strip()
+            if line:
+                lines.append(line)
+
+    deduped = []
+    for line in lines:
+        if not deduped or deduped[-1] != line:
+            deduped.append(line)
+    return deduped
 
 
 def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> tuple[str, str] | None:
@@ -171,14 +203,17 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         try:
             _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True)
             for chunk in build_logs:
-                if "stream" not in chunk or not chunk["stream"].strip():
-                    continue
                 chunk_lines = []
-                for stream_line in chunk["stream"].splitlines():
-                    stream_line = stream_line.strip()
-                    if not stream_line or not should_upload_build_line(stream_line):
-                        continue
-                    chunk_lines.append(stream_line)
+                if "error" in chunk:
+                    chunk_lines.append(f"Docker error: {chunk['error']}")
+                if "stream" in chunk and chunk["stream"].strip():
+                    for stream_line in chunk["stream"].splitlines():
+                        stream_line = stream_line.strip()
+                        if not stream_line or not should_upload_build_line(stream_line):
+                            continue
+                        chunk_lines.append(stream_line)
+                if "status" in chunk and chunk["status"].strip():
+                    chunk_lines.append(chunk["status"].strip())
 
                 emit_build_lines(job_id, build_log_buffer, chunk_lines)
                 if chunk_lines:
@@ -186,10 +221,12 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         except docker.errors.BuildError as e:
             logger.error("Build failed for job %s: %s", job_id, e)
             reason = f"Build failed: {e}"
-            error_line = str(e).strip() or reason
+            error_lines = _extract_build_log_lines(e)
+            if not error_lines:
+                error_lines = [str(e).strip()]
             emit_build_lines(job_id, build_log_buffer, [
-                f"Build failed with {type(e).__name__}:",
-                error_line,
+                "Build failed with BuildError:",
+                *error_lines,
             ])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
             return "user", reason
