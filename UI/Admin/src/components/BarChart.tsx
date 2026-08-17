@@ -17,7 +17,7 @@ const BarChart: React.FC<BarChartProps> = ({ data, height = 200, onSelect }) => 
   return (
     <div className="bar-chart" style={{ height }}>
       {data.map((point, i) => {
-        const barHeight = Math.max(4, Math.round((point.jobs / max) * (height - 56)));
+        const barHeight = Math.max(4, Math.round((point.jobs / max) * (height - 70)));
         return (
           <div
             key={point.label}
