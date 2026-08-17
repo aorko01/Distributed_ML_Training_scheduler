@@ -27,6 +27,7 @@ class Job(Base):
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
     object_key = Column(String, nullable=False, unique=True)
     command = Column(String, nullable=False)
+    resume_command = Column(String, nullable=True)
     docker_base_image = Column(String, nullable=False)
     config = Column(JSON, nullable=True)
 

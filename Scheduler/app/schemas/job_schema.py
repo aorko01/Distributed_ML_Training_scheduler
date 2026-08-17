@@ -7,6 +7,7 @@ class JobCreate(BaseModel):
     user_id: str
     object_key: str
     command: str
+    resume_command: Optional[str] = None
     docker_base_image: str
     config: Optional[Dict] = None
     priority: JobPriority = JobPriority.NORMAL
@@ -18,6 +19,7 @@ class JobResponse(BaseModel):
     status: str
     priority: JobPriority
     reason_for_priority: Optional[str] = None
+    resume_command: Optional[str] = None
     device: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

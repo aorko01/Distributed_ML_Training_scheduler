@@ -45,6 +45,7 @@ def _ws_authenticate(websocket: WebSocket, db: Session) -> User | None:
 async def submit_job(
     zip_file: UploadFile = File(...),
     command: str = Form(...),
+    resume_command: str = Form(""),
     docker_base_image: str = Form(...),
     vram_required: float | None = Form(None),
     request_for_priority: bool = Form(False),
@@ -78,6 +79,7 @@ async def submit_job(
         "user_id": current_user.user_id,
         "object_key": result["object_key"],
         "command": command,
+        "resume_command": resume_command.strip() or None,
         "docker_base_image": docker_base_image,
         "config": None,
         "vram_required": vram_required,

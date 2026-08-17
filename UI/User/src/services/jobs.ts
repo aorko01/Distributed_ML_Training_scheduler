@@ -12,6 +12,7 @@ export interface Job {
   gpuHours: number;
   device: string;
   queuePosition?: number;
+  resumeCommand?: string;
 }
 
 interface BackendJob {
@@ -19,6 +20,7 @@ interface BackendJob {
   user_id: string;
   object_key: string;
   command: string;
+  resume_command: string | null;
   docker_base_image: string;
   config: unknown;
   status: string;
@@ -74,6 +76,7 @@ const mapJob = (job: BackendJob, index: number): Job => {
     submittedAt: job.created_at,
     gpuHours: job.gpu_hour ?? 0,
     device: parseDevice(job),
+    resumeCommand: job.resume_command ?? undefined,
   };
 };
 
@@ -144,6 +147,7 @@ export const fetchJobById = async (id: string): Promise<Job | undefined> => {
 export interface SubmitJobPayload {
   name: string;
   command: string;
+  resumeCommand?: string;
   pytorchVersion: string;
   cudaVersion: string;
   dockerBaseImage: string;
@@ -160,6 +164,9 @@ export const submitJob = async (
   const formData = new FormData();
   formData.append('zip_file', zipFile);
   formData.append('command', jobData.command);
+  if (jobData.resumeCommand) {
+    formData.append('resume_command', jobData.resumeCommand);
+  }
   formData.append('docker_base_image', jobData.dockerBaseImage);
   formData.append('request_for_priority', String(jobData.requestForPriority));
   if (jobData.reasonForPriority) {
@@ -214,6 +221,7 @@ export const submitJob = async (
     submittedAt: job.created_at ?? new Date().toISOString(),
     gpuHours: 0,
     device: DUMMY_DEVICES[0],
+    resumeCommand: jobData.resumeCommand,
     queuePosition: undefined,
   };
 };

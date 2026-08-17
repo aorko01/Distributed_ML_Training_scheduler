@@ -12,6 +12,7 @@ const SubmitJob: React.FC = () => {
   const [selectedPyTorch, setSelectedPyTorch] = useState('');
   const [selectedCuda, setSelectedCuda] = useState<CudaVariant | null>(null);
   const [bashScript, setBashScript] = useState('python train.py --epochs 100 --batch-size 32');
+  const [resumeCommand, setResumeCommand] = useState('');
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -78,6 +79,7 @@ const SubmitJob: React.FC = () => {
       const job = await submitJob({
         name: jobName,
         command: bashScript,
+        resumeCommand: resumeCommand.trim() || undefined,
         pytorchVersion: selectedPyTorch,
         cudaVersion: selectedCuda.cuda,
         dockerBaseImage: selectedCuda.tag,
@@ -212,6 +214,17 @@ const SubmitJob: React.FC = () => {
               required
             ></textarea>
             <p style={{ fontSize: '0.75rem', marginTop: '0.5rem' }}>This command will be executed inside the container root of your extracted zip file.</p>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Resume Checkpoint Command (Bash)</label>
+            <textarea 
+              className="form-textarea"
+              value={resumeCommand}
+              onChange={e => setResumeCommand(e.target.value)}
+              placeholder="python train.py --resume checkpoint.pt"
+            ></textarea>
+            <p style={{ fontSize: '0.75rem', marginTop: '0.5rem' }}>Optional. Command used to resume from a saved checkpoint. Will be stored with the job for later use.</p>
           </div>
 
           <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
