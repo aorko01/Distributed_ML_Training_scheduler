@@ -32,10 +32,17 @@ class OutputFileMonitor(threading.Thread):
             self._scan()
             time.sleep(self.poll_interval)
 
-    def stop(self):
+    def stop(self, retries: int = 3, retry_delay: float = 0.5):
         self._stop_event.set()
         self.join()
-        self._scan()
+        self.flush(retries=retries, retry_delay=retry_delay)
+
+    def flush(self, retries: int = 3, retry_delay: float = 0.5):
+        """Final scan, retrying until all files are uploaded (or attempts exhausted)."""
+        for attempt in range(retries):
+            self._scan()
+            if attempt < retries - 1:
+                time.sleep(retry_delay)
 
     def _scan(self):
         if not os.path.isdir(self.output_dir):

@@ -173,8 +173,11 @@ class JobExecutor:
             self._record_job(job_id, image_name, "training", "completed", started_at)
         else:
             logger.error(
-                "Job %s failed; output kept at %s", job_id, job_output_dir
+                "Job %s failed; uploading all output to object store.", job_id
             )
+            monitor.flush()
+            shutil.rmtree(job_output_dir, ignore_errors=True)
+            logger.info("Deleted output directory for job %s.", job_id)
             self._record_job(job_id, image_name, "training", "failed", started_at)
 
     def _flush_log_push(self, job_id: str, force: bool = False):
