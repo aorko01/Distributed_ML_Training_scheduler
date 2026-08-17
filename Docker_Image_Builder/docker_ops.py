@@ -92,6 +92,19 @@ def should_upload_build_line(line: str) -> bool:
     if normalized.startswith("push") or "pushing" in normalized:
         return False
 
+    # Base-image pull/download progress is noise for the user; log it only.
+    if (
+        normalized.startswith("pulling")
+        or normalized.startswith("downloading")
+        or normalized.startswith("extracting")
+        or normalized.startswith("digest:")
+        or "downloaded newer image" in normalized
+        or "pull complete" in normalized
+        or "download complete" in normalized
+        or "verifying checksum" in normalized
+    ):
+        return False
+
     return True
 
 
