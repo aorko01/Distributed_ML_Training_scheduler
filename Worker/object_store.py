@@ -135,3 +135,64 @@ class ObjectStore:
         except Exception as e:
             logger.warning("Failed to download %s: %s", object_key, e)
             return None
+
+    def list_objects(self, prefix: str = "") -> list[dict]:
+        """List objects under `prefix` in the output bucket.
+
+        Returns [{key, size, last_modified}, ...] or [] on failure.
+        """
+        try:
+            resp = requests.get(
+                f"{self.base_url}/objects/list",
+                params={"bucket": self.bucket, "prefix": prefix},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return resp.json().get("objects", [])
+        except Exception as e:
+            logger.warning("Failed to list objects under %r: %s", prefix, e)
+            return []
+
+    def _presign_download(self, object_key: str) -> str:
+        resp = requests.post(
+            f"{self.base_url}/objects/presign_download",
+            data={"bucket": self.bucket, "object_key": object_key},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        url = resp.json().get("url")
+        if not url:
+            raise ValueError(f"No presigned URL returned for {object_key}")
+        return url
+
+    def download_to(self, object_key: str, dest_path: str, size: int | None = None) -> bool:
+        """Download an object to a local file path.
+
+        Large objects bypass the proxied endpoint via a presigned GET URL, the
+        same way uploads bypass it for large payloads.
+        """
+        if size is None or size < OBJECT_STORE_LARGE_FILE_THRESHOLD:
+            content = self.download(object_key)
+            if content is None:
+                return False
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            try:
+                with open(dest_path, "wb") as f:
+                    f.write(content)
+                return True
+            except OSError as e:
+                logger.warning("Failed to write %s: %s", dest_path, e)
+                return False
+
+        try:
+            url = self._presign_download(object_key)
+            with requests.get(url, stream=True, timeout=3600) as resp:
+                resp.raise_for_status()
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                with open(dest_path, "wb") as f:
+                    for chunk in resp.iter_content(1 << 20):
+                        f.write(chunk)
+            return True
+        except Exception as e:
+            logger.warning("Failed to download large object %s: %s", object_key, e)
+            return False

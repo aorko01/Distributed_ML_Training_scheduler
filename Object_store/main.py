@@ -99,6 +99,59 @@ def presign_upload(
     return {"url": url, "bucket": bucket, "object_key": object_key}
 
 
+@app.get("/objects/list")
+def list_objects(bucket: str, prefix: str = ""):
+    """List objects in a bucket, optionally filtered by a key prefix.
+
+    Used by workers to discover a job's previously uploaded output files
+    (e.g. checkpoints) so a retry can restore them before resuming training.
+    """
+    client = get_client()
+
+    if not client.bucket_exists(bucket):
+        raise HTTPException(status_code=404, detail=f"Bucket '{bucket}' not found")
+
+    objects = []
+    try:
+        for obj in client.list_objects(bucket, prefix=prefix, recursive=True):
+            objects.append(
+                {
+                    "key": obj.object_name,
+                    "size": obj.size,
+                    "last_modified": (
+                        obj.last_modified.isoformat() if obj.last_modified else None
+                    ),
+                }
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"bucket": bucket, "prefix": prefix, "objects": objects}
+
+
+@app.post("/objects/presign_download")
+def presign_download(
+    bucket: str = Form(...),
+    object_key: str = Form(...),
+    expires: int = Form(3600),
+):
+    """Presigned GET URL so large outputs can be downloaded straight from MinIO,
+    bypassing the proxied endpoint that rejects large payloads."""
+    client = get_client()
+
+    if not client.bucket_exists(bucket):
+        raise HTTPException(status_code=404, detail=f"Bucket '{bucket}' not found")
+
+    try:
+        url = get_public_client().presigned_get_object(
+            bucket, object_key, expires=timedelta(seconds=expires)
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"url": url, "bucket": bucket, "object_key": object_key}
+
+
 @app.get("/objects/{bucket}/{object_key:path}")
 def download_object(bucket: str, object_key: str):
     client = get_client()

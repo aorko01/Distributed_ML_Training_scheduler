@@ -224,21 +224,91 @@ class JobExecutor:
         self._last_log_push = None
         self._job_log_buffer: list[str] = []
 
-        self._run_training(
+        self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
             monitor, started_at,
         )
 
-    def _run_training(self, job_id: str, image_name: str,
-                             job_output_dir: str, mount_target: str,
-                             store: ObjectStore, monitor: OutputFileMonitor,
-                             started_at: float):
+    def handle_retry(self, job_id: str, image_name: str, resume_command: str | None):
+        started_at = time.time()
+        logger.info("Retry job received for job %s.", job_id)
+        record_event("info", f"Job {job_id} retry started")
+
+        if not resume_command:
+            logger.error("Job %s needs a resume command for retry.", job_id)
+            self._record_job(job_id, image_name, "training", "failed", started_at)
+            self.api.mark_job_failed(
+                job_id, "system", "Retry job has no resume command"
+            )
+            return
+
+        job_output_dir = os.path.join(OUTPUT_DIR, job_id)
+        os.makedirs(job_output_dir, exist_ok=True)
+
+        store = ObjectStore()
+
+        # Restore the job's previously uploaded outputs (e.g. checkpoints) into
+        # the container's workspace before resuming, so the resume command can
+        # pick up where the last run left off.
+        self._restore_job_output(job_id, job_output_dir, store)
+
+        mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name)
+
+        monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
+        monitor.start()
+
+        self._build_log_base = None
+        self._last_log_upload = None
+        self._log_push_buffer = []
+        self._last_log_push = None
+        self._job_log_buffer: list[str] = []
+
+        self._run_container(
+            job_id, image_name, job_output_dir, mount_target, store,
+            monitor, started_at,
+            command_args=["sh", "-c", resume_command],
+        )
+
+    def _restore_job_output(self, job_id: str, job_output_dir: str, store: ObjectStore):
+        """Download the job's previously uploaded outputs from the object store
+        into the container's workspace."""
+        objects = store.list_objects(prefix=f"{job_id}/")
+        restored = 0
+        for obj in objects:
+            key = obj.get("key", "")
+            rel_path = key[len(job_id) + 1:] if key.startswith(f"{job_id}/") else key
+            if not rel_path:
+                continue
+            # build.log is a build artifact, not training state; skip it.
+            if os.path.basename(rel_path) == "build.log":
+                continue
+
+            dest = os.path.join(job_output_dir, rel_path)
+            if store.download_to(key, dest, size=obj.get("size")):
+                restored += 1
+            else:
+                logger.warning(
+                    "Job %s: failed to restore %s from object store.", job_id, key
+                )
+
+        if objects:
+            logger.info("Job %s: restored %d/%d file(s) from object store.",
+                        job_id, restored, len(objects))
+        else:
+            logger.info("Job %s: no previously saved outputs to restore.", job_id)
+
+    def _run_container(self, job_id: str, image_name: str,
+                              job_output_dir: str, mount_target: str,
+                              store: ObjectStore, monitor: OutputFileMonitor,
+                              started_at: float, command_args: list[str] | None = None):
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
             *self._container_user_args(),
             "-v", f"{job_output_dir}:{mount_target}",
             image_name,
         ]
+        if command_args:
+            cmd.extend(command_args)
         logger.info("Running container: %s", " ".join(cmd))
 
         success = False
@@ -388,6 +458,6 @@ class JobExecutor:
         elif flag == "training":
             self.handle_training(job_id, image_name)
         elif flag == "retry":
-            logger.info("Retry job received for job %s.", job_id)
+            self.handle_retry(job_id, image_name, job.get("resume_command"))
         else:
             logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)

@@ -221,9 +221,44 @@ async def _check_training_job_strategy(db: Session, request: WorkerResource) -> 
     return _format_job_response(job, flag="training")
 
 
+async def _check_retry_job_strategy(db: Session, request: WorkerResource) -> dict | None:
+    """
+    Strategy 3: Requeue a job that previously failed due to an infrastructure
+    issue (RETRY_NEEDED). It is only sent to a worker whose free VRAM fits the
+    job's estimated requirement, so the worker can restore the checkpoints from
+    the object store and resume with the resume command.
+    """
+    job = (
+        db.query(Job)
+        .filter(
+            Job.status == JobStatus.RETRY_NEEDED,
+            or_(
+                Job.vram_required.is_(None),
+                (Job.vram_required + 1.0) <= request.free_vram,
+            ),
+        )
+        .order_by(Job.created_at.asc())
+        .first()
+    )
+
+    if not job:
+        return None
+
+    job.status = JobStatus.IN_PROGRESS
+    job.started_at = datetime.now(timezone.utc)
+    job.device = request.gpu_type  # Save the device when worker pulls for running
+    db.commit()
+    db.refresh(job)
+
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
+
+    return _format_job_response(job, flag="retry")
+
+
 # List of scheduling strategies in priority order. Easy to extend with new strategies.
 SCHEDULING_STRATEGIES = [
     _check_vram_estimation_strategy,
+    _check_retry_job_strategy,
     _check_training_job_strategy,
 ]
 
