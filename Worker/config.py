@@ -55,7 +55,11 @@ HEARTBEAT_INTERVAL = 5
 JOB_POLL_INTERVAL = 10
 DOCKER_HUB_USERNAME = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
 
-# Container execution
+# Container execution.
+# The executor normally mounts the job output dir onto the container's WORKDIR
+# so everything the container writes relative to its working directory is
+# captured. CONTAINER_OUTPUT_MOUNT is the fallback mount path used when the
+# WORKDIR can't be prepared (e.g. image WORKDIR is "/" or the seed fails).
 CONTAINER_OUTPUT_MOUNT = os.getenv("CONTAINER_OUTPUT_MOUNT", "/output")
 LOG_UPLOAD_INTERVAL = int(os.getenv("LOG_UPLOAD_INTERVAL", "60"))
 LOG_PUSH_INTERVAL = float(os.getenv("LOG_PUSH_INTERVAL", "1.0"))

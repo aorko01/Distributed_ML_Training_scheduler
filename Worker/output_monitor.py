@@ -17,12 +17,14 @@ class OutputFileMonitor(threading.Thread):
         output_dir: str,
         store: ObjectStore,
         poll_interval: float = 2.0,
+        exclude: set[str] | None = None,
     ):
         super().__init__(daemon=True)
         self.job_id = job_id
         self.output_dir = output_dir
         self.store = store
         self.poll_interval = poll_interval
+        self._exclude = exclude or set()
         self._stop_event = threading.Event()
         self._uploaded: dict[str, tuple[int, float]] = {}
         self._lock = threading.Lock()
@@ -52,6 +54,8 @@ class OutputFileMonitor(threading.Thread):
                 self._maybe_upload(os.path.join(root, name))
 
     def _maybe_upload(self, file_path: str):
+        if file_path in self._exclude:
+            return
         try:
             stat = os.stat(file_path)
         except OSError:
