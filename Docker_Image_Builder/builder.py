@@ -85,11 +85,17 @@ def scan_and_process():
                 logger.error("Job %s built but scheduler notification failed, will retry.", job_id)
         else:
             failure_type, failure_reason = result
-            notified = notify_scheduler_job_failed(job_id, failure_type, failure_reason)
-            if notified:
-                logger.error("Job %s failed (%s), reported to scheduler.", job_id, failure_type)
+            if failure_type == "user":
+                notified = notify_scheduler_job_failed(job_id, failure_type, failure_reason)
+                if notified:
+                    logger.error("Job %s failed (user code), reported to scheduler.", job_id)
+                else:
+                    logger.error("Job %s failed (user code), scheduler not notified, will retry.", job_id)
             else:
-                logger.error("Job %s failed (%s), scheduler not notified, will retry.", job_id, failure_type)
+                logger.warning(
+                    "Job %s failed (builder/system issue), keeping pending for retry: %s",
+                    job_id, failure_reason,
+                )
 
 def main():
     logger.info("Docker Image Builder service starting ...")

@@ -107,6 +107,20 @@ def maybe_upload_build_logs(job_id: str, log_text: str, last_upload_time: float 
     return now
 
 
+def emit_build_lines(job_id: str, build_log_buffer: list[str], lines: list[str]) -> None:
+    """Append build lines to the buffer and stream them to the scheduler.
+
+    Keeps the in-memory buffer and the realtime UI stream in sync so both the
+    object-store build.log and the scheduler log show the same ordered output.
+    """
+    if not lines:
+        return
+    build_log_buffer.extend(lines)
+    send_log_lines(job_id, lines)
+    for line in lines:
+        logger.info("  [build] %s", line)
+
+
 def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> tuple[str, str] | None:
     """Build, push and clean up the job image.
 
@@ -139,6 +153,21 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         logger.info("Building image %s ...", image_tag)
         build_log_buffer = []
         last_upload_time = None
+
+        # Emit a diagnostic header so users have full context for debugging.
+        emit_build_lines(job_id, build_log_buffer, [
+            "=" * 60,
+            f"Job {job_id}: building Docker image",
+            f"Target image : {image_tag}",
+            f"Base image   : {base_image}",
+            f"Command      : {command or '(default Docker CMD)'}",
+            "--- generated Dockerfile ---",
+            dockerfile_content,
+            "--- end Dockerfile ---",
+            "=" * 60,
+        ])
+        last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+
         try:
             _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True)
             for chunk in build_logs:
@@ -149,35 +178,49 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                     stream_line = stream_line.strip()
                     if not stream_line or not should_upload_build_line(stream_line):
                         continue
-
-                    build_log_buffer.append(stream_line)
                     chunk_lines.append(stream_line)
-                    logger.info("  [build] %s", stream_line)
-                    last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
+
+                emit_build_lines(job_id, build_log_buffer, chunk_lines)
                 if chunk_lines:
-                    send_log_lines(job_id, chunk_lines)
+                    last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
         except docker.errors.BuildError as e:
             logger.error("Build failed for job %s: %s", job_id, e)
             reason = f"Build failed: {e}"
-            if str(e).strip():
-                build_log_buffer.append(str(e).strip())
-                send_log_lines(job_id, [str(e).strip()])
+            error_line = str(e).strip() or reason
+            emit_build_lines(job_id, build_log_buffer, [
+                f"Build failed with {type(e).__name__}:",
+                error_line,
+            ])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
             return "user", reason
 
-        if build_log_buffer:
-            maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+        emit_build_lines(job_id, build_log_buffer, [
+            "Docker build completed successfully.",
+        ])
+        maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
-        # Push image
+        # Push image (capture push status so registry/network issues are debuggable)
         logger.info("Pushing image %s ...", image_tag)
+        emit_build_lines(job_id, build_log_buffer, ["Pushing image to Docker Hub ..."])
         push_output = client.images.push(repository=f"{DOCKER_HUB_USERNAME}/{job_id}", tag="latest", stream=True, decode=True)
         for chunk in push_output:
-            if "status" in chunk:
-                status_line = f"{chunk['status']} {chunk.get('progress', '')}".strip()
-                logger.info("  [push] %s", status_line)
             if "error" in chunk:
                 logger.error("Push error for job %s: %s", job_id, chunk["error"])
-                return "system", f"Push error: {chunk['error']}"
+                error_line = f"Push error: {chunk['error']}"
+                emit_build_lines(job_id, build_log_buffer, [error_line])
+                maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+                return "system", error_line
+            if "status" in chunk:
+                progress = chunk.get("progress", "").strip()
+                if progress:
+                    # Live progress bar tick; log locally but keep the shared
+                    # build log focused on milestones (Pushed / digest / errors).
+                    logger.info("  [push] %s %s", chunk["status"], progress)
+                    continue
+                status_line = chunk["status"].strip()
+                if status_line:
+                    emit_build_lines(job_id, build_log_buffer, [status_line])
+        maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
                 
     except docker.errors.ImageNotFound as e:
         logger.error("Base image not found for job %s: %s", job_id, e)
@@ -197,6 +240,11 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         client.images.remove(image=image_tag, force=True)
     except Exception as e:
         logger.warning("Failed to delete local image %s: %s", image_tag, e)
+
+    emit_build_lines(job_id, build_log_buffer, [
+        f"Image {image_tag} pushed to Docker Hub and local copy cleaned up.",
+    ])
+    maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
     return None
 
