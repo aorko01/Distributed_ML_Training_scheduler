@@ -265,6 +265,43 @@ def set_to_completed(db: Session, job_id: str):
     return job
 
 
+TERMINAL_STATUSES = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.RETRY_NEEDED}
+
+
+def mark_job_failed(db: Session, job_id: str, failure_type: str, failure_reason: str | None = None):
+    """Record a job failure reported by the Docker Image Builder or a Worker.
+
+    - failure_type == "user"   -> status FAILED (build or training code error)
+    - failure_type == "system" -> status RETRY_NEEDED (infra/registry/daemon issue)
+
+    Jobs already in a terminal state are left untouched.
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+
+    if not job:
+        raise Exception("Job not found")
+
+    if job.status in TERMINAL_STATUSES:
+        raise Exception(f"Job is already in terminal state {job.status.value}")
+
+    was_in_progress = job.status == JobStatus.IN_PROGRESS
+    job.status = JobStatus.FAILED if failure_type == "user" else JobStatus.RETRY_NEEDED
+    if failure_reason:
+        job.failure_reason = failure_reason[:2000]
+
+    if was_in_progress and job.started_at is not None:
+        started_at = job.started_at
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        elapsed_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        job.gpu_hour = max(elapsed_seconds, 0.0) / 3600.0
+
+    db.commit()
+    db.refresh(job)
+
+    return job
+
+
 def get_runnable_jobs_count(db: Session) -> int:
     """Total number of jobs waiting in the queue (RUNNABLE)."""
     return db.query(Job).filter(Job.status == JobStatus.RUNNABLE).count()
@@ -295,6 +332,7 @@ def get_user_jobs(db: Session, user_id: str):
             "step_time": job.step_time,
             "gpu_hour": job.gpu_hour,
             "device": job.device,
+            "failure_reason": job.failure_reason,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
         }
@@ -339,6 +377,7 @@ def get_user_job_by_id(db: Session, user_id: str, job_id: str):
         "step_time": job.step_time,
         "gpu_hour": job.gpu_hour,
         "device": job.device,
+        "failure_reason": job.failure_reason,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }

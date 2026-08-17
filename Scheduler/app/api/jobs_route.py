@@ -8,7 +8,7 @@ from app.db.database import SessionLocal
 from app.services import job_service, log_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport
 from app.schemas.log_schema import LogLinesRequest
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
@@ -173,6 +173,29 @@ def mark_job_completed(request: JobIDRequest, db: Session = Depends(get_db)):
     try:
         job = job_service.set_to_completed(db, request.job_id)
         return {"job_id": job.id, "status": job.status.value}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/mark_failed")
+def mark_job_failed(request: JobFailureReport, db: Session = Depends(get_db)):
+    """Record a job failure reported by the Docker Image Builder or a Worker.
+
+    failure_type "user" -> job marked FAILED (build/training code error).
+    failure_type "system" -> job marked RETRY_NEEDED (infra issue, requeued later).
+    """
+    try:
+        job = job_service.mark_job_failed(
+            db=db,
+            job_id=request.job_id,
+            failure_type=request.failure_type,
+            failure_reason=request.failure_reason,
+        )
+        return {
+            "job_id": job.id,
+            "status": job.status.value,
+            "failure_reason": job.failure_reason,
+        }
     except Exception as e:
         return {"error": str(e)}
 

@@ -151,6 +151,9 @@ class JobExecutor:
         if not target_command:
             logger.error("Job %s needs a Python command for VRAM estimation.", job_id)
             self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
+            self.api.mark_job_failed(
+                job_id, "user", "Job needs a Python command for VRAM estimation"
+            )
             return
 
         with tempfile.TemporaryDirectory(prefix=f"vram_{job_id}_") as report_dir:
@@ -165,11 +168,21 @@ class JobExecutor:
             
             logger.info("Running VRAM estimation for job %s.", job_id)
             record_event("info", f"Job {job_id} VRAM estimation started")
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True)
+            except Exception as e:
+                logger.error("Failed to run VRAM estimation for job %s: %s", job_id, e)
+                self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
+                self.api.mark_job_failed(
+                    job_id, "system", f"Failed to run VRAM estimation container: {e}"
+                )
+                return
             
             if result.returncode != 0:
-                logger.error("VRAM estimation failed for job %s: %s", job_id, result.stderr.strip())
+                reason = result.stderr.strip() or f"VRAM estimation exited with code {result.returncode}"
+                logger.error("VRAM estimation failed for job %s: %s", job_id, reason)
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
+                self.api.mark_job_failed(job_id, "user", reason)
                 return
             
             try:
@@ -179,6 +192,10 @@ class JobExecutor:
                     raise ValueError("No optimizer steps were observed")
             except (OSError, ValueError, json.JSONDecodeError) as e:
                 logger.error("Invalid VRAM estimation report for job %s: %s", job_id, e)
+                self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
+                self.api.mark_job_failed(
+                    job_id, "user", f"Invalid VRAM estimation report: {e}"
+                )
                 return
 
         self.api.save_vram_estimation(job_id, report)
@@ -225,6 +242,8 @@ class JobExecutor:
         logger.info("Running container: %s", " ".join(cmd))
 
         success = False
+        failure_type = "system"
+        failure_reason = "Training container failed to start"
         try:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -243,14 +262,19 @@ class JobExecutor:
 
             proc.wait()
             success = proc.returncode == 0
+            if not success:
+                failure_type = "user"
+                failure_reason = f"Training command exited with code {proc.returncode}"
         except Exception as e:
+            failure_type = "system"
+            failure_reason = f"Execution error: {e}"
             logger.error("Execution error for job %s: %s", job_id, e)
 
         self._flush_log_push(job_id, force=True)
         self._append_build_log(job_id, store, self._job_log_buffer, force=True)
         monitor.stop()
         self._finalize_job(job_id, image_name, job_output_dir, monitor,
-                           started_at, success)
+                           started_at, success, failure_type, failure_reason)
 
     def _remove_output_dir(self, job_output_dir: str) -> bool:
         """Delete a job output dir, falling back to a root docker helper when
@@ -275,7 +299,8 @@ class JobExecutor:
 
     def _finalize_job(self, job_id: str, image_name: str, job_output_dir: str,
                       monitor: OutputFileMonitor, started_at: float,
-                      success: bool):
+                      success: bool, failure_type: str = "system",
+                      failure_reason: str = ""):
         monitor.flush()
         pending = monitor.pending_uploads()
         if pending:
@@ -297,6 +322,7 @@ class JobExecutor:
         else:
             logger.error("Job %s failed.", job_id)
             self._record_job(job_id, image_name, "training", "failed", started_at)
+            self.api.mark_job_failed(job_id, failure_type, failure_reason)
 
     def _flush_log_push(self, job_id: str, force: bool = False):
         if not self._log_push_buffer:
@@ -352,6 +378,9 @@ class JobExecutor:
 
         if not self.pull_docker_image(image_name):
             logger.error("Aborting job %s: image pull failed.", job_id)
+            self.api.mark_job_failed(
+                job_id, "system", f"Failed to pull Docker image {image_name}"
+            )
             return
 
         if flag == "vram_estimation":

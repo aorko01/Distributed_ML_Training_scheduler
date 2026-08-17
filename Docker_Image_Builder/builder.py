@@ -8,7 +8,7 @@ import docker
 
 from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL
 from database import init_db, is_job_processed, mark_job_processed
-from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready
+from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_job_failed
 from docker_ops import docker_login, build_push_and_clean, prune_old_base_images
 
 def find_project_dir(extracted_dir: str) -> str:
@@ -62,20 +62,21 @@ def scan_and_process():
         logger.info("Processing job: %s", job_id)
 
         extract_dir = None
-        success = False
+        result = None
 
         try:
             archive_bytes = download_job_archive(object_key)
             extract_dir = extract_job_archive(archive_bytes, job_id)
             project_dir = find_project_dir(extract_dir)
-            success = build_push_and_clean(client, job_id, project_dir, command, base_image)
+            result = build_push_and_clean(client, job_id, project_dir, command, base_image)
         except Exception as e:
             logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
+            result = ("system", f"Unexpected error while processing job: {e}")
         finally:
             if extract_dir:
                 shutil.rmtree(extract_dir, ignore_errors=True)
 
-        if success:
+        if result is None:
             notified = notify_scheduler_job_ready(job_id)
             if notified:
                 mark_job_processed(job_id)
@@ -83,7 +84,12 @@ def scan_and_process():
             else:
                 logger.error("Job %s built but scheduler notification failed, will retry.", job_id)
         else:
-            logger.error("Job %s failed, will retry later.", job_id)
+            failure_type, failure_reason = result
+            notified = notify_scheduler_job_failed(job_id, failure_type, failure_reason)
+            if notified:
+                logger.error("Job %s failed (%s), reported to scheduler.", job_id, failure_type)
+            else:
+                logger.error("Job %s failed (%s), scheduler not notified, will retry.", job_id, failure_type)
 
 def main():
     logger.info("Docker Image Builder service starting ...")

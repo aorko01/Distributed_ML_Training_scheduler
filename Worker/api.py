@@ -66,6 +66,23 @@ class SchedulerAPI:
         except Exception as e:
             logger.error("Failed to mark job %s completed: %s", job_id, e)
 
+    def mark_job_failed(self, job_id: str, failure_type: str, failure_reason: str = ""):
+        """Report a job failure to the scheduler.
+
+        failure_type: "user" (train/code error -> FAILED) or "system" (infra -> RETRY_NEEDED).
+        """
+        payload = {
+            "job_id": job_id,
+            "failure_type": failure_type,
+            "failure_reason": failure_reason[:2000],
+        }
+        try:
+            resp = requests.post(_url("/jobs/mark_failed"), json=payload, timeout=10)
+            resp.raise_for_status()
+            logger.info("Marked job %s failed (%s): %s", job_id, failure_type, resp.json())
+        except Exception as e:
+            logger.error("Failed to mark job %s failed: %s", job_id, e)
+
     def send_logs(self, job_id: str, lines: list[str]):
         """Stream training log lines to the scheduler for realtime UI display."""
         if not lines:

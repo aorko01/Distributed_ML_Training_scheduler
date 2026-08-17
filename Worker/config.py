@@ -44,6 +44,7 @@ HEARTBEAT_URL = f"{BASE_URL}/workers/heartbeat"
 PULL_JOB_URL = f"{BASE_URL}/jobs/pull_job"
 SAVE_VRAM_ESTIMATION_URL = f"{BASE_URL}/jobs/save_vram_estimation"
 MARK_COMPLETED_URL = f"{BASE_URL}/jobs/mark_completed"
+MARK_FAILED_URL = f"{BASE_URL}/jobs/mark_failed"
 SEND_LOG_URL = f"{BASE_URL}/jobs/logs"
 
 # Object Store

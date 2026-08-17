@@ -12,6 +12,7 @@ class JobStatus(enum.Enum):
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    RETRY_NEEDED = "RETRY_NEEDED"
 
 
 class JobPriority(enum.Enum):
@@ -52,6 +53,9 @@ class Job(Base):
     gpu_hour = Column(Float, nullable=True)  # GPU hours used, set when the job completes
     started_at = Column(DateTime(timezone=True), nullable=True)  # when the job started running (IN_PROGRESS)
     device = Column(String, nullable=True)  # device the job is running on (saved when worker pulls for running)
+
+    # Failure reporting (set by builder/worker when a job fails)
+    failure_reason = Column(String, nullable=True)  # why the job failed / needs a retry
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

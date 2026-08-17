@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from typing import Optional, Dict
+from typing import Optional, Dict, Literal
 from app.models.job_model import JobPriority
 
 
@@ -34,3 +34,9 @@ class VramEstimationReport(BaseModel):
     job_id: str
     vram_required: float
     step_time: float
+
+class JobFailureReport(BaseModel):
+    job_id: str
+    # "user" -> job FAILED (build/training code error), "system" -> job RETRY_NEEDED (infra issue)
+    failure_type: Literal["user", "system"]
+    failure_reason: Optional[str] = None

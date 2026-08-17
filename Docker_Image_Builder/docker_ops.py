@@ -107,7 +107,13 @@ def maybe_upload_build_logs(job_id: str, log_text: str, last_upload_time: float 
     return now
 
 
-def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> bool:
+def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> tuple[str, str] | None:
+    """Build, push and clean up the job image.
+
+    Returns None on success, or a (failure_type, reason) tuple on failure where
+    failure_type is "user" (build/code error -> job FAILED) or "system"
+    (infra/daemon/registry error -> job RETRY_NEEDED).
+    """
     image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
     
@@ -152,11 +158,12 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                     send_log_lines(job_id, chunk_lines)
         except docker.errors.BuildError as e:
             logger.error("Build failed for job %s: %s", job_id, e)
+            reason = f"Build failed: {e}"
             if str(e).strip():
                 build_log_buffer.append(str(e).strip())
                 send_log_lines(job_id, [str(e).strip()])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
-            return False
+            return "user", reason
 
         if build_log_buffer:
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
@@ -170,11 +177,17 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                 logger.info("  [push] %s", status_line)
             if "error" in chunk:
                 logger.error("Push error for job %s: %s", job_id, chunk["error"])
-                return False
+                return "system", f"Push error: {chunk['error']}"
                 
+    except docker.errors.ImageNotFound as e:
+        logger.error("Base image not found for job %s: %s", job_id, e)
+        return "system", f"Base image unavailable: {e}"
+    except docker.errors.APIError as e:
+        logger.error("Docker API error for job %s: %s", job_id, e)
+        return "system", f"Docker API error: {e}"
     except Exception as e:
         logger.error("Unexpected error for job %s: %s", job_id, e)
-        return False
+        return "system", f"Unexpected error: {e}"
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
 
@@ -185,7 +198,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
     except Exception as e:
         logger.warning("Failed to delete local image %s: %s", image_tag, e)
 
-    return True
+    return None
 
 def prune_old_base_images(client: docker.DockerClient):
     old_images = get_old_base_images(days=7)

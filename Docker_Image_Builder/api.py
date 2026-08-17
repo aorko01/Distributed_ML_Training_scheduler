@@ -2,7 +2,7 @@ import requests
 from urllib.parse import quote
 from config import (
     SCHEDULER_QUEUE_URL, SCHEDULER_UPDATE_URL, SCHEDULER_LOG_URL,
-    OBJECT_STORE_URL, OBJECT_STORE_BUCKET, logger
+    SCHEDULER_FAILURE_URL, OBJECT_STORE_URL, OBJECT_STORE_BUCKET, logger
 )
 
 def fetch_unbuilt_jobs() -> list[dict]:
@@ -44,4 +44,28 @@ def notify_scheduler_job_ready(job_id: str) -> bool:
         logger.error("Scheduler notification failed for job %s: %s %s", job_id, response.status_code, response.text)
     except Exception as e:
         logger.error("Failed to contact scheduler for job %s: %s", job_id, e)
+    return False
+
+def notify_scheduler_job_failed(job_id: str, failure_type: str, failure_reason: str) -> bool:
+    """Report a job failure to the scheduler.
+
+    failure_type: "user" (build/code error -> FAILED) or "system" (infra -> RETRY_NEEDED).
+    """
+    payload = {
+        "job_id": job_id,
+        "failure_type": failure_type,
+        "failure_reason": failure_reason[:2000],
+    }
+    try:
+        response = requests.post(SCHEDULER_FAILURE_URL, json=payload, timeout=10)
+        if response.status_code == 200:
+            body = response.json()
+            if "error" in body:
+                logger.error("Scheduler rejected failure report for job %s: %s", job_id, body["error"])
+                return False
+            logger.info("Scheduler notified of %s failure for job %s", failure_type, job_id)
+            return True
+        logger.error("Scheduler failure notification failed for job %s: %s %s", job_id, response.status_code, response.text)
+    except Exception as e:
+        logger.error("Failed to report failure for job %s: %s", job_id, e)
     return False
