@@ -61,6 +61,7 @@ def run_migrations():
     statements = [
         "ALTER TABLE workers ADD COLUMN IF NOT EXISTS gpus_in_use INTEGER",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS resume_command VARCHAR",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS name VARCHAR",
     ]
     with engine.begin() as conn:
         for statement in statements:

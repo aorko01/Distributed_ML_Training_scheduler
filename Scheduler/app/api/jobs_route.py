@@ -44,6 +44,7 @@ def _ws_authenticate(websocket: WebSocket, db: Session) -> User | None:
 @router.post("/submit_job")
 async def submit_job(
     zip_file: UploadFile = File(...),
+    name: str = Form(""),
     command: str = Form(...),
     resume_command: str = Form(""),
     docker_base_image: str = Form(...),
@@ -78,6 +79,7 @@ async def submit_job(
         "id": job_id,  # Pass it in
         "user_id": current_user.user_id,
         "object_key": result["object_key"],
+        "name": name.strip() or None,
         "command": command,
         "resume_command": resume_command.strip() or None,
         "docker_base_image": docker_base_image,

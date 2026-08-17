@@ -19,6 +19,7 @@ interface BackendJob {
   id: string;
   user_id: string;
   object_key: string;
+  name: string | null;
   command: string;
   resume_command: string | null;
   docker_base_image: string;
@@ -29,6 +30,7 @@ interface BackendJob {
   vram_required: number | null;
   step_time: number | null;
   gpu_hour: number | null;
+  device: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -61,11 +63,12 @@ const parseDevice = (job: BackendJob): string => {
 };
 
 const getJobName = (job: BackendJob): string => {
+  if (job.name) return job.name;
   const firstLine = job.command.split('\n').map(line => line.trim()).find(line => line.length > 0);
   return firstLine ?? job.id;
 };
 
-const mapJob = (job: BackendJob, index: number): Job => {
+const mapJob = (job: BackendJob): Job => {
   const env = parseEnvironment(job.docker_base_image);
   return {
     id: job.id,
@@ -138,7 +141,7 @@ export const fetchJobById = async (id: string): Promise<Job | undefined> => {
     if (hasError(data)) {
       throw new Error(data.error);
     }
-    return mapJob(data as BackendJob, 0);
+    return mapJob(data as BackendJob);
   } catch {
     return mockJobs.find(j => j.id === id);
   }
@@ -163,6 +166,7 @@ export const submitJob = async (
 ): Promise<Job> => {
   const formData = new FormData();
   formData.append('zip_file', zipFile);
+  formData.append('name', jobData.name);
   formData.append('command', jobData.command);
   if (jobData.resumeCommand) {
     formData.append('resume_command', jobData.resumeCommand);
