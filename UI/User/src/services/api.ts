@@ -49,6 +49,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     const error = new Error(extractDetail(body, `Request failed with status ${response.status}`)) as ApiError;
     error.status = response.status;
+
+    if (response.status === 401 && getToken()) {
+      clearToken();
+      clearUsername();
+      window.location.href = '/login';
+    }
+
     throw error;
   }
 
