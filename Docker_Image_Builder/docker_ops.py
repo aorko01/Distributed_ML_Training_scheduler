@@ -98,6 +98,7 @@ def should_upload_build_line(line: str) -> bool:
         or normalized.startswith("downloading")
         or normalized.startswith("extracting")
         or normalized.startswith("digest:")
+        or normalized.startswith("pull")
         or "downloaded newer image" in normalized
         or "pull complete" in normalized
         or "download complete" in normalized
