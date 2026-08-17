@@ -263,6 +263,29 @@ SCHEDULING_STRATEGIES = [
 ]
 
 
+async def get_job_for_resume(db: Session, job_id: str, worker_id: str) -> dict | None:
+    """Return a job (shaped as a retry payload) if it is still IN_PROGRESS and
+    assigned to the given worker, so a restarted worker can resume it before the
+    stall watchdog marks it RETRY_NEEDED.
+
+    Returns None when the job was already requeued, completed or failed, or when
+    it is being run by a different worker.
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if job is None or job.status != JobStatus.IN_PROGRESS:
+        return None
+
+    assigned = await redis_client.get(JOB_WORKER_KEY_PREFIX + job.id)
+    if assigned not in (None, worker_id):
+        return None
+
+    # Re-assert the job->worker mapping so the stall watchdog keeps tracking
+    # this worker if the job stalls again after being resumed.
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, worker_id)
+
+    return _format_job_response(job, flag="retry")
+
+
 async def get_next_job_for_worker(db: Session, request: WorkerResource):
     """
     Main entry point for pulling a job.

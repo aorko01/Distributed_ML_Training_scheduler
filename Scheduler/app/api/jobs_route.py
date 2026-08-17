@@ -8,7 +8,7 @@ from app.db.database import SessionLocal
 from app.services import job_service, log_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest
 from app.schemas.log_schema import LogLinesRequest
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
@@ -153,6 +153,22 @@ async def pull_job(request: WorkerResource, db: Session = Depends(get_db)):
         job_info = await job_service.get_next_job_for_worker(db, request)
         if job_info is None:
             return {"message": "No runnable jobs available"}
+        return job_info
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/resume")
+async def resume_job(request: JobResumeRequest, db: Session = Depends(get_db)):
+    """Let a restarted worker resume an in-progress job it was running before it
+    went down, as long as the scheduler still has it IN_PROGRESS on this worker
+    (i.e. before the stall watchdog requeues it as RETRY_NEEDED)."""
+    try:
+        job_info = await job_service.get_job_for_resume(
+            db, request.job_id, request.worker_id
+        )
+        if job_info is None:
+            return {"message": "Job is not in progress on this worker"}
         return job_info
     except Exception as e:
         return {"error": str(e)}

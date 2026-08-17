@@ -30,6 +30,10 @@ class Job_status_to_vram_estimation_pending(BaseModel):
 class JobIDRequest(BaseModel):
     job_id: str
 
+class JobResumeRequest(BaseModel):
+    job_id: str
+    worker_id: str
+
 class VramEstimationReport(BaseModel):
     job_id: str
     vram_required: float

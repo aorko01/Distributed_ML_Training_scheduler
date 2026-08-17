@@ -17,6 +17,7 @@ from api import SchedulerAPI
 from object_store import ObjectStore
 from output_monitor import META_FILE, OutputFileMonitor, write_baseline
 from telemetry import record_job, record_event
+from job_state import load_running_job, save_running_job, clear_running_job
 import runtime_config
 
 logger = logging.getLogger("executor")
@@ -212,6 +213,9 @@ class JobExecutor:
         record_event("info", f"Job {job_id} training started")
 
         job_output_dir = os.path.join(OUTPUT_DIR, job_id)
+        # Start from a clean slate: a leftover dir could hold stale files from a
+        # previous attempt that never got cleaned up.
+        self._remove_output_dir(job_output_dir)
         os.makedirs(job_output_dir, exist_ok=True)
 
         mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name)
@@ -231,30 +235,80 @@ class JobExecutor:
             monitor, started_at,
         )
 
-    def handle_retry(self, job_id: str, image_name: str, resume_command: str | None):
+    def handle_retry(self, job_id: str, image_name: str,
+                     resume_command: str | None, original_command: str | None):
         started_at = time.time()
         logger.info("Retry job received for job %s.", job_id)
         record_event("info", f"Job {job_id} retry started")
 
-        if not resume_command:
-            logger.error("Job %s needs a resume command for retry.", job_id)
-            self._record_job(job_id, image_name, "training", "failed", started_at)
-            self.api.mark_job_failed(
-                job_id, "system", "Retry job has no resume command"
-            )
-            return
-
         job_output_dir = os.path.join(OUTPUT_DIR, job_id)
-        os.makedirs(job_output_dir, exist_ok=True)
-
         store = ObjectStore()
 
-        # Restore the job's previously uploaded outputs (e.g. checkpoints) into
-        # the container's workspace before resuming, so the resume command can
-        # pick up where the last run left off.
-        self._restore_job_output(job_id, job_output_dir, store)
+        # First try to pick up where the last run left off: restore the saved
+        # checkpoints from the object store and run the resume command.
+        if resume_command:
+            resume_result = self._resume_attempt(
+                job_id, image_name, job_output_dir, store,
+                resume_command, started_at,
+            )
+            if resume_result is None:
+                return
+
+            failure_type, failure_reason = resume_result
+            if failure_type == "system":
+                # The resume container could not even start (infra issue, e.g.
+                # busy GPU / docker daemon) — not a checkpoint problem, so a
+                # fresh run would just burn GPU time and fail the same way.
+                # Requeue via the normal failure path instead.
+                logger.error("Job %s: resume could not start (%s).",
+                             job_id, failure_reason)
+                self._record_job(job_id, image_name, "training", "failed", started_at)
+                self.api.mark_job_failed(job_id, failure_type, failure_reason)
+                clear_running_job()
+                return
+
+            logger.warning(
+                "Job %s: resume with restored checkpoints failed (%s); starting fresh.",
+                job_id, failure_type,
+            )
+
+        # Resume failed (e.g. corrupted checkpoints) or there is no resume
+        # command — discard everything and run the original training command
+        # from scratch. If that fails too, it is a genuine code error and the
+        # job is marked FAILED normally.
+        if not original_command:
+            logger.error("Job %s needs an original command to start fresh.", job_id)
+            self._record_job(job_id, image_name, "training", "failed", started_at)
+            self.api.mark_job_failed(
+                job_id, "system", "Retry job has no original command"
+            )
+            clear_running_job()
+            return
+
+        logger.info("Job %s: starting fresh training run.", job_id)
+        record_event("info", f"Job {job_id} starting fresh training run")
+        self.handle_training(job_id, image_name)
+
+    def _resume_attempt(self, job_id: str, image_name: str,
+                        job_output_dir: str, store: ObjectStore,
+                        resume_command: str, started_at: float):
+        """Try to continue a job from its last checkpoints.
+
+        Seeds the container workspace, restores the job's previously uploaded
+        outputs (checkpoints) into it, then runs the resume command. Returns
+        None if the resumed run completed successfully, or a
+        (failure_type, failure_reason) tuple if it failed, in which case the
+        caller decides whether to discard the restored outputs and start fresh.
+        """
+        self._remove_output_dir(job_output_dir)
+        os.makedirs(job_output_dir, exist_ok=True)
 
         mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name)
+
+        # Restore the checkpoints into the workspace after the baseline is
+        # recorded, so only the image's baked-in files are excluded from
+        # uploads and the resumed run's updated checkpoints still get pushed.
+        self._restore_job_output(job_id, job_output_dir, store)
 
         monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
         monitor.start()
@@ -265,11 +319,23 @@ class JobExecutor:
         self._last_log_push = None
         self._job_log_buffer: list[str] = []
 
-        self._run_container(
+        success, failure_type, failure_reason = self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
             monitor, started_at,
             command_args=["sh", "-c", resume_command],
+            finalize=False,
         )
+
+        if success:
+            logger.info("Job %s: resumed successfully.", job_id)
+            self._finalize_job(job_id, image_name, job_output_dir, monitor,
+                               started_at, True)
+            return None
+
+        logger.error("Job %s: resume failed (%s: %s).",
+                     job_id, failure_type, failure_reason)
+        self._remove_output_dir(job_output_dir)
+        return failure_type, failure_reason
 
     def _restore_job_output(self, job_id: str, job_output_dir: str, store: ObjectStore):
         """Download the job's previously uploaded outputs from the object store
@@ -302,7 +368,8 @@ class JobExecutor:
     def _run_container(self, job_id: str, image_name: str,
                               job_output_dir: str, mount_target: str,
                               store: ObjectStore, monitor: OutputFileMonitor,
-                              started_at: float, command_args: list[str] | None = None):
+                              started_at: float, command_args: list[str] | None = None,
+                              finalize: bool = True):
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
             *self._container_user_args(),
@@ -345,6 +412,10 @@ class JobExecutor:
         self._flush_log_push(job_id, force=True)
         self._append_build_log(job_id, store, self._job_log_buffer, force=True)
         monitor.stop()
+
+        if not finalize:
+            return success, failure_type, failure_reason
+
         self._finalize_job(job_id, image_name, job_output_dir, monitor,
                            started_at, success, failure_type, failure_reason)
 
@@ -395,6 +466,8 @@ class JobExecutor:
             logger.error("Job %s failed.", job_id)
             self._record_job(job_id, image_name, "training", "failed", started_at)
             self.api.mark_job_failed(job_id, failure_type, failure_reason)
+
+        clear_running_job()
 
     def _flush_log_push(self, job_id: str, force: bool = False):
         if not self._log_push_buffer:
@@ -458,8 +531,57 @@ class JobExecutor:
         if flag == "vram_estimation":
             self.handle_vram_estimation(job_id, image_name, job.get("command", ""))
         elif flag == "training":
+            save_running_job(job_id)
             self.handle_training(job_id, image_name)
         elif flag == "retry":
-            self.handle_retry(job_id, image_name, job.get("resume_command"))
+            save_running_job(job_id)
+            self.handle_retry(job_id, image_name, job.get("resume_command"),
+                              job.get("command"))
         else:
             logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)
+
+    def resume_persisted_job_if_any(self) -> bool:
+        """Pick up a job this worker was running before it died, if the scheduler
+        still has it IN_PROGRESS on this worker.
+
+        The scheduler only requeues a job (RETRY_NEEDED) after the worker has
+        missed heartbeats for several minutes, so a worker that comes back sooner
+        would otherwise leave the job stuck IN_PROGRESS with nothing running it.
+        The persisted marker lets the restarted worker resume it (restoring the
+        last checkpoints and running the resume command, falling back to a fresh
+        run if the resume fails).
+        """
+        state = load_running_job()
+        if not state:
+            return False
+
+        job_id = state.get("job_id")
+        if not job_id:
+            clear_running_job()
+            return False
+
+        try:
+            job = self.api.resume_job(job_id)
+        except Exception as e:
+            logger.warning("Could not contact scheduler to resume job %s; "
+                           "will retry later.", job_id)
+            return False
+
+        if job is None:
+            logger.info("Job %s is no longer in progress on this worker; "
+                        "dropping local resume state.", job_id)
+            clear_running_job()
+            return False
+
+        image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+        logger.info("Resuming persisted job %s after worker restart.", job_id)
+        record_event("info", f"Resuming persisted job {job_id} after worker restart")
+
+        if not self.pull_docker_image(image_name):
+            logger.error("Aborting resume of job %s: image pull failed.", job_id)
+            clear_running_job()
+            return False
+
+        self.handle_retry(job_id, image_name, job.get("resume_command"),
+                          job.get("command"))
+        return True

@@ -43,6 +43,10 @@ def job_loop(executor: JobExecutor, api: SchedulerAPI, stop_event: threading.Eve
             stop_event.wait(1.0)
             continue
         try:
+            # If the worker died mid-job and came back before the scheduler's
+            # stall watchdog requeued it, pick the job back up first.
+            executor.resume_persisted_job_if_any()
+
             gpu_type, _, free_vram, _, _ = get_gpu_info()
             job = api.pull_job(gpu_type, free_vram)
             if job:
