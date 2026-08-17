@@ -3,9 +3,12 @@ import logging
 import threading
 import os
 
+from config import OUTPUT_DIR
 from hardware import get_or_create_worker_id, get_gpu_info, collect_node_info, count_gpus_in_use
 from api import SchedulerAPI
 from executor import JobExecutor
+from object_store import ObjectStore
+from output_monitor import recover_job_outputs
 from telemetry import record_heartbeat, record_event, is_paused
 import runtime_config
 import server
@@ -52,6 +55,15 @@ def main():
     worker_id = get_or_create_worker_id()
     logger.info("Worker starting. ID: %s", worker_id)
     record_event("info", f"Worker starting (id {worker_id})")
+
+    # Recover any job outputs left on disk by a previous run (graceful shutdown
+    # or crash): upload them to the object store, then delete the local copies.
+    try:
+        recovered = recover_job_outputs(OUTPUT_DIR, ObjectStore())
+        if recovered:
+            logger.info("Recovered and uploaded %d leftover output file(s).", recovered)
+    except Exception as e:
+        logger.error("Failed to recover leftover outputs: %s", e)
 
     # Initialize components
     api = SchedulerAPI(worker_id)

@@ -15,7 +15,7 @@ from config import (
 )
 from api import SchedulerAPI
 from object_store import ObjectStore
-from output_monitor import OutputFileMonitor
+from output_monitor import META_FILE, OutputFileMonitor, write_baseline
 from telemetry import record_job, record_event
 import runtime_config
 
@@ -115,6 +115,8 @@ class JobExecutor:
         for root, _dirs, files in os.walk(job_output_dir):
             for name in files:
                 baseline.add(os.path.join(root, name))
+        write_baseline(job_output_dir, baseline)
+        baseline.add(os.path.join(job_output_dir, META_FILE))
         return workdir, baseline
 
     @staticmethod
