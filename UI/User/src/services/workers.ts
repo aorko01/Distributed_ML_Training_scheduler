@@ -34,6 +34,8 @@ interface BackendNode {
   mem_usage?: number | null;
   status: string;
   running_jobs: number;
+  total_disk?: number | null;
+  available_disk?: number | null;
   first_seen?: string;
   last_registered?: string;
 }
@@ -54,8 +56,8 @@ const mapNode = (node: BackendNode): WorkerNode => {
     mem_usage: node.mem_usage ?? 0,
     status: online ? 'online' : 'offline',
     running_jobs: node.running_jobs,
-    total_disk: 0,
-    available_disk: 0,
+    total_disk: node.total_disk ?? 0,
+    available_disk: node.available_disk ?? 0,
     first_seen: node.first_seen,
     last_registered: node.last_registered,
   };
