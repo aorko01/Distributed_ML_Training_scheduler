@@ -12,6 +12,8 @@ class WorkerInfo(BaseModel):
     gpu_load: float | None = None
     cpu_load: float | None = None
     mem_usage: float | None = None
+    total_disk: float | None = None
+    available_disk: float | None = None
 
 class WorkerResponse(BaseModel):
     message: str
@@ -30,10 +32,13 @@ class WorkerNodeInfo(BaseModel):
     gpu_type: str
     num_gpus: int
     total_vram: float
+    gpus_in_use: int | None = None
     available_vram: float | None = None
     gpu_load: float | None = None
     cpu_load: float | None = None
     mem_usage: float | None = None
+    total_disk: float | None = None
+    available_disk: float | None = None
     status: str
     running_jobs: int
     first_seen: str | None = None

@@ -5,7 +5,7 @@ import shutil
 import platform
 import GPUtil
 import psutil
-from config import WORKER_ID_FILE
+from config import WORKER_ID_FILE, OUTPUT_DIR
 
 def get_or_create_worker_id() -> str:
     """Retrieve existing worker ID or generate a new persistent one."""
@@ -129,6 +129,16 @@ def get_mem_total_gb() -> float:
     except Exception:
         return 0.0
 
+def get_disk_info() -> tuple[float, float]:
+    """Total and free disk in GB on the filesystem hosting job outputs."""
+    try:
+        usage = shutil.disk_usage(OUTPUT_DIR)
+        total = round(usage.total / (1024 ** 3), 1)
+        free = round(usage.free / (1024 ** 3), 1)
+        return total, free
+    except Exception:
+        return 0.0, 0.0
+
 def docker_available() -> bool:
     return shutil.which("docker") is not None
 
@@ -154,9 +164,12 @@ def get_os_info() -> str:
 
 def collect_node_info() -> dict:
     """Collect host-level metrics reported to the scheduler."""
+    total_disk, free_disk = get_disk_info()
     return {
         "hostname": get_hostname(),
         "ip_address": get_ip_address(),
         "cpu_load": get_cpu_load(),
         "mem_usage": get_mem_usage(),
+        "total_disk": total_disk,
+        "available_disk": free_disk,
     }
