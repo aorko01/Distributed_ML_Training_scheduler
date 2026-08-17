@@ -165,7 +165,7 @@ async def resume_job(request: JobResumeRequest, db: Session = Depends(get_db)):
     (i.e. before the stall watchdog requeues it as RETRY_NEEDED)."""
     try:
         job_info = await job_service.get_job_for_resume(
-            db, request.job_id, request.worker_id
+            db, request.job_id, request.worker_id, request.device
         )
         if job_info is None:
             return {"message": "Job is not in progress on this worker"}

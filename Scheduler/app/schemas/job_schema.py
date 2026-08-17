@@ -33,6 +33,9 @@ class JobIDRequest(BaseModel):
 class JobResumeRequest(BaseModel):
     job_id: str
     worker_id: str
+    # GPU type of the requesting worker, checked against job.device so a job
+    # being run on a different device is never resumed by this worker.
+    device: Optional[str] = None
 
 class VramEstimationReport(BaseModel):
     job_id: str

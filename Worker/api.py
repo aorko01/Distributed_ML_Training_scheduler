@@ -83,7 +83,7 @@ class SchedulerAPI:
         except Exception as e:
             logger.error("Failed to mark job %s failed: %s", job_id, e)
 
-    def resume_job(self, job_id: str) -> dict | None:
+    def resume_job(self, job_id: str, gpu_type: str) -> dict | None:
         """Ask the scheduler whether an in-progress job is still assigned to this
         worker so a restarted worker can resume it before the stall watchdog
         requeues it. Returns the job payload (flag='retry') when resumable, or
@@ -92,7 +92,11 @@ class SchedulerAPI:
         try:
             resp = requests.post(
                 _url("/jobs/resume"),
-                json={"job_id": job_id, "worker_id": self.worker_id},
+                json={
+                    "job_id": job_id,
+                    "worker_id": self.worker_id,
+                    "device": gpu_type,
+                },
                 timeout=10,
             )
             data = resp.json()

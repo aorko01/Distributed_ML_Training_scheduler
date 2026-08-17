@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import threading
 import time
 import logging
@@ -11,8 +10,9 @@ logger = logging.getLogger("output_monitor")
 
 # Marker file stored inside each job's output dir recording the paths of the
 # image's baked-in files that were seeded into the workspace. Those files are
-# never uploaded to the object store; the marker lets a restarted worker skip
-# them too when recovering leftover outputs.
+# never uploaded to the object store; the marker lets a restarted worker reuse
+# a leftover output dir (resume from local checkpoints) while excluding the
+# image's own files from uploads.
 META_FILE = ".output_baseline"
 
 
@@ -38,70 +38,6 @@ def load_baseline(job_output_dir: str) -> set[str]:
         return {os.path.join(job_output_dir, p) for p in rel_paths}
     except (OSError, ValueError, TypeError):
         return set()
-
-
-def recover_job_outputs(output_dir: str, store: ObjectStore) -> int:
-    """Upload leftover job outputs left on disk by a previous run to the object
-    store, deleting each local file once it has been uploaded.
-
-    Runs at worker startup so results survive a graceful shutdown or crash that
-    interrupted the normal upload-and-cleanup path. Only job dirs carrying a
-    baseline marker are processed, since the marker is what distinguishes
-    generated files from the image's seeded source; a dir without one could
-    contain source files and is left untouched. Files that fail to upload are
-    left on disk to be retried on the next start. Returns the number of files
-    uploaded.
-    """
-    if not os.path.isdir(output_dir):
-        return 0
-    total = 0
-    for job_id in os.listdir(output_dir):
-        job_dir = os.path.join(output_dir, job_id)
-        if not os.path.isdir(job_dir):
-            continue
-        meta_path = os.path.join(job_dir, META_FILE)
-        if not os.path.exists(meta_path):
-            logger.warning(
-                "Recovery: skipping %s — no %s marker, refusing to upload "
-                "unverified files (may include seeded source). Remove the dir "
-                "manually if it holds no results.",
-                job_dir, META_FILE,
-            )
-            continue
-        baseline = load_baseline(job_dir)
-        uploaded = 0
-        pending = 0
-        for root, _dirs, files in os.walk(job_dir):
-            for name in files:
-                path = os.path.join(root, name)
-                if path in baseline or path == meta_path:
-                    continue
-                rel_path = os.path.relpath(path, job_dir)
-                if store.upload_file(f"{job_id}/{rel_path}", path):
-                    try:
-                        os.remove(path)
-                        uploaded += 1
-                    except OSError as e:
-                        logger.warning(
-                            "Recovery: uploaded %s but failed to delete it locally: %s",
-                            path, e,
-                        )
-                else:
-                    pending += 1
-        if pending == 0:
-            shutil.rmtree(job_dir, ignore_errors=True)
-            logger.info(
-                "Recovery: uploaded %d leftover file(s) for job %s; removed output dir.",
-                uploaded, job_id,
-            )
-        else:
-            logger.warning(
-                "Recovery: uploaded %d/%d leftover file(s) for job %s; "
-                "%d remain on disk to retry next start.",
-                uploaded, uploaded + pending, job_id, pending,
-            )
-        total += uploaded
-    return total
 
 
 class OutputFileMonitor(threading.Thread):
