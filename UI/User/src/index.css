@@ -223,6 +223,7 @@ p {
 
 .badge-pending { background-color: rgba(234, 179, 8, 0.15); color: var(--status-pending); }
 .badge-running { background-color: rgba(59, 130, 246, 0.15); color: var(--status-running); }
+.badge-retrying { background-color: rgba(249, 115, 22, 0.15); color: var(--status-pending); }
 .badge-building { background-color: rgba(168, 85, 247, 0.15); color: var(--status-building); }
 .badge-success { background-color: rgba(34, 197, 94, 0.15); color: var(--status-success); }
 .badge-failed { background-color: rgba(239, 68, 68, 0.15); color: var(--status-failed); }

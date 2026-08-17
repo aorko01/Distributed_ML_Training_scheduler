@@ -270,6 +270,8 @@ const JobDetails: React.FC = () => {
         return <span className="badge badge-building">Building</span>;
       case "Running":
         return <span className="badge badge-running">Running</span>;
+      case "Retrying":
+        return <span className="badge badge-retrying">Retrying</span>;
       case "Completed":
         return <span className="badge badge-success">Completed</span>;
       case "Failed":

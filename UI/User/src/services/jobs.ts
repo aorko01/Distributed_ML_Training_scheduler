@@ -1,6 +1,6 @@
 import { api, getToken, type ApiError } from './api';
 
-export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed';
+export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed' | 'Retrying';
 
 export interface Job {
   id: string;
@@ -45,6 +45,7 @@ const mapStatus = (status: string): JobStatus => {
     case 'IN_PROGRESS': return 'Running';
     case 'COMPLETED': return 'Completed';
     case 'FAILED': return 'Failed';
+    case 'RETRY_NEEDED': return 'Retrying';
     default: return 'Pending';
   }
 };

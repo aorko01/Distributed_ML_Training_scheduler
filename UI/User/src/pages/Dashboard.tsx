@@ -52,6 +52,7 @@ const Dashboard: React.FC = () => {
       case 'Pending': return <span className="badge badge-pending">Pending</span>;
       case 'Building': return <span className="badge badge-building">Building</span>;
       case 'Running': return <span className="badge badge-running">Running</span>;
+      case 'Retrying': return <span className="badge badge-retrying">Retrying</span>;
       case 'Completed': return <span className="badge badge-success">Completed</span>;
       case 'Failed': return <span className="badge badge-failed">Failed</span>;
       default: return null;
@@ -123,6 +124,7 @@ const Dashboard: React.FC = () => {
               <option value="Pending">Pending</option>
               <option value="Building">Building</option>
               <option value="Running">Running</option>
+              <option value="Retrying">Retrying</option>
               <option value="Completed">Completed</option>
               <option value="Failed">Failed</option>
             </select>
