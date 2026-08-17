@@ -1,3 +1,6 @@
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import Base, engine, run_migrations
@@ -8,6 +11,20 @@ from app.api.scheduler_route import router as scheduler_router
 from app.api.worker_route import router as workers_router
 from app.api.auth_route import router as auth_router
 from app.api.docker_route import router as docker_router
+from app.services import watchdog_service
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    watcher = asyncio.create_task(watchdog_service.run_stall_watcher())
+    try:
+        yield
+    finally:
+        watcher.cancel()
+        try:
+            await watcher
+        except asyncio.CancelledError:
+            pass
 
 # Create FastAPI app
 app = FastAPI(
@@ -17,6 +34,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
 # CORS: allow all origins for now

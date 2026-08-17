@@ -117,6 +117,10 @@ def get_not_runnable_jobs(db: Session):
 import asyncio
 from app.core.redis import redis_client
 
+# Maps a pulled job to the worker that is executing it (Redis, not psql), so the
+# stall watcher can tell which worker's heartbeat a job depends on.
+JOB_WORKER_KEY_PREFIX = "job_worker:"
+
 
 async def _get_connected_workers_vram() -> list[float]:
     """Retrieve available VRAM for all currently connected workers from Redis."""
@@ -180,10 +184,12 @@ async def _check_vram_estimation_strategy(db: Session, request: WorkerResource) 
     if not job:
         return None
 
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
+
     return _format_job_response(job, flag="vram_estimation")
 
 
-def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict | None:
+async def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict | None:
     """
     Strategy 2: Find runnable training job where (vram_required + 1.0) <= available vram of pulling worker.
     Selects the job with largest vram_required.
@@ -209,6 +215,8 @@ def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict |
     job.device = request.gpu_type  # Save the device when worker pulls for running
     db.commit()
     db.refresh(job)
+
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
 
     return _format_job_response(job, flag="training")
 

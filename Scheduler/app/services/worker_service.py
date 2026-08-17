@@ -9,6 +9,12 @@ import time
 
 HEARTBEAT_TTL = 15
 
+# "last heartbeat sent" is kept in Redis (in-memory, fast read/write) instead of
+# psql. It lives longer than the connection hash so we can detect workers that
+# go quiet for several minutes.
+LAST_HEARTBEAT_KEY_PREFIX = "worker_heartbeat:"
+LAST_HEARTBEAT_TTL = 3600  # seconds; refreshed on every heartbeat
+
 
 def get_total_gpus(db: Session) -> int:
     """Total number of GPUs across all registered workers."""
@@ -84,6 +90,25 @@ async def _update_redis_worker(key: str, Heartbeat: HeartbeatSchema):
         mapping["mem_usage"] = Heartbeat.mem_usage
     await redis_client.hset(key, mapping=mapping)
     await redis_client.expire(key, HEARTBEAT_TTL)
+
+    # Persist the last heartbeat timestamp in Redis beyond the 15s connection
+    # TTL, so the stall watcher can detect workers that stop heartbeating.
+    await redis_client.set(
+        LAST_HEARTBEAT_KEY_PREFIX + Heartbeat.worker_id,
+        int(time.time()),
+        ex=LAST_HEARTBEAT_TTL,
+    )
+
+
+async def get_last_heartbeat(worker_id: str) -> int | None:
+    """Unix timestamp of the worker's last heartbeat, read from Redis."""
+    raw = await redis_client.get(LAST_HEARTBEAT_KEY_PREFIX + worker_id)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 async def _update_db_worker_metrics(Heartbeat: HeartbeatSchema):
