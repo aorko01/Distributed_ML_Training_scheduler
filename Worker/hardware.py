@@ -35,16 +35,29 @@ def get_ip_address() -> str:
         return "0.0.0.0"
 
 def get_cpu_load() -> float:
-    """Current CPU load as a percentage of all cores."""
+    """Current CPU load as a percentage of all cores (cross-platform)."""
     try:
+        if os.name == "nt":
+            # Windows: no getloadavg(); psutil returns percent directly.
+            return round(min(100.0, float(psutil.cpu_percent(interval=None))), 2)
         load = os.getloadavg()[0]
         cores = os.cpu_count() or 1
         return round(min(100.0, load / cores * 100.0), 2)
     except Exception:
         return 0.0
 
+def get_cpu_cores() -> int:
+    try:
+        return os.cpu_count() or 0
+    except Exception:
+        return 0
+
 def get_mem_usage() -> float:
-    """Current system memory usage as a percentage."""
+    """Current system memory usage as a percentage (cross-platform)."""
+    try:
+        return round(min(100.0, max(0.0, float(psutil.virtual_memory().percent))), 2)
+    except Exception:
+        pass
     try:
         with open("/proc/meminfo", "r") as f:
             meminfo = {}
@@ -170,6 +183,8 @@ def collect_node_info() -> dict:
         "ip_address": get_ip_address(),
         "cpu_load": get_cpu_load(),
         "mem_usage": get_mem_usage(),
+        "cpu_cores": get_cpu_cores(),
+        "total_ram": get_mem_total_gb(),
         "total_disk": total_disk,
         "available_disk": free_disk,
     }

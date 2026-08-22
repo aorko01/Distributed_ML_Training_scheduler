@@ -11,6 +11,7 @@ from app.api.scheduler_route import router as scheduler_router
 from app.api.worker_route import router as workers_router
 from app.api.auth_route import router as auth_router
 from app.api.docker_route import router as docker_router
+from app.api.resource_route import router as resources_router
 from app.services import watchdog_service
 
 
@@ -56,3 +57,4 @@ app.include_router(scheduler_router, prefix="/scheduler", tags=["scheduler"])
 app.include_router(workers_router, prefix="/workers", tags=["workers"])
 app.include_router(auth_router, tags=["auth"])
 app.include_router(docker_router, prefix="/docker", tags=["docker"])
+app.include_router(resources_router, prefix="/resources", tags=["resources"])

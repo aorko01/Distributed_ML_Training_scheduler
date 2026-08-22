@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer,Float, DateTime
+from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean
 from sqlalchemy.sql import func
 from app.db.database import Base
 import uuid
@@ -17,7 +17,10 @@ class Worker(Base):
     gpu_load = Column(Float, nullable=True)
     cpu_load = Column(Float, nullable=True)
     mem_usage = Column(Float, nullable=True)
+    cpu_cores = Column(Integer, nullable=True)
+    total_ram = Column(Float, nullable=True)
     total_disk = Column(Float, nullable=True)
     available_disk = Column(Float, nullable=True)
+    test_device = Column(Boolean, nullable=True)
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_registered = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

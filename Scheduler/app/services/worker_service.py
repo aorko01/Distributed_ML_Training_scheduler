@@ -24,7 +24,7 @@ def get_total_gpus(db: Session) -> int:
 
 def _apply_worker_metrics(worker: Worker, metrics: dict):
     """Apply optional host/resource metrics to a Worker ORM instance."""
-    for field in ("hostname", "ip_address", "available_vram", "gpus_in_use", "gpu_load", "cpu_load", "mem_usage", "total_disk", "available_disk"):
+    for field in ("hostname", "ip_address", "available_vram", "gpus_in_use", "gpu_load", "cpu_load", "mem_usage", "cpu_cores", "total_ram", "total_disk", "available_disk"):
         value = metrics.get(field)
         if value is not None:
             setattr(worker, field, value)
@@ -88,6 +88,10 @@ async def _update_redis_worker(key: str, Heartbeat: HeartbeatSchema):
         mapping["cpu_load"] = Heartbeat.cpu_load
     if Heartbeat.mem_usage is not None:
         mapping["mem_usage"] = Heartbeat.mem_usage
+    if Heartbeat.cpu_cores is not None:
+        mapping["cpu_cores"] = Heartbeat.cpu_cores
+    if Heartbeat.total_ram is not None:
+        mapping["total_ram"] = Heartbeat.total_ram
     if Heartbeat.total_disk is not None:
         mapping["total_disk"] = Heartbeat.total_disk
     if Heartbeat.available_disk is not None:
@@ -131,6 +135,8 @@ async def _update_db_worker_metrics(Heartbeat: HeartbeatSchema):
                     "gpu_load": Heartbeat.gpu_load,
                     "cpu_load": Heartbeat.cpu_load,
                     "mem_usage": Heartbeat.mem_usage,
+                    "cpu_cores": Heartbeat.cpu_cores,
+                    "total_ram": Heartbeat.total_ram,
                     "total_disk": Heartbeat.total_disk,
                     "available_disk": Heartbeat.available_disk,
                 },
@@ -164,6 +170,8 @@ async def get_all_workers(db: Session) -> list[dict]:
                 "gpu_load": worker.gpu_load,
                 "cpu_load": worker.cpu_load,
                 "mem_usage": worker.mem_usage,
+                "cpu_cores": worker.cpu_cores,
+                "total_ram": worker.total_ram,
                 "total_disk": worker.total_disk,
                 "available_disk": worker.available_disk,
                 "status": "online" if online else "offline",
