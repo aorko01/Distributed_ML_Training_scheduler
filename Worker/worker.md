@@ -45,7 +45,8 @@ This Worker component is a distributed machine learning training worker that exe
 - `CONTAINER_OUTPUT_MOUNT` (`/output`) is kept only as a fallback for images whose `WORKDIR` is `/` or where seeding fails.
 
 ### 5c. Container User & Output Cleanup
-- Training/estimation containers run as the worker's own UID/GID (`--user <uid>:<gid>`, with `HOME=/tmp`) so files written into the output mount are owned by the worker: readable for upload and deletable on cleanup. Set `CONTAINER_AS_ROOT=1` to run as root (not recommended).
+- On POSIX hosts, training/estimation containers run as the worker's own UID/GID (`--user <uid>:<gid>`, with `HOME=/tmp`) so files written into the output mount are owned by the worker: readable for upload and deletable on cleanup. Set `CONTAINER_AS_ROOT=1` to run as root (not recommended).
+- On Windows (Docker Desktop) there is no host UID/GID, so the executor skips the `--user` flag; the container's `root` maps back to the Docker Desktop user and files remain accessible/cleanable. Host paths passed to `docker run -v` / `docker cp` are normalized to forward slashes to avoid backslash escaping issues.
 - On job end the executor flushes the monitor and only deletes `<OUTPUT_DIR>/<job_id>` once every file has been uploaded to the object store; otherwise the directory is kept and a warning is logged.
 - Cleanup falls back to a root `docker run --rm ... alpine rm -rf` helper when the directory still contains root-owned files.
 - Object store uploads retry with exponential backoff and a generous timeout so large checkpoints (e.g. `optimizer.pt`) survive transient TLS drops.
@@ -108,7 +109,13 @@ Set `SCHEDULER_URL` environment variable. Optional:
 
 ## Requirements
 - Python 3.x
-- Docker with GPU support
+- Docker with GPU support (Docker Desktop on Windows, native Docker on Linux)
 - GPU with CUDA support
 - Access to scheduler API
 - Object store (e.g., MinIO, S3)
+
+## Running
+- Linux / macOS: `bash run.sh`
+- Windows: `run.bat`
+
+The worker is cross-platform: memory/CPU metrics use `psutil` (no `/proc` reliance on Windows), container user mapping is skipped when there is no host UID, and all Docker volume mounts normalize path separators so they work under Docker Desktop on Windows.

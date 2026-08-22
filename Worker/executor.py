@@ -23,6 +23,19 @@ import runtime_config
 
 logger = logging.getLogger("executor")
 
+
+def _docker_host_path(path: str) -> str:
+    """Normalize a host path for use in a `docker run -v` / `docker cp` spec.
+
+    Docker for Windows accepts Windows-style paths but prefers forward slashes;
+    normalizing avoids backslash escaping issues in the CLI. On POSIX the path
+    is returned unchanged.
+    """
+    if os.name == "nt":
+        return path.replace("\\", "/")
+    return path
+
+
 class JobExecutor:
     def __init__(self, api: SchedulerAPI):
         self.api = api
@@ -106,7 +119,8 @@ class JobExecutor:
                 check=True, capture_output=True, text=True,
             )
             subprocess.run(
-                ["docker", "cp", f"{seed_name}:{workdir}/.", job_output_dir],
+                ["docker", "cp", f"{seed_name}:{workdir}/.",
+                 _docker_host_path(job_output_dir)],
                 check=True, capture_output=True, text=True,
             )
             logger.info("Seeded %s with %s WORKDIR contents (%s)",
@@ -133,8 +147,15 @@ class JobExecutor:
     def _container_user_args() -> list[str]:
         """Run containers as the worker's UID/GID so files written into the
         output mount are owned by the worker (readable for upload, deletable
-        on cleanup). Falls back to root (no args) when CONTAINER_AS_ROOT=1."""
+        on cleanup). Falls back to root (no args) when CONTAINER_AS_ROOT=1.
+
+        Passing a numeric --user only makes sense on POSIX hosts; under Docker
+        Desktop on Windows the container's root maps back to the host user, so
+        we skip the flag there (os.getuid/getgid don't exist on Windows).
+        """
         if CONTAINER_AS_ROOT:
+            return []
+        if os.name != "posix" or not hasattr(os, "getuid"):
             return []
         return [
             "--user", f"{os.getuid()}:{os.getgid()}",
@@ -172,8 +193,8 @@ class JobExecutor:
             report_path = os.path.join(report_dir, "report.json")
             cmd = [
                 "docker", "run", "--rm", "--gpus", "all",
-                "-v", f"{VRAM_ESTIMATION_SCRIPT}:/vram_estimation.py:ro",
-                "-v", f"{report_dir}:/report",
+                "-v", f"{_docker_host_path(VRAM_ESTIMATION_SCRIPT)}:/vram_estimation.py:ro",
+                "-v", f"{_docker_host_path(report_dir)}:/report",
                 "--entrypoint", "python", image_name,
                 "/vram_estimation.py", "--output", "/report/report.json", *target_command,
             ]
@@ -397,7 +418,7 @@ class JobExecutor:
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
             *self._container_user_args(),
-            "-v", f"{job_output_dir}:{mount_target}",
+            "-v", f"{_docker_host_path(job_output_dir)}:{mount_target}",
             image_name,
         ]
         if command_args:
@@ -414,7 +435,7 @@ class JobExecutor:
             )
 
             for line in iter(proc.stdout.readline, ""):
-                line = line.rstrip("\n")
+                line = line.rstrip("\r\n")
                 self._job_log_buffer.append(line)
                 self._log_push_buffer.append(line)
                 self._flush_log_push(job_id)
@@ -453,7 +474,7 @@ class JobExecutor:
             subprocess.run(
                 [
                     "docker", "run", "--rm",
-                    "-v", f"{job_output_dir}:/cleanup",
+                    "-v", f"{_docker_host_path(job_output_dir)}:/cleanup",
                     "alpine", "rm", "-rf", "/cleanup",
                 ],
                 check=True, capture_output=True, text=True, timeout=180,

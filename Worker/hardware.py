@@ -58,6 +58,9 @@ def get_mem_usage() -> float:
         return round(min(100.0, max(0.0, float(psutil.virtual_memory().percent))), 2)
     except Exception:
         pass
+    # /proc/meminfo is Linux-only; psutil already covers Windows/macOS above.
+    if os.name == "nt" or not os.path.exists("/proc/meminfo"):
+        return 0.0
     try:
         with open("/proc/meminfo", "r") as f:
             meminfo = {}
