@@ -125,6 +125,7 @@ class SchedulerAPI:
         payload = {
             "job_id": job_id,
             "vram_required": report["peak_reserved_memory"],
+            "ram_required": report["peak_ram_memory"],
             "step_time": report["step_wall_time"],
         }
         try:

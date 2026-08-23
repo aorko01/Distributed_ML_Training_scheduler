@@ -134,6 +134,7 @@ def save_vram_estimation(
             db=db,
             job_id=request.job_id,
             vram_required=request.vram_required,
+            ram_required=request.ram_required,
             step_time=request.step_time,
         )
 
@@ -141,6 +142,7 @@ def save_vram_estimation(
             "job_id": job.id,
             "status": job.status.value,
             "vram_required": job.vram_required,
+            "ram_required": job.ram_required,
             "step_time": job.step_time,
         }
 

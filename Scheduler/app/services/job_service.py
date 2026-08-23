@@ -68,13 +68,14 @@ def set_job_runnable(db: Session, job_id: str):
     return job
 
 
-def save_vram_estimation(db: Session, job_id: str, vram_required: float, step_time: float):
+def save_vram_estimation(db: Session, job_id: str, vram_required: float, ram_required: float, step_time: float):
     job = db.query(Job).filter(Job.id == job_id).first()
 
     if not job:
         raise Exception("Job not found")
 
     job.vram_required = vram_required
+    job.ram_required = ram_required
     job.step_time = step_time
     job.status = JobStatus.RUNNABLE
 
@@ -106,6 +107,7 @@ def get_not_runnable_jobs(db: Session):
             "priority": job.priority.value,
             "reason_for_priority": job.reason_for_priority,
             "vram_required": job.vram_required,
+            "ram_required": job.ram_required,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "device": job.device,
@@ -159,6 +161,7 @@ def _format_job_response(job: Job, flag: str) -> dict:
         "priority": job.priority.value,
         "reason_for_priority": job.reason_for_priority,
         "vram_required": job.vram_required,
+        "ram_required": job.ram_required,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "device": job.device,
@@ -403,6 +406,7 @@ def get_user_jobs(db: Session, user_id: str):
             "priority": job.priority.value,
             "reason_for_priority": job.reason_for_priority,
             "vram_required": job.vram_required,
+            "ram_required": job.ram_required,
             "step_time": job.step_time,
             "gpu_hour": job.gpu_hour,
             "device": job.device,

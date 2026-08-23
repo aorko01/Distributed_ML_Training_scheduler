@@ -47,6 +47,7 @@ class Job(Base):
 
     # VRAM estimation
     vram_required = Column(Float, nullable=True)  # in GB
+    ram_required = Column(Float, nullable=True)  # in GB
     step_time = Column(Float, nullable=True)  # in seconds per step
 
     # Runtime accounting

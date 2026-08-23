@@ -40,6 +40,7 @@ class JobResumeRequest(BaseModel):
 class VramEstimationReport(BaseModel):
     job_id: str
     vram_required: float
+    ram_required: float
     step_time: float
 
 class JobFailureReport(BaseModel):
