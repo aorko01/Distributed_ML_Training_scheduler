@@ -22,5 +22,6 @@ class Worker(Base):
     total_disk = Column(Float, nullable=True)
     available_disk = Column(Float, nullable=True)
     test_device = Column(Boolean, nullable=True)
+    is_testing = Column(Boolean, nullable=True)
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_registered = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

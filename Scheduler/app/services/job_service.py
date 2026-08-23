@@ -306,6 +306,10 @@ async def get_next_job_for_worker(db: Session, request: WorkerResource):
     if not worker:
         raise Exception("Worker not found")
 
+    # Do not assign any job to a worker reserved for testing.
+    if worker.is_testing is True:
+        return None
+
     for strategy in SCHEDULING_STRATEGIES:
         if asyncio.iscoroutinefunction(strategy):
             job_info = await strategy(db, request)
