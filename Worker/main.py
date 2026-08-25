@@ -82,6 +82,7 @@ def main():
 
     api_host = os.getenv("WORKER_API_HOST", "127.0.0.1")
     api_port = int(os.getenv("WORKER_API_PORT", "8600"))
+    server.set_executor_api(api)
     server.run_in_thread(api_host, api_port)
     logger.info("Worker Agent API listening on http://%s:%s", api_host, api_port)
     record_event("info", f"Worker Agent API listening on http://{api_host}:{api_port}")

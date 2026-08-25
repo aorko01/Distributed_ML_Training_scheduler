@@ -134,3 +134,18 @@ class SchedulerAPI:
             logger.info("Saved VRAM estimation for job %s: %s", job_id, response.json())
         except Exception as e:
             logger.error("Failed to save VRAM estimation for job %s: %s", job_id, e)
+
+    def report_interactive_ip(self, session_id: str, headscale_ip: str | None, status: str):
+        """Report an interactive container's tailnet IP / lifecycle to the scheduler."""
+        payload = {
+            "session_id": session_id,
+            "headscale_ip": headscale_ip,
+            "status": status,
+        }
+        try:
+            resp = requests.post(_url("/interactive/report_ip"), json=payload, timeout=10)
+            resp.raise_for_status()
+            logger.info("Reported interactive session %s (%s): %s",
+                        session_id, status, headscale_ip)
+        except Exception as e:
+            logger.error("Failed to report interactive IP for %s: %s", session_id, e)

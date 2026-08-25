@@ -40,6 +40,55 @@ services:
       OBJECT_STORE_URL: ${OBJECT_STORE_URL:-http://localhost:8010}
       OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-uploads}
       OBJECT_OUTPUT_BUCKET: ${OBJECT_OUTPUT_BUCKET:-outputs}
+      # Interactive sessions (SSH over Headscale tailnet)
+      GATEWAY_API_URL: ${GATEWAY_API_URL:-http://gateway:8200}
+      HEADSCALE_MGMT_URL: ${HEADSCALE_MGMT_URL:-http://headscale-mgmt:8100}
+      HEADSCALE_MGMT_AUTH_TOKEN: ${HEADSCALE_MGMT_AUTH_TOKEN:-change-me}
+      HEADSCALE_URL: ${HEADSCALE_URL:-https://headscale.zulfiker.xyz}
+
+  # ---------------------------------------------------------------
+  # Headscale management microservice: wraps pre-auth key create/revoke.
+  # Requires the headscale CLI (baked into the image) or a reachable
+  # HEADSCALE_API_URL.
+  # ---------------------------------------------------------------
+  headscale-mgmt:
+    build: ../headscale_mgmt
+    container_name: app-headscale-mgmt
+    restart: always
+    ports:
+      - "8100:8100"
+    environment:
+      AUTH_TOKEN: ${HEADSCALE_MGMT_AUTH_TOKEN:-change-me}
+      HEADSCALE_USER: ${HEADSCALE_USER:-sandbox}
+      PREAUTH_KEY_EXPIRY: "3600"
+      # Headscale control plane reached over its public HTTPS API
+      HEADSCALE_API_URL: ${HEADSCALE_API_URL:-https://headscale.zulfiker.xyz}
+      HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
+
+  # ---------------------------------------------------------------
+  # SSH Gateway: owns session SSH keys, runs its own tailscaled so it can
+  # reach interactive containers over the tailnet (100.x.x.x).
+  # MUST have /dev/net/tun + NET_ADMIN + NET_RAW to run tailscaled.
+  # ---------------------------------------------------------------
+  gateway:
+    build: ../gateway
+    container_name: app-gateway
+    restart: always
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - gateway-keys:/data/ssh-keys
+    ports:
+      - "8200:8200"
+    environment:
+      TAILSCALE_AUTH_KEY: ${GATEWAY_TAILSCALE_AUTH_KEY:-}
+      HEADSCALE_URL: ${HEADSCALE_URL:-https://headscale.example.com}
+      GATEWAY_HOSTNAME: gateway
+      SSH_KEY_DIR: /data/ssh-keys
+
   pgadmin:
     image: dpage/pgadmin4
     container_name: app-pgadmin
@@ -51,3 +100,6 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin
+
+volumes:
+  gateway-keys:

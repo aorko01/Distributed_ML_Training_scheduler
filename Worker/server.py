@@ -5,7 +5,7 @@ import threading
 import platform
 import logging
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -262,6 +262,62 @@ def resume():
     telemetry.set_paused(False)
     telemetry.record_event("info", "Worker resumed; job polling restarted")
     return _build_status()
+
+
+class InteractiveRunRequest(BaseModel):
+    flag: str = "interactive"
+    session_id: str
+    image_tag: str
+    headscale_url: str
+    headscale_auth_key: str
+    ssh_public_key: str
+
+
+@app.post("/api/interactive/run")
+def run_interactive(body: InteractiveRunRequest):
+    """Scheduler push-dispatch: deploy an interactive sandbox container in the
+    background and return immediately."""
+    import interactive_handler
+
+    if body.flag != "interactive":
+        raise HTTPException(status_code=400, detail="Unsupported flag")
+
+    threading.Thread(
+        target=interactive_handler.run_interactive_container,
+        args=(
+            _get_executor_api(),
+            body.session_id,
+            body.image_tag,
+            body.headscale_url,
+            body.headscale_auth_key,
+            body.ssh_public_key,
+        ),
+        kwargs={},
+        name=f"interactive-run-{body.session_id[:8]}",
+        daemon=True,
+    ).start()
+
+    telemetry.record_event("info", f"Interactive session {body.session_id} dispatch accepted")
+    return {"session_id": body.session_id, "status": "deploying"}
+
+
+_executor_api = None
+
+
+def set_executor_api(api):
+    """Called by main.py so server routes can reach SchedulerAPI."""
+    global _executor_api
+    _executor_api = api
+
+
+def _get_executor_api():
+    if _executor_api is None:
+        import config as cfg
+        from api import SchedulerAPI
+        from hardware import get_or_create_worker_id
+
+        return SchedulerAPI(get_or_create_worker_id())
+    return _executor_api
 
 
 def _dump(model: BaseModel) -> dict:

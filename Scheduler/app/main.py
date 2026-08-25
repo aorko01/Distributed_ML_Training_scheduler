@@ -12,6 +12,9 @@ from app.api.worker_route import router as workers_router
 from app.api.auth_route import router as auth_router
 from app.api.docker_route import router as docker_router
 from app.api.resource_route import router as resources_router
+from app.api.interactive_route import router as interactive_router
+# Ensure the interactive session model is registered with Base metadata
+import app.models.interactive_session_model  # noqa: F401
 from app.services import watchdog_service
 
 
@@ -58,3 +61,4 @@ app.include_router(workers_router, prefix="/workers", tags=["workers"])
 app.include_router(auth_router, tags=["auth"])
 app.include_router(docker_router, prefix="/docker", tags=["docker"])
 app.include_router(resources_router, prefix="/resources", tags=["resources"])
+app.include_router(interactive_router, prefix="/interactive", tags=["interactive"])

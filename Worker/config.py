@@ -75,6 +75,10 @@ LOG_PUSH_INTERVAL = float(os.getenv("LOG_PUSH_INTERVAL", "1.0"))
 # and deletable on cleanup. Set CONTAINER_AS_ROOT=1 only if a job needs root.
 CONTAINER_AS_ROOT = os.getenv("CONTAINER_AS_ROOT", "0").lower() in ("1", "true", "yes")
 
+# Interactive sessions (SSH-over-tailnet sandboxes).
+# Seconds to wait for the container's entrypoint to print its Tailscale IP.
+INTERACTIVE_IP_TIMEOUT = int(os.getenv("INTERACTIVE_IP_TIMEOUT", "30"))
+
 # File Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKER_ID_FILE = os.path.join(BASE_DIR, "worker_id.txt")

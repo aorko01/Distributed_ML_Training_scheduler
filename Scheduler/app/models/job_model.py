@@ -14,6 +14,10 @@ class JobStatus(enum.Enum):
     FAILED = "FAILED"
     RETRY_NEEDED = "RETRY_NEEDED"
     INTERACTIVE_READY = "INTERACTIVE_READY"
+    # Interactive session lifecycle (push-based dispatch; not scheduled via pull)
+    INTERACTIVE_DEPLOYING = "INTERACTIVE_DEPLOYING"
+    INTERACTIVE_RUNNING = "INTERACTIVE_RUNNING"
+    INTERACTIVE_STOPPED = "INTERACTIVE_STOPPED"
 
 
 class JobPriority(enum.Enum):

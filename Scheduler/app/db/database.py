@@ -78,6 +78,28 @@ def run_migrations():
         # At most one interactive session per base job (DB-level guard)
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_base_job_interactive "
         "ON jobs (base_job_id) WHERE build_type = 'interactive'",
+        # Interactive sessions (SSH-over-tailnet sandboxes)
+        """
+        CREATE TABLE IF NOT EXISTS interactive_sessions (
+            id VARCHAR PRIMARY KEY,
+            job_id VARCHAR NOT NULL REFERENCES jobs (id),
+            user_id VARCHAR NOT NULL,
+            base_job_id VARCHAR,
+            session_id VARCHAR UNIQUE NOT NULL,
+            gateway_session_id VARCHAR,
+            worker_id VARCHAR,
+            headscale_ip VARCHAR,
+            ssh_public_key VARCHAR,
+            headscale_auth_key VARCHAR,
+            status VARCHAR NOT NULL DEFAULT 'PENDING',
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ,
+            stopped_at TIMESTAMPTZ
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_interactive_sessions_job_id ON interactive_sessions (job_id)",
+        "CREATE INDEX IF NOT EXISTS ix_interactive_sessions_user_id ON interactive_sessions (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_interactive_sessions_session_id ON interactive_sessions (session_id)",
     ]
     with engine.begin() as conn:
         for statement in statements:

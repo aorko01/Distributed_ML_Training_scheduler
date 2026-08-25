@@ -561,9 +561,30 @@ class JobExecutor:
         ):
             self._last_log_upload = now
 
+    def handle_interactive(self, job: dict):
+        """Deploy an interactive sandbox container (push-dispatched by scheduler)."""
+        import interactive_handler
+
+        session_id = job.get("session_id")
+        if not session_id:
+            logger.error("Interactive job payload missing session_id.")
+            return
+        interactive_handler.run_interactive_container(
+            self.api,
+            session_id,
+            job.get("image_tag", ""),
+            job.get("headscale_url", ""),
+            job.get("headscale_auth_key", ""),
+            job.get("ssh_public_key", ""),
+        )
+
     def process_job(self, job: dict):
-        job_id = job.get("job_id") or job.get("id")
         flag = job.get("flag", "training")
+        if flag == "interactive":
+            self.handle_interactive(job)
+            return
+
+        job_id = job.get("job_id") or job.get("id")
         image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
         if not self.pull_docker_image(image_name):
