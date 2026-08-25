@@ -1,6 +1,7 @@
 import logging
 import re
 import subprocess
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -44,6 +45,15 @@ class HeadscaleClient:
             headers["Authorization"] = f"Bearer {config.HEADSCALE_API_KEY}"
         return headers
 
+    def _resolve_user_id(self, user: str) -> str:
+        url = f"{config.HEADSCALE_API_URL}/api/v1/user"
+        resp = requests.get(url, headers=self._api_headers(), timeout=30)
+        resp.raise_for_status()
+        for u in resp.json().get("users", []):
+            if str(u.get("id")) == user or u.get("name") == user:
+                return str(u["id"])
+        raise HeadscaleError(f"Headscale user '{user}' not found")
+
     def create_preauth_key(
         self,
         expiry_seconds: int = None,
@@ -84,11 +94,15 @@ class HeadscaleClient:
     def _create_key_via_api(self, expiry_seconds: int, user: str,
                             reusable: bool, ephemeral: bool) -> str:
         url = f"{config.HEADSCALE_API_URL}/api/v1/preauthkey"
+        user_id = self._resolve_user_id(user)
+        expiration = (
+            datetime.now(timezone.utc) + timedelta(seconds=expiry_seconds)
+        ).isoformat().replace("+00:00", "Z")
         payload = {
-            "user": user,
+            "user": user_id,
             "reusable": reusable,
             "ephemeral": ephemeral,
-            "expiration": f"{expiry_seconds}s",
+            "expiration": expiration,
         }
         try:
             resp = requests.post(url, json=payload, headers=self._api_headers(), timeout=30)
@@ -103,11 +117,32 @@ class HeadscaleClient:
         logger.info("Created pre-auth key via API for user %s", user)
         return key
 
+    def _find_key_id(self, key: str) -> str:
+        url = f"{config.HEADSCALE_API_URL}/api/v1/preauthkey"
+        user_id = self._resolve_user_id(config.HEADSCALE_USER)
+        resp = requests.get(
+            url, params={"user": user_id}, headers=self._api_headers(), timeout=30
+        )
+        resp.raise_for_status()
+        for k in resp.json().get("preAuthKeys", []):
+            listed = k.get("key", "")
+            if listed == key or (
+                listed.endswith("-***") and key.startswith(listed[: -len("-***")])
+            ):
+                return str(k["id"])
+        raise HeadscaleError("Pre-auth key not found in Headscale")
+
     def revoke_key(self, key: str) -> None:
         if config.HEADSCALE_API_URL:
-            url = f"{config.HEADSCALE_API_URL}/api/v1/preauthkey/{key}/expire"
+            url = f"{config.HEADSCALE_API_URL}/api/v1/preauthkey/expire"
             try:
-                resp = requests.post(url, headers=self._api_headers(), timeout=30)
+                key_id = self._find_key_id(key)
+                resp = requests.post(
+                    url,
+                    json={"id": key_id},
+                    headers=self._api_headers(),
+                    timeout=30,
+                )
                 resp.raise_for_status()
             except Exception as e:
                 raise HeadscaleError(f"Headscale API expire preauthkey failed: {e}")

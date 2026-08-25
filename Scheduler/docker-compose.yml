@@ -8,14 +8,14 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
       POSTGRES_DB: ${POSTGRES_DB:-app}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
 
   redis:
     image: redis:7
     container_name: app-redis
     restart: always
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   api:
     build: .
@@ -24,7 +24,7 @@ services:
       - db
       - redis
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - ./app:/app/app
       - ./uploads:/app/uploads
@@ -55,8 +55,9 @@ services:
     build: ../headscale_mgmt
     container_name: app-headscale-mgmt
     restart: always
-    ports:
-      - "8100:8100"
+    # Reached by the api over the compose network (http://headscale-mgmt:8100)
+    expose:
+      - "8100"
     environment:
       AUTH_TOKEN: ${HEADSCALE_MGMT_AUTH_TOKEN:-change-me}
       HEADSCALE_USER: ${HEADSCALE_USER:-sandbox}
@@ -81,8 +82,9 @@ services:
       - NET_RAW
     volumes:
       - gateway-keys:/data/ssh-keys
-    ports:
-      - "8200:8200"
+    # Reached by the api over the compose network (http://gateway:8200)
+    expose:
+      - "8200"
     environment:
       TAILSCALE_AUTH_KEY: ${GATEWAY_TAILSCALE_AUTH_KEY:-}
       HEADSCALE_URL: ${HEADSCALE_URL:-https://headscale.example.com}
@@ -96,10 +98,10 @@ services:
     depends_on:
       - db
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@example.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?set in .env}
 
 volumes:
   gateway-keys:

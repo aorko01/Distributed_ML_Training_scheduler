@@ -95,7 +95,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-app = FastAPI(title="SSH Gateway Service", version="1.0.0")
+app = FastAPI(title="SSH Gateway Service", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
