@@ -3,8 +3,8 @@ services:
     image: minio/minio:latest
     container_name: minio-store
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -22,7 +22,8 @@ services:
       - .env
     environment:
       MINIO_ENDPOINT: minio:9000
-      MINIO_PUBLIC_ENDPOINT: localhost:9000
+      MINIO_PUBLIC_ENDPOINT: object.zulfiker.xyz
+      MINIO_PUBLIC_SECURE: "true"
       OBJECT_STORE_BUCKET: uploads
       OBJECT_OUTPUT_BUCKET: outputs
     ports:

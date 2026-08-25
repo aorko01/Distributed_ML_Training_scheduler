@@ -16,6 +16,10 @@ MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
 # Endpoint used to build presigned URLs. Must be reachable by clients (workers),
 # so it cannot be the Docker-internal "minio:9000".
 MINIO_PUBLIC_ENDPOINT = os.environ.get("MINIO_PUBLIC_ENDPOINT", "localhost:9000")
+# TLS of the public endpoint (nginx terminates HTTPS in front of MinIO).
+MINIO_PUBLIC_SECURE = (
+    os.environ.get("MINIO_PUBLIC_SECURE", str(MINIO_SECURE)).lower() == "true"
+)
 
 
 def get_client() -> Minio:
@@ -32,7 +36,7 @@ def get_public_client() -> Minio:
         MINIO_PUBLIC_ENDPOINT,
         access_key=MINIO_ROOT_USER,
         secret_key=MINIO_ROOT_PASSWORD,
-        secure=MINIO_SECURE,
+        secure=MINIO_PUBLIC_SECURE,
         region="us-east-1",
     )
 
