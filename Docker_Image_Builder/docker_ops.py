@@ -71,47 +71,65 @@ def generate_interactive_dockerfile(base_image: str) -> str:
 def generate_interactive_entrypoint() -> str:
     """Generate the entrypoint shell script for the interactive sandbox image.
 
-    The script starts the Tailscale daemon, connects to Headscale using
-    runtime environment variables (HEADSCALE_URL, HEADSCALE_AUTHKEY,
-    SESSION_ID, SSH_PUBLIC_KEY), configures SSH authorized_keys for the
-    sandbox user, starts sshd, and then idles forever.
+    The script validates required runtime environment variables (HEADSCALE_URL,
+    HEADSCALE_AUTHKEY, SESSION_ID, SSH_PUBLIC_KEY), starts tailscaled, waits for
+    its control socket, connects to Headscale via `tailscale up`, configures
+    authorized_keys for the sandbox user, and finally runs sshd as the
+    foreground process so the container stays alive and is SSH-reachable over
+    the tailnet (100.x.x.x) by the gateway.
     """
-    return """#!/bin/bash
+    return r"""#!/bin/bash
 set -e
+
+: "${HEADSCALE_URL:?HEADSCALE_URL is required}"
+: "${HEADSCALE_AUTHKEY:?HEADSCALE_AUTHKEY is required}"
+: "${SESSION_ID:?SESSION_ID is required}"
+: "${SSH_PUBLIC_KEY:?SSH_PUBLIC_KEY is required}"
 
 echo "Starting interactive environment..."
 
 mkdir -p /var/run/tailscale
 mkdir -p /var/lib/tailscale
 
-# Start Tailscale daemon
-tailscaled \\
-    --state=/var/lib/tailscale/tailscaled.state \\
+tailscaled \
+    --state=/var/lib/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock &
 
-echo "Waiting for Tailscale..."
-until tailscale status >/dev/null 2>&1; do
+echo "Waiting for Tailscale daemon..."
+until [ -S /var/run/tailscale/tailscaled.sock ]; do
     sleep 1
 done
 
 echo "Connecting to Headscale..."
-tailscale up \\
-    --login-server="$HEADSCALE_URL" \\
-    --authkey="$HEADSCALE_AUTHKEY" \\
+tailscale up \
+    --login-server="$HEADSCALE_URL" \
+    --authkey="$HEADSCALE_AUTHKEY" \
     --hostname="$SESSION_ID"
 
-echo "Connected to Headscale."
+echo "Tailscale connected."
 
+# SSH setup
 mkdir -p /home/sandbox/.ssh
 echo "$SSH_PUBLIC_KEY" > /home/sandbox/.ssh/authorized_keys
+
+chown -R sandbox:sandbox /home/sandbox/.ssh
 chmod 700 /home/sandbox/.ssh
 chmod 600 /home/sandbox/.ssh/authorized_keys
-chown -R sandbox:sandbox /home/sandbox/.ssh
 
-/usr/sbin/sshd
+mkdir -p /run/sshd
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/sandbox.conf <<'SSHD'
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin no
+AllowUsers sandbox
+SSHD
 
-echo "Interactive container ready."
-exec sleep infinity
+echo "Tailscale IP: $(tailscale ip -4 || true)"
+
+echo "Starting SSH server..."
+
+exec /usr/sbin/sshd -D -e
 """
 
 def save_debug_copy(job_id: str, build_dir: str) -> None:
