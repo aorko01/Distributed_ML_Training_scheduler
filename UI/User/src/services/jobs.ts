@@ -1,6 +1,6 @@
 import { api, getToken, type ApiError } from './api';
 
-export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed' | 'Retrying';
+export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed' | 'Retrying' | 'Interactive Ready';
 
 export interface Job {
   id: string;
@@ -33,6 +33,8 @@ interface BackendJob {
   device: string | null;
   created_at: string;
   updated_at: string;
+  build_type?: string;
+  base_job_id?: string;
 }
 
 const DUMMY_DEVICES = ['A100 80GB', 'H100 80GB', 'L4 24GB', 'V100 16GB'];
@@ -46,12 +48,13 @@ const mapStatus = (status: string): JobStatus => {
     case 'COMPLETED': return 'Completed';
     case 'FAILED': return 'Failed';
     case 'RETRY_NEEDED': return 'Retrying';
+    case 'INTERACTIVE_READY': return 'Interactive Ready';
     default: return 'Pending';
   }
 };
 
-const parseEnvironment = (image: string): { pytorchVersion: string; cudaVersion: string } => {
-  const tag = image.split(':').pop() ?? '';
+const parseEnvironment = (image: string | null): { pytorchVersion: string; cudaVersion: string } => {
+  const tag = (image ?? '').split(':').pop() ?? '';
   const match = tag.match(/^(?<pytorch>[\d.]+)-cuda(?<cuda>[\d.]+)-cudnn.*-runtime$/);
   return {
     pytorchVersion: match?.groups?.pytorch ?? 'unknown',
@@ -69,11 +72,15 @@ const getJobName = (job: BackendJob): string => {
   return firstLine ?? job.id;
 };
 
+const isInteractiveJob = (job: BackendJob): boolean =>
+  (job as { build_type?: string }).build_type === 'interactive';
+
 const mapJob = (job: BackendJob): Job => {
   const env = parseEnvironment(job.docker_base_image);
+  const interactive = isInteractiveJob(job);
   return {
     id: job.id,
-    name: getJobName(job),
+    name: interactive && !job.name ? `Interactive session (${job.base_job_id ?? job.id})` : getJobName(job),
     status: mapStatus(job.status),
     pytorchVersion: env.pytorchVersion,
     cudaVersion: env.cudaVersion,
@@ -124,13 +131,16 @@ const hasError = (body: unknown): body is { error: string } => {
   return body !== null && typeof body === 'object' && 'error' in body;
 };
 
-export const fetchJobs = async (): Promise<Job[]> => {
+export const fetchJobs = async (builtOnly = false): Promise<Job[]> => {
   try {
     const data = await api.get<{ jobs?: BackendJob[] } | { error: string }>('/jobs/mine');
     if (hasError(data)) {
       throw new Error(data.error);
     }
-    return (data.jobs ?? []).map(mapJob);
+    const jobs = data.jobs ?? [];
+    // NOT_RUNNABLE means the image hasn't been built/pushed yet, so it can't
+    // be used as a base for interactive sessions.
+    return (builtOnly ? jobs.filter((j) => j.status !== 'NOT_RUNNABLE') : jobs).map(mapJob);
   } catch {
     return [...mockJobs];
   }
@@ -158,6 +168,39 @@ export interface SubmitJobPayload {
   requestForPriority: boolean;
   reasonForPriority?: string;
 }
+
+export interface InteractiveSession {
+  id: string;
+  baseJobId: string;
+  status: string;
+}
+
+export const submitInteractiveSession = async (
+  baseJobId: string,
+  name?: string,
+): Promise<InteractiveSession> => {
+  const data = await api.post<
+    | {
+        id: string;
+        status: string;
+        base_job_id: string;
+      }
+    | { error: string }
+  >('/jobs/submit_interactive', {
+    base_job_id: baseJobId,
+    ...(name && name.trim() ? { name: name.trim() } : {}),
+  });
+
+  if (hasError(data)) {
+    throw new Error(data.error);
+  }
+
+  return {
+    id: data.id,
+    baseJobId: data.base_job_id,
+    status: data.status,
+  };
+};
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 

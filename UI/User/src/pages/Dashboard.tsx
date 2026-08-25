@@ -55,6 +55,7 @@ const Dashboard: React.FC = () => {
       case 'Retrying': return <span className="badge badge-retrying">Retrying</span>;
       case 'Completed': return <span className="badge badge-success">Completed</span>;
       case 'Failed': return <span className="badge badge-failed">Failed</span>;
+      case 'Interactive Ready': return <span className="badge badge-building">Interactive Ready</span>;
       default: return null;
     }
   };
@@ -127,6 +128,7 @@ const Dashboard: React.FC = () => {
               <option value="Retrying">Retrying</option>
               <option value="Completed">Completed</option>
               <option value="Failed">Failed</option>
+              <option value="Interactive Ready">Interactive Ready</option>
             </select>
           </div>
           <div>

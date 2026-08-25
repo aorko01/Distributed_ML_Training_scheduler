@@ -27,11 +27,13 @@ class Job(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
-    object_key = Column(String, nullable=False, unique=True)
+    # Nullable because interactive jobs have no uploaded archive
+    object_key = Column(String, nullable=True, unique=True)
     name = Column(String, nullable=True)
     command = Column(String, nullable=False)
     resume_command = Column(String, nullable=True)
-    docker_base_image = Column(String, nullable=False)
+    # Nullable because interactive jobs derive their image from base_job_id
+    docker_base_image = Column(String, nullable=True)
     config = Column(JSON, nullable=True)
 
     priority = Column(

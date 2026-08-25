@@ -51,12 +51,27 @@ def create_interactive_job(db: Session, job_data: dict):
     if base_job.user_id != user_id:
         raise Exception("Base job does not belong to this user")
 
+    # Reuse an existing interactive session for this base job so the image is
+    # never built twice (one pending build OR one ready session max).
+    existing = (
+        db.query(Job)
+        .filter(
+            Job.user_id == user_id,
+            Job.base_job_id == base_job_id,
+            Job.build_type == "interactive",
+            Job.status.in_([JobStatus.NOT_RUNNABLE, JobStatus.INTERACTIVE_READY]),
+        )
+        .first()
+    )
+    if existing:
+        return existing
+
     job_id = str(uuid.uuid4())
     db_job = Job(
         id=job_id,
         user_id=user_id,
         object_key=None,
-        name=job_data.get("name"),
+        name=job_data.get("name") or base_job.name,
         command="",
         resume_command=None,
         docker_base_image=None,

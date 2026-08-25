@@ -72,6 +72,12 @@ def run_migrations():
         "ALTER TABLE workers ADD COLUMN IF NOT EXISTS is_testing BOOLEAN",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS build_type VARCHAR DEFAULT 'training'",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS base_job_id VARCHAR",
+        # Interactive jobs have no zip archive / explicit base image
+        "ALTER TABLE jobs ALTER COLUMN object_key DROP NOT NULL",
+        "ALTER TABLE jobs ALTER COLUMN docker_base_image DROP NOT NULL",
+        # At most one interactive session per base job (DB-level guard)
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_base_job_interactive "
+        "ON jobs (base_job_id) WHERE build_type = 'interactive'",
     ]
     with engine.begin() as conn:
         for statement in statements:

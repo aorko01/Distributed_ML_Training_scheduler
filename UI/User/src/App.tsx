@@ -6,7 +6,7 @@ import Register from './pages/Register';
 import Profile from './pages/Profile';
 import Dashboard from './pages/Dashboard';
 import SubmitJob from './pages/SubmitJob';
-import Machines from './pages/Machines';
+import Interactive from './pages/Machines';
 import JobDetails from './pages/JobDetails';
 import { isAuthenticated } from './services/auth';
 import './index.css';
@@ -33,7 +33,7 @@ function App() {
         }>
           <Route index element={<Dashboard />} />
           <Route path="submit" element={<SubmitJob />} />
-          <Route path="machines" element={<Machines />} />
+          <Route path="interactive" element={<Interactive />} />
           <Route path="jobs/:id" element={<JobDetails />} />
           <Route path="profile" element={<Profile />} />
         </Route>
