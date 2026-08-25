@@ -38,6 +38,82 @@ def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
     
     return "\n".join(lines)
 
+
+def generate_interactive_dockerfile(base_image: str) -> str:
+    """Generate a Dockerfile for an interactive sandbox image.
+
+    The image is derived from the training job's base image (which already
+    contains the training code) but overrides the entrypoint/CMD so the
+    training job does NOT run. Instead it launches an SSH + Tailscale
+    sandbox for interactive access.
+    """
+    lines = [
+        f"FROM {base_image}",
+        "",
+        "USER root",
+        "RUN apt-get update && apt-get install -y openssh-server curl ca-certificates bash && rm -rf /var/lib/apt/lists/*",
+        "",
+        "RUN id -u sandbox >/dev/null 2>&1 || useradd --create-home --shell /bin/bash sandbox",
+        "",
+        "RUN curl -fsSL https://tailscale.com/install.sh | sh",
+        "",
+        "RUN mkdir -p /run/sshd",
+        "",
+        "COPY interactive-entrypoint.sh /usr/local/bin/interactive-entrypoint.sh",
+        "RUN chmod +x /usr/local/bin/interactive-entrypoint.sh",
+        "",
+        'ENTRYPOINT ["/usr/local/bin/interactive-entrypoint.sh"]',
+        'CMD ["sleep", "infinity"]',
+    ]
+    return "\n".join(lines)
+
+
+def generate_interactive_entrypoint() -> str:
+    """Generate the entrypoint shell script for the interactive sandbox image.
+
+    The script starts the Tailscale daemon, connects to Headscale using
+    runtime environment variables (HEADSCALE_URL, HEADSCALE_AUTHKEY,
+    SESSION_ID, SSH_PUBLIC_KEY), configures SSH authorized_keys for the
+    sandbox user, starts sshd, and then idles forever.
+    """
+    return """#!/bin/bash
+set -e
+
+echo "Starting interactive environment..."
+
+mkdir -p /var/run/tailscale
+mkdir -p /var/lib/tailscale
+
+# Start Tailscale daemon
+tailscaled \\
+    --state=/var/lib/tailscale/tailscaled.state \\
+    --socket=/var/run/tailscale/tailscaled.sock &
+
+echo "Waiting for Tailscale..."
+until tailscale status >/dev/null 2>&1; do
+    sleep 1
+done
+
+echo "Connecting to Headscale..."
+tailscale up \\
+    --login-server="$HEADSCALE_URL" \\
+    --authkey="$HEADSCALE_AUTHKEY" \\
+    --hostname="$SESSION_ID"
+
+echo "Connected to Headscale."
+
+mkdir -p /home/sandbox/.ssh
+echo "$SSH_PUBLIC_KEY" > /home/sandbox/.ssh/authorized_keys
+chmod 700 /home/sandbox/.ssh
+chmod 600 /home/sandbox/.ssh/authorized_keys
+chown -R sandbox:sandbox /home/sandbox/.ssh
+
+/usr/sbin/sshd
+
+echo "Interactive container ready."
+exec sleep infinity
+"""
+
 def save_debug_copy(job_id: str, build_dir: str) -> None:
     debug_dir = os.path.join(DEBUG_LOCAL_DIR, job_id)
     try:
@@ -167,31 +243,48 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
     return deduped
 
 
-def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> tuple[str, str] | None:
+def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training") -> tuple[str, str] | None:
     """Build, push and clean up the job image.
 
     Returns None on success, or a (failure_type, reason) tuple on failure where
     failure_type is "user" (build/code error -> job FAILED) or "system"
     (infra/daemon/registry error -> job RETRY_NEEDED).
     """
-    image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+    if build_type == "interactive":
+        image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}-interactive:latest"
+    else:
+        image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
     
     # Track base image usage
     update_base_image_usage(base_image)
 
     try:
-        for item in os.listdir(project_dir):
-            src = os.path.join(project_dir, item)
-            dst = os.path.join(build_dir, item)
-            if os.path.isdir(src):
-                shutil.copytree(src, dst)
-            else:
-                shutil.copy2(src, dst)
+        if build_type == "interactive":
+            # Interactive builds do not copy project files; the base image
+            # already contains the training code. Only the Dockerfile and
+            # entrypoint script are written into the build directory.
+            dockerfile_content = generate_interactive_dockerfile(base_image)
+            with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
+                f.write(dockerfile_content)
 
-        dockerfile_content = generate_dockerfile(project_dir, command, base_image)
-        with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
-            f.write(dockerfile_content)
+            entrypoint_content = generate_interactive_entrypoint()
+            entrypoint_path = os.path.join(build_dir, "interactive-entrypoint.sh")
+            with open(entrypoint_path, "w") as f:
+                f.write(entrypoint_content)
+            os.chmod(entrypoint_path, 0o755)
+        else:
+            for item in os.listdir(project_dir):
+                src = os.path.join(project_dir, item)
+                dst = os.path.join(build_dir, item)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+
+            dockerfile_content = generate_dockerfile(project_dir, command, base_image)
+            with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
+                f.write(dockerfile_content)
 
         if DEBUG_SAVE_LOCAL:
             save_debug_copy(job_id, build_dir)
@@ -201,17 +294,29 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         last_upload_time = None
 
         # Emit a diagnostic header so users have full context for debugging.
-        emit_build_lines(job_id, build_log_buffer, [
-            "=" * 60,
-            f"Job {job_id}: building Docker image",
-            f"Target image : {image_tag}",
-            f"Base image   : {base_image}",
-            f"Command      : {command or '(default Docker CMD)'}",
-            "--- generated Dockerfile ---",
-            dockerfile_content,
-            "--- end Dockerfile ---",
-            "=" * 60,
-        ])
+        if build_type == "interactive":
+            emit_build_lines(job_id, build_log_buffer, [
+                "=" * 60,
+                f"Job {job_id}: building interactive Docker image",
+                f"Target image : {image_tag}",
+                f"Base image   : {base_image}",
+                "--- generated Dockerfile ---",
+                dockerfile_content,
+                "--- end Dockerfile ---",
+                "=" * 60,
+            ])
+        else:
+            emit_build_lines(job_id, build_log_buffer, [
+                "=" * 60,
+                f"Job {job_id}: building Docker image",
+                f"Target image : {image_tag}",
+                f"Base image   : {base_image}",
+                f"Command      : {command or '(default Docker CMD)'}",
+                "--- generated Dockerfile ---",
+                dockerfile_content,
+                "--- end Dockerfile ---",
+                "=" * 60,
+            ])
         last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
         try:
@@ -245,6 +350,10 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                 *error_lines,
             ])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+            if build_type == "interactive":
+                # Interactive build failures are infra-layer (apt/tailscale/sshd
+                # setup), not user code errors, so treat them as retryable.
+                return "system", reason
             return "user", reason
 
         emit_build_lines(job_id, build_log_buffer, [
@@ -256,7 +365,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         # Push progress/status is logged locally only; only build-related lines are
         # streamed to the scheduler UI.
         logger.info("Pushing image %s ...", image_tag)
-        push_output = client.images.push(repository=f"{DOCKER_HUB_USERNAME}/{job_id}", tag="latest", stream=True, decode=True)
+        push_output = client.images.push(repository=image_tag.rsplit(":", 1)[0], tag="latest", stream=True, decode=True)
         for chunk in push_output:
             if "error" in chunk:
                 logger.error("Push error for job %s: %s", job_id, chunk["error"])

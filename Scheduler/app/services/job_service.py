@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import uuid
 
 from app.models.worker_model import Worker
 from sqlalchemy.orm import Session
@@ -22,9 +23,9 @@ def create_job(db: Session, job_data: dict):
         reason_for_priority=job_data.get("reason_for_priority"),
     )
     db.add(db_job)
-    # Tells the session: “I want to insert this object into the database.”
+    # Tells the session: "I want to insert this object into the database."
     # Object is staged, not yet written to the database.
-    # SQLAlchemy keeps track of changes in a transactional “unit of work.”
+    # SQLAlchemy keeps track of changes in a transactional "unit of work."
     db.commit()
     # Writes the staged object into the database.
     # A SQL INSERT statement is executed.
@@ -32,6 +33,61 @@ def create_job(db: Session, job_data: dict):
     # The transaction is committed; the changes are now permanent.
     db.refresh(db_job)
     return db_job
+
+
+def create_interactive_job(db: Session, job_data: dict):
+    """Create an interactive job derived from an existing training job.
+
+    The interactive job has no zip archive (object_key=None) and no command;
+    the builder constructs the base image tag from base_job_id and produces
+    an image that overrides the entrypoint to launch an SSH + Tailscale
+    sandbox instead of running the training code.
+    """
+    base_job_id = job_data["base_job_id"]
+    user_id = job_data["user_id"]
+    base_job = db.query(Job).filter(Job.id == base_job_id).first()
+    if not base_job:
+        raise Exception("Base job not found")
+    if base_job.user_id != user_id:
+        raise Exception("Base job does not belong to this user")
+
+    job_id = str(uuid.uuid4())
+    db_job = Job(
+        id=job_id,
+        user_id=user_id,
+        object_key=None,
+        name=job_data.get("name"),
+        command="",
+        resume_command=None,
+        docker_base_image=None,
+        config=None,
+        priority=JobPriority.NORMAL,
+        build_type="interactive",
+        base_job_id=base_job_id,
+        status=JobStatus.NOT_RUNNABLE,
+    )
+    db.add(db_job)
+    db.commit()
+    db.refresh(db_job)
+    return db_job
+
+
+def mark_interactive_ready(db: Session, job_id: str):
+    """Mark an interactive job as INTERACTIVE_READY after the builder finishes."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+
+    if not job:
+        raise Exception("Job not found")
+
+    if job.status != JobStatus.NOT_RUNNABLE:
+        raise Exception("Job is not in NOT_RUNNABLE state")
+
+    job.status = JobStatus.INTERACTIVE_READY
+
+    db.commit()
+    db.refresh(job)
+
+    return job
 
 
 def set_job_vram_estimation_pending(db: Session, job_id: str):
@@ -111,6 +167,8 @@ def get_not_runnable_jobs(db: Session):
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "device": job.device,
+            "build_type": job.build_type,
+            "base_job_id": job.base_job_id,
         }
         for job in jobs
     ]

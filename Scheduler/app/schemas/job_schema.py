@@ -48,3 +48,12 @@ class JobFailureReport(BaseModel):
     # "user" -> job FAILED (build/training code error), "system" -> job RETRY_NEEDED (infra issue)
     failure_type: Literal["user", "system"]
     failure_reason: Optional[str] = None
+
+
+class InteractiveBuildRequest(BaseModel):
+    base_job_id: str
+    name: Optional[str] = None
+
+
+class InteractiveReadyRequest(BaseModel):
+    job_id: str

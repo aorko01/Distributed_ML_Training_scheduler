@@ -1,7 +1,7 @@
 import requests
 from urllib.parse import quote
 from config import (
-    SCHEDULER_QUEUE_URL, SCHEDULER_UPDATE_URL, SCHEDULER_LOG_URL,
+    SCHEDULER_QUEUE_URL, SCHEDULER_UPDATE_URL, SCHEDULER_INTERACTIVE_UPDATE_URL, SCHEDULER_LOG_URL,
     SCHEDULER_FAILURE_URL, OBJECT_STORE_URL, OBJECT_STORE_BUCKET, logger
 )
 
@@ -44,6 +44,23 @@ def notify_scheduler_job_ready(job_id: str) -> bool:
         logger.error("Scheduler notification failed for job %s: %s %s", job_id, response.status_code, response.text)
     except Exception as e:
         logger.error("Failed to contact scheduler for job %s: %s", job_id, e)
+    return False
+
+def notify_scheduler_interactive_ready(job_id: str) -> bool:
+    """Notify the scheduler that an interactive job image has been built and pushed."""
+    payload = {"job_id": job_id}
+    try:
+        response = requests.post(SCHEDULER_INTERACTIVE_UPDATE_URL, json=payload, timeout=10)
+        if response.status_code == 200:
+            body = response.json()
+            if "error" in body:
+                logger.error("Scheduler returned error for interactive job %s: %s", job_id, body["error"])
+                return False
+            logger.info("Scheduler notified successfully for interactive job %s", job_id)
+            return True
+        logger.error("Scheduler notification failed for interactive job %s: %s %s", job_id, response.status_code, response.text)
+    except Exception as e:
+        logger.error("Failed to contact scheduler for interactive job %s: %s", job_id, e)
     return False
 
 def notify_scheduler_job_failed(job_id: str, failure_type: str, failure_reason: str) -> bool:

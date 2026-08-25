@@ -8,7 +8,7 @@ from app.db.database import SessionLocal
 from app.services import job_service, log_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest, InteractiveBuildRequest, InteractiveReadyRequest
 from app.schemas.log_schema import LogLinesRequest
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
@@ -93,6 +93,46 @@ async def submit_job(
     return db_job
 
 
+@router.post("/submit_interactive")
+def submit_interactive(
+    request: InteractiveBuildRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Create an interactive job derived from an existing training job.
+
+    No zip upload is required; the builder derives the base image tag from
+    base_job_id and produces an SSH + Tailscale sandbox image.
+    """
+    try:
+        db_job = job_service.create_interactive_job(db, {
+            **request.dict(),
+            "user_id": current_user.user_id,
+        })
+        return {
+            "id": db_job.id,
+            "user_id": db_job.user_id,
+            "object_key": db_job.object_key,
+            "name": db_job.name,
+            "command": db_job.command,
+            "resume_command": db_job.resume_command,
+            "docker_base_image": db_job.docker_base_image,
+            "config": db_job.config,
+            "status": db_job.status.value,
+            "priority": db_job.priority.value,
+            "reason_for_priority": db_job.reason_for_priority,
+            "vram_required": db_job.vram_required,
+            "ram_required": db_job.ram_required,
+            "build_type": db_job.build_type,
+            "base_job_id": db_job.base_job_id,
+            "created_at": db_job.created_at,
+            "updated_at": db_job.updated_at,
+            "device": db_job.device,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.post("/logs/{job_id}")
 async def ingest_job_logs(job_id: str, request: LogLinesRequest):
     """Ingest realtime log lines from the Docker Image Builder / Worker
@@ -112,6 +152,18 @@ def update_job_to_vram_estimation_pending(
         job = job_service.set_job_vram_estimation_pending(db, request.job_id)
         return {"job_id": job.id, "status": job.status.value}
 
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/mark_interactive_ready")
+def mark_interactive_ready(
+    request: InteractiveReadyRequest, db: Session = Depends(get_db)
+):
+    """Mark an interactive job as INTERACTIVE_READY after the builder finishes."""
+    try:
+        job = job_service.mark_interactive_ready(db, request.job_id)
+        return {"job_id": job.id, "status": job.status.value}
     except Exception as e:
         return {"error": str(e)}
 

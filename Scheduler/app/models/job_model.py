@@ -13,6 +13,7 @@ class JobStatus(enum.Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     RETRY_NEEDED = "RETRY_NEEDED"
+    INTERACTIVE_READY = "INTERACTIVE_READY"
 
 
 class JobPriority(enum.Enum):
@@ -57,6 +58,11 @@ class Job(Base):
 
     # Failure reporting (set by builder/worker when a job fails)
     failure_reason = Column(String, nullable=True)  # why the job failed / needs a retry
+
+    # Build type: "training" (default) or "interactive" (derived from a base job)
+    build_type = Column(String, nullable=False, default="training")
+    # For interactive jobs, the training job id this interactive job is derived from
+    base_job_id = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

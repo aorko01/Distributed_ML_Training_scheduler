@@ -70,6 +70,8 @@ def run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS failure_reason VARCHAR",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ram_required FLOAT",
         "ALTER TABLE workers ADD COLUMN IF NOT EXISTS is_testing BOOLEAN",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS build_type VARCHAR DEFAULT 'training'",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS base_job_id VARCHAR",
     ]
     with engine.begin() as conn:
         for statement in statements:

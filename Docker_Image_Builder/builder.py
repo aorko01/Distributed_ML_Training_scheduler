@@ -6,9 +6,9 @@ import zipfile
 import tempfile
 import docker
 
-from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL
+from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL, DOCKER_HUB_USERNAME
 from database import init_db, is_job_processed, mark_job_processed
-from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_job_failed
+from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_interactive_ready, notify_scheduler_job_failed
 from docker_ops import docker_login, build_push_and_clean, prune_old_base_images
 
 def find_project_dir(extracted_dir: str) -> str:
@@ -48,14 +48,23 @@ def scan_and_process():
         object_key = job.get("object_key")
         command = job.get("command", "")
         base_image = job.get("docker_base_image")
+        build_type = job.get("build_type", "training")
+        base_job_id = job.get("base_job_id")
 
-        if not job_id or not object_key or not base_image:
+        if not job_id or (build_type != "interactive" and (not object_key or not base_image)):
             logger.warning("Skipping malformed job payload: %s", job)
+            continue
+
+        if build_type == "interactive" and not base_job_id:
+            logger.warning("Skipping malformed interactive job payload (missing base_job_id): %s", job)
             continue
 
         if is_job_processed(job_id):
             logger.info("Job %s already built but still unbuilt in scheduler, re-notifying...", job_id)
-            notify_scheduler_job_ready(job_id)
+            if build_type == "interactive":
+                notify_scheduler_interactive_ready(job_id)
+            else:
+                notify_scheduler_job_ready(job_id)
             continue
 
         logger.info("=" * 50)
@@ -65,10 +74,23 @@ def scan_and_process():
         result = None
 
         try:
-            archive_bytes = download_job_archive(object_key)
-            extract_dir = extract_job_archive(archive_bytes, job_id)
-            project_dir = find_project_dir(extract_dir)
-            result = build_push_and_clean(client, job_id, project_dir, command, base_image)
+            if build_type == "interactive":
+                # Interactive builds skip zip download/extraction; the base
+                # image already contains the training code.
+                base_image_tag = f"{DOCKER_HUB_USERNAME}/{base_job_id}:latest"
+                temp_dir = tempfile.mkdtemp(prefix=f"interactive_{job_id}_")
+                try:
+                    result = build_push_and_clean(
+                        client, job_id, temp_dir, command="",
+                        base_image=base_image_tag, build_type="interactive",
+                    )
+                finally:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            else:
+                archive_bytes = download_job_archive(object_key)
+                extract_dir = extract_job_archive(archive_bytes, job_id)
+                project_dir = find_project_dir(extract_dir)
+                result = build_push_and_clean(client, job_id, project_dir, command, base_image)
         except Exception as e:
             logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
             result = ("system", f"Unexpected error while processing job: {e}")
@@ -77,7 +99,10 @@ def scan_and_process():
                 shutil.rmtree(extract_dir, ignore_errors=True)
 
         if result is None:
-            notified = notify_scheduler_job_ready(job_id)
+            if build_type == "interactive":
+                notified = notify_scheduler_interactive_ready(job_id)
+            else:
+                notified = notify_scheduler_job_ready(job_id)
             if notified:
                 mark_job_processed(job_id)
                 logger.info("Job %s completed.", job_id)
