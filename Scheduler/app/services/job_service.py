@@ -41,46 +41,62 @@ def create_job(db: Session, job_data: dict):
 
 
 def create_interactive_job(db: Session, job_data: dict):
-    """Create an interactive job derived from an existing training job.
+    """Create an interactive job in one of two modes:
 
-    The interactive job has no zip archive (object_key=None) and no command;
-    the builder constructs the base image tag from base_job_id and produces
-    an image that overrides the entrypoint to launch an SSH + Tailscale
-    sandbox instead of running the training code.
+    - Derived: base_job_id points at an existing training job. The interactive
+      job has no zip archive (object_key=None); the builder constructs the
+      base image tag from base_job_id and produces an image that overrides
+      the entrypoint to launch an SSH + Tailscale sandbox.
+    - Direct: object_key points at an uploaded archive and config carries the
+      environment spec (python_version / pytorch_version / cuda_version or a
+      full base_image override). The builder builds a standalone sandbox
+      image from a fresh base (python/pytorch/cuda) and copies the user's
+      code into it.
     """
-    base_job_id = job_data["base_job_id"]
+    base_job_id = job_data.get("base_job_id")
     user_id = job_data["user_id"]
-    base_job = db.query(Job).filter(Job.id == base_job_id).first()
-    if not base_job:
-        raise Exception("Base job not found")
-    if base_job.user_id != user_id:
-        raise Exception("Base job does not belong to this user")
+    object_key = job_data.get("object_key")
 
-    # Reuse an existing interactive session for this base job so the image is
-    # never built twice (one pending build OR one ready session max).
-    existing = (
-        db.query(Job)
-        .filter(
-            Job.user_id == user_id,
-            Job.base_job_id == base_job_id,
-            Job.build_type == "interactive",
-            Job.status.in_([JobStatus.NOT_RUNNABLE, JobStatus.INTERACTIVE_READY]),
+    if base_job_id:
+        base_job = db.query(Job).filter(Job.id == base_job_id).first()
+        if not base_job:
+            raise Exception("Base job not found")
+        if base_job.user_id != user_id:
+            raise Exception("Base job does not belong to this user")
+    elif not object_key:
+        raise Exception("Interactive job needs either base_job_id or an uploaded archive")
+
+    if base_job_id:
+        # Reuse an existing interactive session for this base job so the image
+        # is never built twice (one pending build OR one ready session max).
+        existing = (
+            db.query(Job)
+            .filter(
+                Job.user_id == user_id,
+                Job.base_job_id == base_job_id,
+                Job.build_type == "interactive",
+                Job.status.in_([JobStatus.NOT_RUNNABLE, JobStatus.INTERACTIVE_READY]),
+            )
+            .first()
         )
-        .first()
-    )
-    if existing:
-        return existing
+        if existing:
+            return existing
+
+    default_name = None
+    if base_job_id:
+        base_job = db.query(Job).filter(Job.id == base_job_id).first()
+        default_name = base_job.name if base_job else None
 
     job_id = str(uuid.uuid4())
     db_job = Job(
         id=job_id,
         user_id=user_id,
-        object_key=None,
-        name=job_data.get("name") or base_job.name,
+        object_key=object_key,
+        name=job_data.get("name") or default_name,
         command="",
         resume_command=None,
         docker_base_image=None,
-        config=None,
+        config=job_data.get("config"),
         priority=JobPriority.NORMAL,
         build_type="interactive",
         base_job_id=base_job_id,

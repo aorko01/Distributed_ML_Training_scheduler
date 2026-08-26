@@ -27,8 +27,9 @@ class InteractiveServiceError(Exception):
     pass
 
 
-def create_session(db: Session, user_id: str, base_job_id: str,
-                   name: str | None = None) -> dict:
+def create_session(db: Session, user_id: str, base_job_id: str | None = None,
+                   name: str | None = None, object_key: str | None = None,
+                   env_config: dict | None = None) -> dict:
     """Full deployment chain for an interactive session:
 
     (a) create/reuse the interactive job record,
@@ -36,20 +37,40 @@ def create_session(db: Session, user_id: str, base_job_id: str,
     (c) get a Headscale pre-auth key from the headscale_mgmt service,
     (d) persist the InteractiveSession as PENDING.
 
+    Two modes:
+    - Derived: `base_job_id` points at an existing training job; the builder
+      derives the sandbox image from that job's image.
+    - Direct: `object_key` points at an uploaded archive and `env_config`
+      carries the environment spec (python_version / pytorch_version /
+      cuda_version / base_image); the builder builds a standalone sandbox
+      image from scratch.
+
     There is no direct dispatch to any worker: the session is picked up by
     whichever idle worker next pulls a job (`POST /jobs/pull_job` returns it
     with flag="interactive" once the image is built). Workers are never told
     about scheduling decisions out-of-band.
     """
-    base_job = db.query(Job).filter(Job.id == base_job_id).first()
-    if not base_job:
-        raise InteractiveServiceError("Base job not found")
-    if base_job.user_id != user_id:
-        raise InteractiveServiceError("Base job does not belong to this user")
+    if not base_job_id and not object_key:
+        raise InteractiveServiceError(
+            "Interactive session needs either base_job_id or an uploaded archive"
+        )
+
+    if base_job_id:
+        base_job = db.query(Job).filter(Job.id == base_job_id).first()
+        if not base_job:
+            raise InteractiveServiceError("Base job not found")
+        if base_job.user_id != user_id:
+            raise InteractiveServiceError("Base job does not belong to this user")
 
     # (a) Interactive job record (idempotent per base job while pending/ready).
     job = job_service.create_interactive_job(
-        db, {"base_job_id": base_job_id, "user_id": user_id, "name": name}
+        db, {
+            "base_job_id": base_job_id,
+            "user_id": user_id,
+            "name": name,
+            "object_key": object_key,
+            "config": env_config,
+        }
     )
 
     # A PENDING session for this job already exists (e.g. duplicate request);

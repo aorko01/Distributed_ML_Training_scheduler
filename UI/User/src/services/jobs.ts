@@ -202,6 +202,73 @@ export const submitInteractiveSession = async (
   };
 };
 
+export interface SubmitInteractiveDirectPayload {
+  name?: string;
+  pythonVersion: string;
+  pytorchVersion?: string;
+  cudaVersion?: string;
+  baseImage?: string;
+}
+
+export const submitInteractiveDirect = async (
+  payload: SubmitInteractiveDirectPayload,
+  zipFile: File,
+): Promise<InteractiveSession> => {
+  const formData = new FormData();
+  formData.append('zip_file', zipFile);
+  formData.append('python_version', payload.pythonVersion);
+  if (payload.name && payload.name.trim()) {
+    formData.append('name', payload.name.trim());
+  }
+  if (payload.pytorchVersion) {
+    formData.append('pytorch_version', payload.pytorchVersion);
+  }
+  if (payload.cudaVersion) {
+    formData.append('cuda_version', payload.cudaVersion);
+  }
+  if (payload.baseImage && payload.baseImage.trim()) {
+    formData.append('base_image', payload.baseImage.trim());
+  }
+
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_BASE_URL}/jobs/submit_interactive_direct`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+
+  const contentType = response.headers.get('content-type') ?? '';
+  const body = contentType.includes('application/json')
+    ? await response.json()
+    : await response.text();
+
+  if (!response.ok) {
+    const error = new Error(
+      body && typeof body === 'object' && 'detail' in body
+        ? String((body as Record<string, unknown>).detail)
+        : `Request failed with status ${response.status}`,
+    ) as ApiError;
+    error.status = response.status;
+    throw error;
+  }
+
+  const record = (body ?? {}) as Record<string, unknown>;
+  if (typeof record.error === 'string') {
+    throw new Error(record.error);
+  }
+
+  return {
+    id: String(record.id ?? ''),
+    baseJobId: '',
+    status: String(record.status ?? ''),
+  };
+};
+
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 export const submitJob = async (

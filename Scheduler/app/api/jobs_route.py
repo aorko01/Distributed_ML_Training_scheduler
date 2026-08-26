@@ -126,6 +126,84 @@ def submit_interactive(
         return {"error": str(e)}
 
 
+@router.post("/submit_interactive_direct")
+async def submit_interactive_direct(
+    zip_file: UploadFile = File(...),
+    name: str = Form(""),
+    python_version: str = Form("3.11"),
+    pytorch_version: str = Form(""),
+    cuda_version: str = Form(""),
+    base_image: str = Form(""),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Create an interactive session directly from an uploaded archive.
+
+    No prior training job is required. The user picks the environment:
+    - python_version (default 3.11)
+    - pytorch_version (optional); if set, an official pytorch/pytorch image
+      is used, optionally with cuda_version (e.g. "12.1" or a full variant
+      like "12.1-cudnn9-devel")
+    - base_image (optional) fully overrides the base image resolution for
+      maximum flexibility.
+
+    The builder builds a standalone SSH + Tailscale sandbox image from that
+    environment and copies the uploaded code into it.
+    """
+    cuda_version = cuda_version.strip()
+    pytorch_version = pytorch_version.strip()
+    base_image = base_image.strip()
+
+    if cuda_version and not pytorch_version:
+        return {"error": "cuda_version requires pytorch_version to be set"}
+    if not base_image and not python_version.strip():
+        return {"error": "python_version is required when base_image is not given"}
+
+    job_id = str(uuid.uuid4())
+    try:
+        file_content = await zip_file.read()
+        result = save_to_object_store(
+            file_content=file_content,
+            filename=zip_file.filename,
+            require_files=[],
+            job_id=job_id,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+
+    env_config = {}
+    if base_image:
+        env_config["base_image"] = base_image
+    else:
+        env_config["python_version"] = python_version.strip() or "3.11"
+        if pytorch_version:
+            env_config["pytorch_version"] = pytorch_version
+            if cuda_version:
+                env_config["cuda_version"] = cuda_version
+
+    try:
+        result_session = interactive_service.create_session(
+            db,
+            current_user.user_id,
+            base_job_id=None,
+            name=name.strip() or None,
+            object_key=result["object_key"],
+            env_config=env_config,
+        )
+    except interactive_service.InteractiveServiceError as e:
+        return {"error": str(e)}
+
+    return {
+        "id": result_session["job_id"],
+        "user_id": current_user.user_id,
+        "base_job_id": None,
+        "status": result_session["status"],
+        "session_id": result_session["session_id"],
+        "job_id": result_session["job_id"],
+        "environment": env_config,
+    }
+
+
 @router.post("/logs/{job_id}")
 async def ingest_job_logs(job_id: str, request: LogLinesRequest):
     """Ingest realtime log lines from the Docker Image Builder / Worker

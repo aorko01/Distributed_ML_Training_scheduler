@@ -9,7 +9,7 @@ import docker
 from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL, DOCKER_HUB_USERNAME
 from database import init_db, is_job_processed, mark_job_processed
 from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_interactive_ready, notify_scheduler_job_failed
-from docker_ops import docker_login, build_push_and_clean, prune_old_base_images
+from docker_ops import docker_login, build_push_and_clean, prune_old_base_images, resolve_interactive_base_image
 
 def find_project_dir(extracted_dir: str) -> str:
     for entry in sorted(os.listdir(extracted_dir)):
@@ -55,9 +55,13 @@ def scan_and_process():
             logger.warning("Skipping malformed job payload: %s", job)
             continue
 
-        if build_type == "interactive" and not base_job_id:
-            logger.warning("Skipping malformed interactive job payload (missing base_job_id): %s", job)
-            continue
+        if build_type == "interactive":
+            # Interactive builds either derive from an existing training job
+            # (base_job_id) or are built directly from an uploaded archive
+            # (object_key + env spec in config).
+            if not base_job_id and not object_key:
+                logger.warning("Skipping malformed interactive job payload (needs base_job_id or object_key): %s", job)
+                continue
 
         if is_job_processed(job_id):
             logger.info("Job %s already built but still unbuilt in scheduler, re-notifying...", job_id)
@@ -75,17 +79,36 @@ def scan_and_process():
 
         try:
             if build_type == "interactive":
-                # Interactive builds skip zip download/extraction; the base
-                # image already contains the training code.
-                base_image_tag = f"{DOCKER_HUB_USERNAME}/{base_job_id}:latest"
-                temp_dir = tempfile.mkdtemp(prefix=f"interactive_{job_id}_")
-                try:
-                    result = build_push_and_clean(
-                        client, job_id, temp_dir, command="",
-                        base_image=base_image_tag, build_type="interactive",
+                if base_job_id:
+                    # Derived interactive build: skip zip download/extraction;
+                    # the base image already contains the training code.
+                    base_image_tag = f"{DOCKER_HUB_USERNAME}/{base_job_id}:latest"
+                    temp_dir = tempfile.mkdtemp(prefix=f"interactive_{job_id}_")
+                    try:
+                        result = build_push_and_clean(
+                            client, job_id, temp_dir, command="",
+                            base_image=base_image_tag, build_type="interactive",
+                        )
+                    finally:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                else:
+                    # Direct interactive build: resolve the environment from
+                    # the job's config spec and build a standalone sandbox
+                    # image with the user's code copied into it.
+                    env_config = job.get("config") or {}
+                    base_image_tag = resolve_interactive_base_image(env_config)
+                    logger.info(
+                        "Direct interactive build for %s: env=%s -> base=%s",
+                        job_id, env_config, base_image_tag,
                     )
-                finally:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    archive_bytes = download_job_archive(object_key)
+                    extract_dir = extract_job_archive(archive_bytes, job_id)
+                    project_dir = find_project_dir(extract_dir)
+                    result = build_push_and_clean(
+                        client, job_id, project_dir, command="",
+                        base_image=base_image_tag, build_type="interactive",
+                        include_project=True,
+                    )
             else:
                 archive_bytes = download_job_archive(object_key)
                 extract_dir = extract_job_archive(archive_bytes, job_id)

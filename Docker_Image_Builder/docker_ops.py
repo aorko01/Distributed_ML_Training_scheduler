@@ -39,18 +39,62 @@ def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
     return "\n".join(lines)
 
 
-def generate_interactive_dockerfile(base_image: str) -> str:
+def resolve_interactive_base_image(env_config: dict | None) -> str:
+    """Resolve the base image for a direct interactive build.
+
+    Resolution order (maximum user flexibility):
+      1. Explicit "base_image" override in the job config -> used verbatim.
+      2. pytorch_version set  -> official pytorch/pytorch image, optionally
+         pinned to a CUDA release via cuda_version ("12.1", or a full variant
+         tag suffix like "12.1-cudnn9-devel").
+      3. Fallback             -> plain python:{python_version}-slim image.
+    """
+    env = env_config or {}
+
+    explicit = env.get("base_image")
+    if explicit:
+        return explicit.strip()
+
+    python_version = (env.get("python_version") or "3.11").strip()
+    pytorch_version = (env.get("pytorch_version") or "").strip()
+    cuda_version = (env.get("cuda_version") or "").strip()
+
+    if pytorch_version:
+        if cuda_version:
+            # If the caller supplied a full variant suffix (e.g.
+            # "12.1-cudnn9-devel"), use it verbatim; otherwise assume the
+            # default cudnn9 runtime variant published by the pytorch images.
+            suffix = "" if "-" in cuda_version else "-cudnn9-runtime"
+            return f"pytorch/pytorch:{pytorch_version}-cuda{cuda_version}{suffix}"
+        return f"pytorch/pytorch:{pytorch_version}"
+
+    return f"python:{python_version}-slim"
+
+
+def generate_interactive_dockerfile(base_image: str, with_project: bool = False) -> str:
     """Generate a Dockerfile for an interactive sandbox image.
 
-    The image is derived from the training job's base image (which already
-    contains the training code) but overrides the entrypoint/CMD so the
-    training job does NOT run. Instead it launches an SSH + Tailscale
-    sandbox for interactive access.
+    Derived builds (with_project=False) are based on a training job's image
+    that already contains the training code, so only the entrypoint is
+    overridden. Direct builds (with_project=True) start from a fresh
+    python/pytorch/cuda base and copy the uploaded project into /workspace,
+    installing requirements.txt if present. Either way the training job does
+    NOT run automatically: the entrypoint launches an SSH + Tailscale sandbox
+    for interactive access.
     """
-    lines = [
-        f"FROM {base_image}",
-        "",
-        "USER root",
+    lines = [f"FROM {base_image}", "", "USER root", ""]
+
+    if with_project:
+        lines += [
+            "WORKDIR /workspace",
+            "",
+            "COPY . /workspace/",
+            "",
+            "RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi",
+            "",
+        ]
+
+    lines += [
         "RUN apt-get update && apt-get install -y openssh-server curl ca-certificates bash && rm -rf /var/lib/apt/lists/*",
         "",
         "RUN id -u sandbox >/dev/null 2>&1 || useradd --create-home --shell /bin/bash sandbox",
@@ -261,8 +305,11 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
     return deduped
 
 
-def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training") -> tuple[str, str] | None:
+def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> tuple[str, str] | None:
     """Build, push and clean up the job image.
+
+    For direct interactive builds pass include_project=True so the uploaded
+    project files are copied into the sandbox image.
 
     Returns None on success, or a (failure_type, reason) tuple on failure where
     failure_type is "user" (build/code error -> job FAILED) or "system"
@@ -273,16 +320,26 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
     else:
         image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
-    
+
     # Track base image usage
     update_base_image_usage(base_image)
 
     try:
         if build_type == "interactive":
-            # Interactive builds do not copy project files; the base image
-            # already contains the training code. Only the Dockerfile and
-            # entrypoint script are written into the build directory.
-            dockerfile_content = generate_interactive_dockerfile(base_image)
+            # Derived interactive builds do not copy project files (the base
+            # image already contains the training code). Direct interactive
+            # builds (include_project=True) copy the uploaded archive and pip
+            # install its requirements.txt before adding the sandbox layers.
+            if include_project:
+                for item in os.listdir(project_dir):
+                    src = os.path.join(project_dir, item)
+                    dst = os.path.join(build_dir, item)
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
+
+            dockerfile_content = generate_interactive_dockerfile(base_image, with_project=include_project)
             with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
                 f.write(dockerfile_content)
 
@@ -369,8 +426,14 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
             ])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
             if build_type == "interactive":
-                # Interactive build failures are infra-layer (apt/tailscale/sshd
-                # setup), not user code errors, so treat them as retryable.
+                if include_project:
+                    # Direct interactive builds include user-supplied
+                    # requirements; pip resolution errors are user errors.
+                    joined = "\n".join(error_lines).lower()
+                    if "pip" in joined or "requirements" in joined:
+                        return "user", reason
+                # Derived interactive build failures are infra-layer
+                # (apt/tailscale/sshd setup), so treat them as retryable.
                 return "system", reason
             return "user", reason
 
