@@ -7,6 +7,7 @@ class InteractiveSessionStatus(str, enum.Enum):
     PENDING = "PENDING"
     DEPLOYING = "DEPLOYING"
     RUNNING = "RUNNING"
+    STOPPING = "STOPPING"
     STOPPED = "STOPPED"
     FAILED = "FAILED"
 

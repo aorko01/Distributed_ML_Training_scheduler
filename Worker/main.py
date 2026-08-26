@@ -22,15 +22,37 @@ def heartbeat_loop(api: SchedulerAPI, stop_event: threading.Event):
         try:
             gpu_type, _, free_vram, _, gpu_load = get_gpu_info()
             node_info = collect_node_info()
-            api.send_heartbeat(
+            response = api.send_heartbeat(
                 gpu_type, free_vram,
                 {**node_info, "gpu_load": gpu_load, "gpus_in_use": count_gpus_in_use()},
             )
             record_heartbeat(True)
+            _handle_scheduler_commands(api, response or {})
         except Exception as e:
             logger.error("Heartbeat error: %s", e)
             record_heartbeat(False, str(e))
         stop_event.wait(runtime_config.get("heartbeat_interval"))
+
+def _handle_scheduler_commands(api: SchedulerAPI, response: dict):
+    """Act on commands piggybacked on the heartbeat response.
+
+    The scheduler cannot reach workers directly (no public IP), so stop
+    requests for interactive sessions are delivered here. Delivery repeats
+    until the worker reports the container stopped via report_ip; stopping is
+    idempotent."""
+    import interactive_handler
+
+    for session_id in response.get("stop_sessions", []):
+        logger.info("Scheduler requested stop for interactive session %s", session_id)
+        record_event("info", f"Stopping interactive session {session_id} (scheduler request)")
+        if not interactive_handler.stop_session_container(session_id):
+            # Container not tracked locally (e.g. worker restarted after the
+            # session was dispatched). Report stopped so the scheduler stops
+            # redelivering and closes out the session.
+            try:
+                api.report_interactive_ip(session_id, None, "STOPPED")
+            except Exception as e:
+                logger.error("Failed to report stopped state for %s: %s", session_id, e)
 
 def job_loop(executor: JobExecutor, api: SchedulerAPI, stop_event: threading.Event):
     logger.info("Job thread started.")

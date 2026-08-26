@@ -11,7 +11,6 @@ from app.models.interactive_session_model import (
     InteractiveSessionStatus,
 )
 from app.models.job_model import Job, JobStatus
-from app.models.worker_model import Worker
 from app.services import job_service
 
 logger = logging.getLogger("interactive_service")
@@ -34,9 +33,12 @@ def create_session(db: Session, user_id: str, base_job_id: str) -> dict:
     (a) create/reuse the interactive job record,
     (b) ask the Gateway to generate a session SSH keypair,
     (c) get a Headscale pre-auth key from the headscale_mgmt service,
-    (d) select a worker (prefer the one that ran the base job),
-    (e) dispatch `POST /api/interactive/run` to the worker,
-    (f) persist the InteractiveSession as DEPLOYING.
+    (d) persist the InteractiveSession as PENDING.
+
+    There is no direct dispatch to any worker: the session is picked up by
+    whichever idle worker next pulls a job (`POST /jobs/pull_job` returns it
+    with flag="interactive" once the image is built). Workers are never told
+    about scheduling decisions out-of-band.
     """
     base_job = db.query(Job).filter(Job.id == base_job_id).first()
     if not base_job:
@@ -48,7 +50,28 @@ def create_session(db: Session, user_id: str, base_job_id: str) -> dict:
     job = job_service.create_interactive_job(
         db, {"base_job_id": base_job_id, "user_id": user_id}
     )
-    image_tag = f"{os.getenv('DOCKER_HUB_USERNAME', 'aorko123')}/{job.id}:latest"
+
+    # A PENDING session for this job already exists (e.g. duplicate request);
+    # return it instead of minting another set of keys.
+    existing = (
+        db.query(InteractiveSession)
+        .filter(
+            InteractiveSession.job_id == job.id,
+            InteractiveSession.status.in_([
+                InteractiveSessionStatus.PENDING,
+                InteractiveSessionStatus.DEPLOYING,
+                InteractiveSessionStatus.RUNNING,
+                InteractiveSessionStatus.STOPPING,
+            ]),
+        )
+        .first()
+    )
+    if existing:
+        return {
+            "session_id": existing.session_id,
+            "job_id": existing.job_id,
+            "status": existing.status.value,
+        }
 
     session_id = str(uuid.uuid4())
 
@@ -83,13 +106,8 @@ def create_session(db: Session, user_id: str, base_job_id: str) -> dict:
         _delete_gateway_key(session_id)
         raise InteractiveServiceError(f"Headscale auth key creation failed: {e}")
 
-    # (d) Worker selection: prefer the worker running the base job, else any online.
-    worker = _select_worker(db, base_job)
-    if worker is None:
-        _delete_gateway_key(session_id)
-        raise InteractiveServiceError("No online worker available for interactive session")
-
-    # (f) Persist session first so the worker's report_ip callback finds it.
+    # (d) Persist as PENDING; an idle worker claims it via pull_job once the
+    # builder has marked the image INTERACTIVE_READY.
     record = InteractiveSession(
         id=str(uuid.uuid4()),
         job_id=job.id,
@@ -97,65 +115,20 @@ def create_session(db: Session, user_id: str, base_job_id: str) -> dict:
         base_job_id=base_job_id,
         session_id=session_id,
         gateway_session_id=session_id,
-        worker_id=worker.worker_id,
+        worker_id=None,
         ssh_public_key=ssh_public_key,
         headscale_auth_key=headscale_auth_key,
-        status=InteractiveSessionStatus.DEPLOYING,
+        status=InteractiveSessionStatus.PENDING,
     )
     db.add(record)
-
-    job.status = JobStatus.INTERACTIVE_DEPLOYING
     db.commit()
     db.refresh(record)
-
-    # (e) Dispatch to the worker (push-based; not part of the pull queue).
-    payload = {
-        "flag": "interactive",
-        "session_id": session_id,
-        "image_tag": image_tag,
-        "headscale_url": HEADSCALE_URL,
-        "headscale_auth_key": headscale_auth_key,
-        "ssh_public_key": ssh_public_key,
-    }
-    try:
-        _dispatch_to_worker(worker.hostname or worker.ip_address, 8600, payload)
-    except Exception as e:
-        record.status = InteractiveSessionStatus.FAILED
-        job.status = JobStatus.FAILED
-        job.failure_reason = f"Interactive dispatch failed: {e}"[:2000]
-        db.commit()
-        _delete_gateway_key(session_id)
-        raise InteractiveServiceError(f"Worker dispatch failed: {e}")
 
     return {
         "session_id": record.session_id,
         "job_id": record.job_id,
         "status": record.status.value,
     }
-
-
-def _select_worker(db: Session, base_job: Job) -> Worker | None:
-    """Prefer a worker already associated with this base job (its image is
-    likely cached there), else fall back to the first online worker."""
-    previous = (
-        db.query(InteractiveSession)
-        .filter(
-            InteractiveSession.base_job_id == base_job.id,
-            InteractiveSession.worker_id.isnot(None),
-        )
-        .order_by(InteractiveSession.created_at.desc())
-        .first()
-    )
-
-    online_workers = db.query(Worker).filter(Worker.is_testing.isnot(True)).all()
-    if not online_workers:
-        return None
-
-    if previous:
-        for w in online_workers:
-            if w.worker_id == previous.worker_id:
-                return w
-    return online_workers[0]
 
 
 def update_session_ip(db: Session, session_id: str, headscale_ip: str | None,
@@ -181,11 +154,13 @@ def update_session_ip(db: Session, session_id: str, headscale_ip: str | None,
     if job:
         mapping = {
             "RUNNING": JobStatus.INTERACTIVE_RUNNING,
-            "FAILED": JobStatus.INTERACTIVE_DEPLOYING,
+            "FAILED": JobStatus.FAILED,
             "STOPPED": JobStatus.INTERACTIVE_STOPPED,
         }
         if status in mapping:
             job.status = mapping[status]
+        if status == "FAILED" and headscale_ip is None:
+            job.failure_reason = "Worker reported interactive deployment failure"
 
     db.commit()
     db.refresh(record)
@@ -201,27 +176,51 @@ def stop_session(db: Session, session_id: str) -> dict:
     record = get_session(db, session_id)
     if not record:
         raise InteractiveServiceError("Interactive session not found")
-    if record.status == InteractiveSessionStatus.STOPPED:
-        return {"session_id": session_id, "status": "STOPPED"}
+    if record.status in (InteractiveSessionStatus.STOPPING,
+                         InteractiveSessionStatus.STOPPED):
+        return {"session_id": session_id, "status": record.status.value}
 
     # Best-effort cleanup of gateway key + headscale auth key. The container
-    # itself is torn down by the worker (out of scope for the MVP chain).
+    # itself is torn down by the worker: the stop command rides on the next
+    # heartbeat response (workers have no inbound-reachable endpoint), and the
+    # worker confirms via report_ip(STOPPED).
     if record.gateway_session_id:
         _delete_gateway_key(record.gateway_session_id)
     if record.headscale_auth_key:
         _revoke_headscale_key(record.headscale_auth_key)
 
-    record.status = InteractiveSessionStatus.STOPPED
-    record.headscale_ip = None
-    record.stopped_at = datetime.now(timezone.utc)
-
-    job = db.query(Job).filter(Job.id == record.job_id).first()
-    if job:
-        job.status = JobStatus.INTERACTIVE_STOPPED
+    if record.status == InteractiveSessionStatus.PENDING:
+        # Not claimed by any worker yet: cancel outright.
+        record.status = InteractiveSessionStatus.STOPPED
+        record.stopped_at = datetime.now(timezone.utc)
+        job = db.query(Job).filter(Job.id == record.job_id).first()
+        if job:
+            job.status = JobStatus.INTERACTIVE_STOPPED
+    else:
+        # Claimed/running on a worker: flag STOPPING so the assigned worker
+        # receives the stop command in its next heartbeat response.
+        record.status = InteractiveSessionStatus.STOPPING
 
     db.commit()
 
     return {"session_id": session_id, "status": record.status.value}
+
+
+def get_stop_sessions_for_worker(db: Session, worker_id: str) -> list[str]:
+    """Sessions this worker must tear down; delivered via heartbeat response.
+
+    Entries stay STOPPING until the worker reports the container stopped
+    through report_ip, so redelivery until confirmation is safe (the worker's
+    stop is idempotent)."""
+    records = (
+        db.query(InteractiveSession)
+        .filter(
+            InteractiveSession.worker_id == worker_id,
+            InteractiveSession.status == InteractiveSessionStatus.STOPPING,
+        )
+        .all()
+    )
+    return [r.session_id for r in records]
 
 
 def get_session(db: Session, session_id: str) -> InteractiveSession | None:
@@ -251,16 +250,6 @@ def list_sessions(db: Session) -> list[dict]:
         }
         for s in sessions
     ]
-
-
-def _dispatch_to_worker(worker_host: str, worker_port: int, payload: dict):
-    url = f"http://{worker_host}:{worker_port}/api/interactive/run"
-    try:
-        resp = requests.post(url, json=payload, timeout=30)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error("Dispatch to worker %s failed: %s", worker_host, e)
-        raise
 
 
 def _delete_gateway_key(session_id: str):

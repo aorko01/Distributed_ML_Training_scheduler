@@ -27,15 +27,24 @@ class SchedulerAPI:
         except Exception as e:
             logger.error("Failed to register worker: %s", e)
 
-    def send_heartbeat(self, gpu_type: str, available_vram: float, node_info: dict):
+    def send_heartbeat(self, gpu_type: str, available_vram: float, node_info: dict) -> dict | None:
+        """Send a heartbeat and return the scheduler's response payload.
+
+        The response may carry commands (e.g. `stop_sessions` for interactive
+        containers to tear down); callers act on them in the heartbeat loop."""
         payload = {
             "worker_id": self.worker_id,
             "gpu_type": gpu_type,
             "available_vram": available_vram,
             **node_info,
         }
-        resp = requests.post(_url("/workers/heartbeat"), json=payload, timeout=10)
-        logger.info("Heartbeat sent: %s", resp.json())
+        try:
+            resp = requests.post(_url("/workers/heartbeat"), json=payload, timeout=10)
+            logger.info("Heartbeat sent: %s", resp.json())
+            return resp.json()
+        except Exception as e:
+            logger.error("Heartbeat error: %s", e)
+            return None
 
     def pull_job(self, gpu_type: str, free_vram: float) -> dict | None:
         payload = {

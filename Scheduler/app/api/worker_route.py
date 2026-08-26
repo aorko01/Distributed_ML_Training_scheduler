@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.services import worker_service
+from app.services import interactive_service
 from app.schemas.worker_schema import WorkerInfo, WorkerResponse
 from app.schemas.heartbeat_schema import HeartbeatSchema,HeartbeatResponse
 
@@ -24,11 +25,17 @@ def register_worker(worker: WorkerInfo, db: Session = Depends(get_db)):
 
 
 @router.post("/heartbeat", response_model=HeartbeatResponse)
-async def worker_heartbeat(Heartbeat: HeartbeatSchema):
+async def worker_heartbeat(Heartbeat: HeartbeatSchema, db=Depends(get_db)):
     success = await worker_service.process_heartbeat(Heartbeat)
     if not success:
         raise HTTPException(status_code=404, detail="Worker not registered")
-    return HeartbeatResponse(status="success", worker_id=Heartbeat.worker_id)
+    return HeartbeatResponse(
+        status="success",
+        worker_id=Heartbeat.worker_id,
+        stop_sessions=interactive_service.get_stop_sessions_for_worker(
+            db, Heartbeat.worker_id
+        ),
+    )
 
 
 @router.get("/total_gpus")

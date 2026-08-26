@@ -10,6 +10,9 @@ class InteractiveSessionStatus(enum.Enum):
     PENDING = "PENDING"
     DEPLOYING = "DEPLOYING"
     RUNNING = "RUNNING"
+    # User asked to stop; the command is delivered to the assigned worker via
+    # its heartbeat response until the worker reports the container stopped.
+    STOPPING = "STOPPING"
     STOPPED = "STOPPED"
     FAILED = "FAILED"
 

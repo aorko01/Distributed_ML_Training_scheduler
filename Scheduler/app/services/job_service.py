@@ -1,7 +1,12 @@
 from datetime import datetime, timezone
+import os
 import uuid
 
 from app.models.worker_model import Worker
+from app.models.interactive_session_model import (
+    InteractiveSession,
+    InteractiveSessionStatus,
+)
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from app.models.job_model import Job, JobStatus, JobPriority
@@ -241,6 +246,64 @@ def _format_job_response(job: Job, flag: str) -> dict:
     }
 
 
+async def _check_interactive_job_strategy(db: Session, request: WorkerResource) -> dict | None:
+    """
+    Strategy 0: Hand an interactive session to any idle worker that polls.
+
+    The worker stays scheduling-agnostic: the payload just carries the image
+    tag and the runtime credentials (headscale URL/pre-auth key, SSH public
+    key) the container entrypoint needs. The session record is created up
+    front by interactive_service.create_session() in PENDING state; here it is
+    bound to the pulling worker and moved to DEPLOYING.
+    """
+    job = (
+        db.query(Job)
+        .filter(Job.status == JobStatus.INTERACTIVE_READY)
+        .order_by(Job.created_at.asc())
+        .first()
+    )
+    if not job:
+        return None
+
+    session = (
+        db.query(InteractiveSession)
+        .filter(
+            InteractiveSession.job_id == job.id,
+            InteractiveSession.status == InteractiveSessionStatus.PENDING,
+        )
+        .order_by(InteractiveSession.created_at.asc())
+        .first()
+    )
+    if not session:
+        return None
+
+    job.status = JobStatus.INTERACTIVE_DEPLOYING
+    job.started_at = datetime.now(timezone.utc)
+    job.device = request.gpu_type
+
+    session.worker_id = request.worker_id
+    session.status = InteractiveSessionStatus.DEPLOYING
+    db.commit()
+    db.refresh(job)
+    db.refresh(session)
+
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
+
+    return {
+        "flag": "interactive",
+        "id": job.id,
+        "job_id": job.id,
+        "session_id": session.session_id,
+        "image_tag": (
+            f"{os.getenv('DOCKER_HUB_USERNAME', 'aorko123')}/{job.id}-interactive:latest"
+        ),
+        "headscale_url": os.getenv("HEADSCALE_URL", ""),
+        "headscale_auth_key": session.headscale_auth_key,
+        "ssh_public_key": session.ssh_public_key,
+        "status": JobStatus.INTERACTIVE_DEPLOYING.value,
+    }
+
+
 async def _check_vram_estimation_strategy(db: Session, request: WorkerResource) -> dict | None:
     """
     Strategy 1: If pulling worker has highest VRAM among connected workers,
@@ -333,6 +396,7 @@ async def _check_retry_job_strategy(db: Session, request: WorkerResource) -> dic
 
 # List of scheduling strategies in priority order. Easy to extend with new strategies.
 SCHEDULING_STRATEGIES = [
+    _check_interactive_job_strategy,
     _check_vram_estimation_strategy,
     _check_retry_job_strategy,
     _check_training_job_strategy,

@@ -18,3 +18,7 @@ class HeartbeatSchema(BaseModel):
 class HeartbeatResponse(BaseModel):
     status: str
     worker_id: str
+    # Interactive sessions this worker must stop (delivered out-of-band because
+    # workers are not inbound-reachable). Redelivered until the worker reports
+    # the container stopped.
+    stop_sessions: list[str] = []
