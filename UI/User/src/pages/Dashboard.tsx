@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchClusterStats, type ClusterStats } from '../services/stats';
 import { fetchJobs, type Job, type JobStatus } from '../services/jobs';
-import { Activity, Clock, Server, CheckCircle2, Loader2 } from 'lucide-react';
+import { Activity, Clock, Server, CheckCircle2, Loader2, Zap } from 'lucide-react';
+import ConnectOptionsModal from '../components/ConnectOptionsModal';
 
 type StatusFilter = 'All' | JobStatus;
 type SortKey = 'newest' | 'oldest' | 'name' | 'gpuHours';
@@ -13,6 +14,7 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
   const [sortBy, setSortBy] = useState<SortKey>('newest');
+  const [connectJob, setConnectJob] = useState<Job | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -169,15 +171,36 @@ const Dashboard: React.FC = () => {
               </tr>
             )}
             {visibleJobs.map(job => (
-              <tr 
-                key={job.id} 
+              <tr
+                key={job.id}
                 className="job-row"
-                onClick={() => navigate(`/jobs/${job.id}`)}
+                onClick={() => {
+                  if (job.status === 'Interactive Ready') setConnectJob(job);
+                  else navigate(`/jobs/${job.id}`);
+                }}
               >
                 <td style={{ fontWeight: 500 }}>{job.name}</td>
                 <td>{getStatusBadge(job.status)}</td>
                  <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
-                 <td><span style={{ fontFamily: 'monospace' }}>{job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}</span></td>
+                 <td>
+                   {job.status === 'Interactive Ready' ? (
+                     <span
+                       className="connect-chip"
+                       title="Connect to this session"
+                       onClick={(e) => {
+                         e.stopPropagation();
+                         setConnectJob(job);
+                       }}
+                     >
+                       <Zap size={12} />
+                       Connect
+                     </span>
+                   ) : (
+                     <span style={{ fontFamily: 'monospace' }}>
+                       {job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}
+                     </span>
+                   )}
+                 </td>
                  <td>{formatDate(job.submittedAt)}</td>
                  <td>{job.gpuHours.toFixed(2)}</td>
                </tr>
@@ -185,6 +208,10 @@ const Dashboard: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {connectJob && (
+        <ConnectOptionsModal job={connectJob} onClose={() => setConnectJob(null)} />
+      )}
     </div>
   );
 };

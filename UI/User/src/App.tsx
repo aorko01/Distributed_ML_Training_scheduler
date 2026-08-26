@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import SubmitJob from './pages/SubmitJob';
 import Interactive from './pages/Machines';
 import JobDetails from './pages/JobDetails';
+import NotebookWorkspace from './pages/NotebookWorkspace';
 import { isAuthenticated } from './services/auth';
 import './index.css';
 
@@ -25,6 +26,15 @@ function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route
+          path="/notebooks/:sessionId"
+          element={
+            <ProtectedRoute>
+              <NotebookWorkspace />
+            </ProtectedRoute>
+          }
+        />
+
         
         <Route path="/" element={
           <ProtectedRoute>
