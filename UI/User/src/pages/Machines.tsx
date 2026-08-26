@@ -14,10 +14,9 @@ import {
   type Job,
   type InteractiveSession,
 } from '../services/jobs';
+import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
 
 const PYTHON_VERSIONS = ['3.9', '3.10', '3.11', '3.12', '3.13'];
-const PYTORCH_VERSIONS = ['2.0.1', '2.1.2', '2.2.2', '2.3.1', '2.4.0', '2.5.1'];
-const CUDA_VERSIONS = ['11.8', '12.1', '12.4'];
 
 type Mode = 'existing' | 'direct';
 
@@ -34,8 +33,11 @@ const Interactive: React.FC = () => {
   // Direct-upload mode
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [pythonVersion, setPythonVersion] = useState('3.11');
-  const [pytorchVersion, setPytorchVersion] = useState('');
-  const [cudaVersion, setCudaVersion] = useState('');
+  const [versions, setVersions] = useState<PytorchVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(true);
+  const [versionError, setVersionError] = useState('');
+  const [selectedPyTorch, setSelectedPyTorch] = useState('');
+  const [selectedCuda, setSelectedCuda] = useState<CudaVariant | null>(null);
   const [customBaseImage, setCustomBaseImage] = useState('');
 
   const [sessionName, setSessionName] = useState('');
@@ -62,22 +64,64 @@ const Interactive: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    const loadVersions = async () => {
+      setLoadingVersions(true);
+      setVersionError('');
+      try {
+        // Same live Docker Hub listing the SubmitJob page uses.
+        const data = await fetchPytorchVersions();
+        setVersions(data);
+      } catch (err) {
+        setVersionError(err instanceof Error ? err.message : 'Failed to load PyTorch versions.');
+      } finally {
+        setLoadingVersions(false);
+      }
+    };
+    loadVersions();
+  }, []);
+
   const selectedJob = jobs.find((j) => j.id === selectedJobId);
+
+  const availableCudas = versions.find((v) => v.version === selectedPyTorch)?.cudaVersions ?? [];
+
+  const handlePyTorchChange = (pt: string) => {
+    setSelectedPyTorch(pt);
+    setSession(null);
+    setSubmitError(null);
+    if (!pt) {
+      setSelectedCuda(null);
+      return;
+    }
+    const versionData = versions.find((v) => v.version === pt);
+    setSelectedCuda(versionData && versionData.cudaVersions.length > 0 ? versionData.cudaVersions[0] : null);
+  };
 
   const handleCreate = async () => {
     if (mode === 'existing' && !selectedJobId) return;
+    let payload: Parameters<typeof submitInteractiveDirect>[0] | null = null;
     if (mode === 'direct') {
       if (!zipFile) {
         setSubmitError('Please upload a zip archive of your project.');
         return;
       }
-      if (cudaVersion && !pytorchVersion) {
-        setSubmitError('CUDA version can only be selected together with a PyTorch version.');
-        return;
-      }
-      if (!customBaseImage.trim() && !pythonVersion) {
-        setSubmitError('Please pick a Python version (or provide a custom base image).');
-        return;
+      // Resolution precedence: custom base image > PyTorch (+CUDA variant)
+      // image > plain Python image.
+      const override = customBaseImage.trim();
+      if (override) {
+        payload = { name: sessionName, pythonVersion: '', baseImage: override };
+      } else if (selectedPyTorch && selectedCuda) {
+        payload = {
+          name: sessionName,
+          pythonVersion: '',
+          pytorchVersion: selectedPyTorch,
+          cudaVersion: selectedCuda.cuda,
+          baseImage: selectedCuda.tag,
+        };
+      } else if (selectedPyTorch) {
+        payload = { name: sessionName, pythonVersion: '', pytorchVersion: selectedPyTorch };
+      } else {
+        payload = { name: sessionName, pythonVersion };
       }
     }
 
@@ -85,17 +129,8 @@ const Interactive: React.FC = () => {
     setSubmitError(null);
     setSession(null);
     try {
-      if (mode === 'direct') {
-        const res = await submitInteractiveDirect(
-          {
-            name: sessionName,
-            pythonVersion: customBaseImage.trim() ? '' : pythonVersion,
-            pytorchVersion: customBaseImage.trim() ? undefined : pytorchVersion || undefined,
-            cudaVersion: customBaseImage.trim() ? undefined : cudaVersion || undefined,
-            baseImage: customBaseImage.trim() || undefined,
-          },
-          zipFile!,
-        );
+      if (mode === 'direct' && payload) {
+        const res = await submitInteractiveDirect(payload, zipFile!);
         setSession(res);
       } else {
         const res = await submitInteractiveSession(selectedJobId, sessionName);
@@ -112,8 +147,8 @@ const Interactive: React.FC = () => {
     setSelectedJobId('');
     setZipFile(null);
     setPythonVersion('3.11');
-    setPytorchVersion('');
-    setCudaVersion('');
+    setSelectedPyTorch('');
+    setSelectedCuda(null);
     setCustomBaseImage('');
     setSessionName('');
     setSession(null);
@@ -264,42 +299,60 @@ const Interactive: React.FC = () => {
                 <label className="form-label">PyTorch Version (optional)</label>
                 <select
                   className="form-select"
-                  value={pytorchVersion}
-                  disabled={!!customBaseImage.trim()}
-                  onChange={(e) => {
-                    setPytorchVersion(e.target.value);
-                    if (!e.target.value) setCudaVersion('');
-                    setSession(null);
-                    setSubmitError(null);
-                  }}
+                  value={selectedPyTorch}
+                  disabled={loadingVersions || !!customBaseImage.trim()}
+                  onChange={(e) => handlePyTorchChange(e.target.value)}
                 >
                   <option value="">No PyTorch (plain Python image)</option>
-                  {PYTORCH_VERSIONS.map((v) => (
-                    <option key={v} value={v}>PyTorch {v}</option>
+                  {loadingVersions && <option>Loading versions...</option>}
+                  {!loadingVersions && versions.length === 0 && (
+                    <option disabled>{versionError || 'No versions available'}</option>
+                  )}
+                  {versions.map((v) => (
+                    <option key={v.version} value={v.version}>PyTorch {v.version}</option>
                   ))}
                 </select>
+                {versionError && selectedPyTorch === '' && (
+                  <p style={{ fontSize: '0.75rem', color: 'var(--status-failed)', marginTop: '0.25rem' }}>
+                    {versionError} — you can still use a plain Python image or a custom base image.
+                  </p>
+                )}
               </div>
 
               <div className="form-group">
                 <label className="form-label">CUDA Version (optional, requires PyTorch)</label>
                 <select
                   className="form-select"
-                  value={cudaVersion}
-                  disabled={!pytorchVersion || !!customBaseImage.trim()}
+                  value={selectedCuda?.tag ?? ''}
+                  disabled={!selectedPyTorch || loadingVersions || availableCudas.length === 0 || !!customBaseImage.trim()}
                   onChange={(e) => {
-                    setCudaVersion(e.target.value);
+                    setSelectedCuda(availableCudas.find((v) => v.tag === e.target.value) ?? null);
                     setSession(null);
                     setSubmitError(null);
                   }}
                 >
-                  <option value="">
-                    {pytorchVersion ? 'CPU-only build' : 'Select PyTorch first...'}
-                  </option>
-                  {CUDA_VERSIONS.map((v) => (
-                    <option key={v} value={v}>CUDA {v}</option>
-                  ))}
+                  {availableCudas.length === 0 ? (
+                    <option value="">
+                      {selectedPyTorch ? 'No CUDA variants for this version' : 'Select PyTorch first...'}
+                    </option>
+                  ) : (
+                    availableCudas.map((c) => (
+                      <option key={c.tag} value={c.tag}>CUDA {c.cuda} / cuDNN {c.cudnn}</option>
+                    ))
+                  )}
                 </select>
+                {selectedPyTorch && !customBaseImage.trim() && (
+                  <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    Base image: <code>{selectedCuda?.tag ?? `pytorch/pytorch:${selectedPyTorch}`}</code>
+                  </p>
+                )}
               </div>
+
+              {!customBaseImage.trim() && !selectedPyTorch && (
+                <p style={{ marginTop: '-0.5rem', marginBottom: '1rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                  Base image: <code>python:{pythonVersion}-slim</code>
+                </p>
+              )}
 
               <div className="form-group">
                 <label className="form-label">Custom Base Image (optional override)</label>
@@ -378,8 +431,8 @@ const Interactive: React.FC = () => {
                     <strong>{zipFile.name}</strong>
                     {customBaseImage.trim()
                       ? <> on <strong>{customBaseImage.trim()}</strong></>
-                      : pytorchVersion
-                        ? <> with Python <strong>{pythonVersion}</strong>, PyTorch <strong>{pytorchVersion}</strong>{cudaVersion ? `, CUDA ${cudaVersion}` : ' (CPU)'}</>
+                      : selectedPyTorch
+                        ? <> on <strong>{selectedCuda?.tag ?? `pytorch/pytorch:${selectedPyTorch}`}</strong> (Python {pythonVersion} default)</>
                         : <> with Python <strong>{pythonVersion}</strong></>}
                   </>
                 ) : (
