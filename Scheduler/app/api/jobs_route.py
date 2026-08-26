@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSo
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from app.db.database import SessionLocal
-from app.services import job_service, log_service
+from app.services import job_service, log_service, interactive_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
 from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest, InteractiveBuildRequest, InteractiveReadyRequest
@@ -103,31 +103,24 @@ def submit_interactive(
 
     No zip upload is required; the builder derives the base image tag from
     base_job_id and produces an SSH + Tailscale sandbox image.
+
+    Delegates to interactive_service.create_session() so the full chain runs:
+    interactive Job record + Gateway SSH keypair + Headscale pre-auth key +
+    InteractiveSession persisted as PENDING. Without a PENDING session the
+    scheduler's pull strategy never dispatches the INTERACTIVE_READY image to
+    an idle worker.
     """
     try:
-        db_job = job_service.create_interactive_job(db, {
-            **request.dict(),
-            "user_id": current_user.user_id,
-        })
+        result = interactive_service.create_session(
+            db, current_user.user_id, request.base_job_id, request.name
+        )
         return {
-            "id": db_job.id,
-            "user_id": db_job.user_id,
-            "object_key": db_job.object_key,
-            "name": db_job.name,
-            "command": db_job.command,
-            "resume_command": db_job.resume_command,
-            "docker_base_image": db_job.docker_base_image,
-            "config": db_job.config,
-            "status": db_job.status.value,
-            "priority": db_job.priority.value,
-            "reason_for_priority": db_job.reason_for_priority,
-            "vram_required": db_job.vram_required,
-            "ram_required": db_job.ram_required,
-            "build_type": db_job.build_type,
-            "base_job_id": db_job.base_job_id,
-            "created_at": db_job.created_at,
-            "updated_at": db_job.updated_at,
-            "device": db_job.device,
+            "id": result["job_id"],
+            "user_id": current_user.user_id,
+            "base_job_id": request.base_job_id,
+            "status": result["status"],
+            "session_id": result["session_id"],
+            "job_id": result["job_id"],
         }
     except Exception as e:
         return {"error": str(e)}

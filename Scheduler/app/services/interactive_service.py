@@ -27,7 +27,8 @@ class InteractiveServiceError(Exception):
     pass
 
 
-def create_session(db: Session, user_id: str, base_job_id: str) -> dict:
+def create_session(db: Session, user_id: str, base_job_id: str,
+                   name: str | None = None) -> dict:
     """Full deployment chain for an interactive session:
 
     (a) create/reuse the interactive job record,
@@ -48,7 +49,7 @@ def create_session(db: Session, user_id: str, base_job_id: str) -> dict:
 
     # (a) Interactive job record (idempotent per base job while pending/ready).
     job = job_service.create_interactive_job(
-        db, {"base_job_id": base_job_id, "user_id": user_id}
+        db, {"base_job_id": base_job_id, "user_id": user_id, "name": name}
     )
 
     # A PENDING session for this job already exists (e.g. duplicate request);
