@@ -174,6 +174,21 @@ export const fetchJobById = async (id: string): Promise<Job | undefined> => {
   }
 };
 
+export interface JobConnectInfo {
+  session_id: string;
+  headscale_ip: string;
+  gateway_host: string;
+  gateway_ssh_port: number;
+  ssh_user: string;
+  container_user: string;
+}
+
+export const fetchJobConnectInfo = async (jobId: string): Promise<JobConnectInfo> => {
+  const data = await api.get<JobConnectInfo | { error: string }>(`/jobs/${jobId}/connect`);
+  if (hasError(data)) throw new Error(data.error);
+  return data as JobConnectInfo;
+};
+
 export interface SubmitJobPayload {
   name: string;
   command: string;

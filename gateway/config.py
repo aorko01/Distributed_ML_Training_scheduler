@@ -24,3 +24,8 @@ SSH_CONNECT_TIMEOUT = int(os.getenv("SSH_CONNECT_TIMEOUT", "10"))
 
 # SSH login user inside interactive containers.
 SSH_USER = os.getenv("SSH_USER", "sandbox")
+
+# SSH Server Bastion Config
+GATEWAY_SSH_PORT = int(os.getenv("GATEWAY_SSH_PORT", "2222"))
+GATEWAY_PUBLIC_HOST = os.getenv("GATEWAY_PUBLIC_HOST", "")
+GATEWAY_HOST_KEY_PATH = os.getenv("GATEWAY_HOST_KEY_PATH", "/data/ssh-keys/gateway_host_key")

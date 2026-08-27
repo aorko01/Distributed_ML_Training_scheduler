@@ -255,6 +255,15 @@ def get_session(db: Session, session_id: str) -> InteractiveSession | None:
     )
 
 
+def get_active_session_for_user(db: Session, user_id: str):
+    return (db.query(InteractiveSession)
+            .filter(InteractiveSession.user_id == user_id,
+                    InteractiveSession.status == InteractiveSessionStatus.RUNNING)
+            .order_by(InteractiveSession.created_at.desc())
+            .first())
+
+
+
 def list_sessions(db: Session) -> list[dict]:
     sessions = (
         db.query(InteractiveSession)

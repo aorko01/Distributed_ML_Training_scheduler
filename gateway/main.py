@@ -79,6 +79,8 @@ def stop_tailscale():
         logger.warning("Failed to bring tailscale down: %s", e)
 
 
+from ssh_server import start_ssh_server, stop_ssh_server
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(config.SSH_KEY_DIR, exist_ok=True)
@@ -87,7 +89,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         # Do not crash the API; SSH reachability just won't work until fixed.
         logger.error("Failed to join tailnet: %s", e)
+    
+    ssh_sock = start_ssh_server()
+    
     yield
+    stop_ssh_server(ssh_sock)
     stop_tailscale()
 
 logging.basicConfig(

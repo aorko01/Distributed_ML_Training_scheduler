@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   X,
   Copy,
@@ -13,7 +12,7 @@ import {
   Clock,
 } from 'lucide-react';
 import type { Job } from '../services/jobs';
-
+import { fetchJobConnectInfo, type JobConnectInfo } from '../services/jobs';
 interface ConnectOptionsModalProps {
   job: Job;
   onClose: () => void;
@@ -28,8 +27,10 @@ const hashString = (value: string): number => {
 };
 
 const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose }) => {
-  const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
+  const [connectInfo, setConnectInfo] = useState<JobConnectInfo | null>(null);
+  const [connectError, setConnectError] = useState(false);
+  const [loadingConnect, setLoadingConnect] = useState(true);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -39,8 +40,28 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
     return () => window.removeEventListener('keydown', handleKey);
   }, [onClose]);
 
-  const nodeNum = (hashString(job.id) % 8) + 1;
-  const sshCommand = `ssh researcher@node-a100-0${nodeNum}.dml.cloud -p 2222`;
+  useEffect(() => {
+    let mounted = true;
+    setLoadingConnect(true);
+    fetchJobConnectInfo(job.id)
+      .then(info => {
+        if (mounted) {
+          setConnectInfo(info);
+          setConnectError(false);
+        }
+      })
+      .catch(() => {
+        if (mounted) setConnectError(true);
+      })
+      .finally(() => {
+        if (mounted) setLoadingConnect(false);
+      });
+    return () => { mounted = false; };
+  }, [job.id]);
+
+  const sshCommand = (connectInfo && connectInfo.gateway_host)
+    ? `ssh -p ${connectInfo.gateway_ssh_port} ${connectInfo.ssh_user}@${connectInfo.gateway_host}`
+    : '';
 
   const handleCopySsh = async () => {
     try {
@@ -95,10 +116,9 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
               <button
                 className="btn btn-primary"
                 style={{ width: '100%', marginTop: '0.5rem' }}
-                onClick={() => navigate(`/notebooks/${job.id}`)}
+                disabled
               >
-                Launch Notebook
-                <ArrowUpRight size={16} />
+                Coming soon
               </button>
             </div>
 
@@ -110,24 +130,32 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
               <p style={{ margin: 0, fontSize: '0.82rem' }}>
                 Full shell into the container with your own tooling, editors and tmux sessions.
               </p>
-              <div className="cn-cmd">
-                <code>{sshCommand}</code>
-                <button
-                  className="cn-copy-btn"
-                  onClick={handleCopySsh}
-                  aria-label="Copy SSH command"
-                >
-                  {copied ? <Check size={14} color="var(--status-success)" /> : <Copy size={14} />}
-                </button>
-              </div>
-              <button
-                className="btn btn-secondary"
-                style={{ width: '100%', marginTop: 'auto' }}
-                onClick={handleCopySsh}
-              >
-                {copied ? <Check size={16} color="var(--status-success)" /> : <Copy size={16} />}
-                {copied ? 'Copied!' : 'Copy Command'}
-              </button>
+              {loadingConnect ? (
+                <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>Loading session info...</div>
+              ) : connectError || !connectInfo || !connectInfo.gateway_host ? (
+                <div style={{ marginTop: '1rem', fontSize: '0.85rem', color: 'var(--status-failed)' }}>Session not ready</div>
+              ) : (
+                <>
+                  <div className="cn-cmd">
+                    <code>{sshCommand}</code>
+                    <button
+                      className="cn-copy-btn"
+                      onClick={handleCopySsh}
+                      aria-label="Copy SSH command"
+                    >
+                      {copied ? <Check size={14} color="var(--status-success)" /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ width: '100%', marginTop: 'auto' }}
+                    onClick={handleCopySsh}
+                  >
+                    {copied ? <Check size={16} color="var(--status-success)" /> : <Copy size={16} />}
+                    {copied ? 'Copied!' : 'Copy Command'}
+                  </button>
+                </>
+              )}
             </div>
           </div>
 

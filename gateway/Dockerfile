@@ -4,7 +4,7 @@
 # (granted via docker-compose.yml)
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client ca-certificates curl \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client openssh-server ca-certificates curl \
     && curl -fsSL https://tailscale.com/install.sh | sh \
     && rm -rf /var/lib/apt/lists/*
 

@@ -44,6 +44,20 @@ def list_sessions(db: Session = Depends(get_db)):
     return interactive_service.list_sessions(db)
 
 
+@router.get("/sessions/active")
+def get_active_session(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    session = interactive_service.get_active_session_for_user(db, current_user.user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="No active interactive session")
+    return {
+        "session_id": session.session_id,
+        "headscale_ip": session.headscale_ip,
+    }
+
+
 @router.get("/{session_id}")
 def get_session(
     session_id: str,

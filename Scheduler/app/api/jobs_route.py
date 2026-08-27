@@ -538,6 +538,38 @@ async def job_logs_stream(websocket: WebSocket, job_id: str):
         db.close()
 
 
+from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException
+
+@router.get("/{job_id}/connect")
+def get_job_connect_info(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    from app.models.interactive_session_model import InteractiveSession, InteractiveSessionStatus
+    import os
+    job = job_service.get_user_job_by_id(db, current_user.user_id, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    session = db.query(InteractiveSession).filter(
+        InteractiveSession.job_id == job_id, 
+        InteractiveSession.status == InteractiveSessionStatus.RUNNING
+    ).first()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="No running interactive session for this job")
+    
+    return {
+        "session_id": session.session_id,
+        "headscale_ip": session.headscale_ip,
+        "gateway_host": os.getenv("GATEWAY_PUBLIC_HOST", ""),
+        "gateway_ssh_port": int(os.getenv("GATEWAY_SSH_PORT", "2222")),
+        "ssh_user": current_user.username,
+        "container_user": "sandbox"
+    }
+
+
 @router.get("/{job_id}")
 def get_job_by_id(
     job_id: str,
