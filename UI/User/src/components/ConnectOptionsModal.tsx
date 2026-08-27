@@ -8,7 +8,6 @@ import {
   Zap,
   FolderOpen,
   Package,
-  ArrowUpRight,
   Clock,
 } from 'lucide-react';
 import type { Job } from '../services/jobs';
@@ -18,13 +17,6 @@ interface ConnectOptionsModalProps {
   onClose: () => void;
 }
 
-const hashString = (value: string): number => {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
-  }
-  return hash;
-};
 
 const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose }) => {
   const [copied, setCopied] = useState(false);
