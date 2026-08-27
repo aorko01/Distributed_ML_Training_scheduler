@@ -562,17 +562,18 @@ class JobExecutor:
             self._last_log_upload = now
 
     def handle_interactive(self, job: dict):
-        """Deploy an interactive sandbox container (push-dispatched by scheduler)."""
+        """Deploy an interactive two-container session (env + access)."""
         import interactive_handler
 
         session_id = job.get("session_id")
         if not session_id:
             logger.error("Interactive job payload missing session_id.")
             return
-        interactive_handler.run_interactive_container(
+        interactive_handler.run_interactive_session(
             self.api,
             session_id,
-            job.get("image_tag", ""),
+            job.get("env_image_tag", ""),
+            job.get("access_image_tag", ""),
             job.get("headscale_url", ""),
             job.get("headscale_auth_key", ""),
             job.get("ssh_public_key", ""),

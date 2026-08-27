@@ -71,16 +71,19 @@ def resolve_interactive_base_image(env_config: dict | None) -> str:
     return f"python:{python_version}-slim"
 
 
-def generate_interactive_dockerfile(base_image: str, with_project: bool = False) -> str:
-    """Generate a Dockerfile for an interactive sandbox image.
+def generate_env_dockerfile(base_image: str, with_project: bool = False) -> str:
+    """Generate a Dockerfile for a clean interactive environment image.
+
+    This image contains NO sshd and NO Tailscale/Headscale — it is a pure
+    training/environment container that stays alive via ``sleep infinity``.
+    Access (SSH + tailnet) is provided by a separate, shared access image
+    (``aorko123/access-sshd:latest``) that joins the env container's PID
+    namespace via nsenter.
 
     Derived builds (with_project=False) are based on a training job's image
-    that already contains the training code, so only the entrypoint is
-    overridden. Direct builds (with_project=True) start from a fresh
-    python/pytorch/cuda base and copy the uploaded project into /workspace,
-    installing requirements.txt if present. Either way the training job does
-    NOT run automatically: the entrypoint launches an SSH + Tailscale sandbox
-    for interactive access.
+    that already contains the training code. Direct builds (with_project=True)
+    start from a fresh base and copy the uploaded project into /workspace,
+    installing requirements.txt if present.
     """
     lines = [f"FROM {base_image}", "", "USER root", ""]
 
@@ -95,32 +98,60 @@ def generate_interactive_dockerfile(base_image: str, with_project: bool = False)
         ]
 
     lines += [
-        "RUN apt-get update && apt-get install -y openssh-server curl ca-certificates bash && rm -rf /var/lib/apt/lists/*",
-        "",
-        "RUN id -u sandbox >/dev/null 2>&1 || useradd --create-home --shell /bin/bash sandbox",
-        "",
-        "RUN curl -fsSL https://tailscale.com/install.sh | sh",
-        "",
-        "RUN mkdir -p /run/sshd",
-        "",
-        "COPY interactive-entrypoint.sh /usr/local/bin/interactive-entrypoint.sh",
-        "RUN chmod +x /usr/local/bin/interactive-entrypoint.sh",
-        "",
-        'ENTRYPOINT ["/usr/local/bin/interactive-entrypoint.sh"]',
         'CMD ["sleep", "infinity"]',
     ]
     return "\n".join(lines)
 
 
-def generate_interactive_entrypoint() -> str:
-    """Generate the entrypoint shell script for the interactive sandbox image.
+def generate_access_dockerfile() -> str:
+    """Generate a Dockerfile for the shared access/SSH image.
 
-    The script validates required runtime environment variables (HEADSCALE_URL,
-    HEADSCALE_AUTHKEY, SESSION_ID, SSH_PUBLIC_KEY), starts tailscaled, waits for
-    its control socket, connects to Headscale via `tailscale up`, configures
-    authorized_keys for the sandbox user, and finally runs sshd as the
-    foreground process so the container stays alive and is SSH-reachable over
-    the tailnet (100.x.x.x) by the gateway.
+    This is a static, reusable image (``aorko123/access-sshd:latest``) that
+    contains sshd + tailscaled. It is launched with ``--pid container:<env>``
+    so its sshd ``ForceCommand`` can nsenter into the env container's
+    namespaces, routing the user's shell into the training container.
+    """
+    return r"""# Shared access/SSH image for interactive sessions.
+# Build & push ONCE (manually) to Docker Hub:
+#   docker build -t aorko123/access-sshd:latest ./AccessContainer
+#   docker push aorko123/access-sshd:latest
+# The worker pulls aorko123/access-sshd:latest per session.
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openssh-server \
+        curl \
+        ca-certificates \
+        bash \
+        util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Tailscale (for tailnet connectivity).
+RUN curl -fsSL https://tailscale.com/install.sh | sh
+
+# Create the sandbox user that sshd will authenticate.
+RUN id -u sandbox >/dev/null 2>&1 || useradd --create-home --shell /bin/bash sandbox
+
+RUN mkdir -p /run/sshd /etc/ssh/sshd_config.d /var/run/tailscale /var/lib/tailscale
+
+COPY access-entrypoint.sh /usr/local/bin/access-entrypoint.sh
+RUN chmod +x /usr/local/bin/access-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/access-entrypoint.sh"]
+"""
+
+
+def generate_access_entrypoint() -> str:
+    """Generate the entrypoint shell script for the shared access image.
+
+    Validates required runtime environment variables (HEADSCALE_URL,
+    HEADSCALE_AUTHKEY, SESSION_ID, SSH_PUBLIC_KEY), starts tailscaled, waits
+    for its control socket, connects to Headscale via ``tailscale up``,
+    configures authorized_keys for the sandbox user, writes an sshd_config.d
+    snippet with a ``ForceCommand`` that nsenters into the env container's
+    PID 1 namespaces, and finally runs ``sshd -D`` as the foreground process.
+    Prints ``Tailscale IP: 100.x.x.x`` so the worker can detect the tailnet IP.
     """
     return r"""#!/bin/bash
 set -e
@@ -130,11 +161,9 @@ set -e
 : "${SESSION_ID:?SESSION_ID is required}"
 : "${SSH_PUBLIC_KEY:?SSH_PUBLIC_KEY is required}"
 
-echo "Starting interactive environment..."
+echo "Starting access container for session ${SESSION_ID}..."
 
-mkdir -p /var/run/tailscale
-mkdir -p /var/lib/tailscale
-
+# Start Tailscale daemon.
 tailscaled \
     --state=/var/lib/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock &
@@ -152,29 +181,64 @@ tailscale up \
 
 echo "Tailscale connected."
 
-# SSH setup
+# SSH setup: install the gateway's public key for the sandbox user.
 mkdir -p /home/sandbox/.ssh
 echo "$SSH_PUBLIC_KEY" > /home/sandbox/.ssh/authorized_keys
-
 chown -R sandbox:sandbox /home/sandbox/.ssh
 chmod 700 /home/sandbox/.ssh
 chmod 600 /home/sandbox/.ssh/authorized_keys
 
-mkdir -p /run/sshd
+# sshd config: force every connection to nsenter into the env container's
+# PID 1 (the env container's `sleep infinity`), entering all its namespaces
+# (mount, UTS, IPC, net, PID) so the user lands inside the training container.
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/sandbox.conf <<'SSHD'
 PasswordAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
 AllowUsers sandbox
+ForceCommand nsenter -t 1 -m -u -i -n -p -- /bin/bash -l
 SSHD
 
 echo "Tailscale IP: $(tailscale ip -4 || true)"
 
 echo "Starting SSH server..."
-
 exec /usr/sbin/sshd -D -e
 """
+
+
+def ensure_access_image(client: docker.DockerClient) -> bool:
+    """Ensure the shared access image (``aorko123/access-sshd:latest``) is available.
+
+    The access image is built and pushed to Docker Hub ONCE by the operator
+    (see ``AccessContainer/Dockerfile``). This function simply pulls it if it
+    is not already present locally. Returns True if the image is available,
+    False otherwise.
+    """
+    access_image = "aorko123/access-sshd:latest"
+    try:
+        client.images.get(access_image)
+        logger.info("Access image %s already present locally.", access_image)
+        return True
+    except docker.errors.ImageNotFound:
+        pass
+    except Exception as e:
+        logger.warning("Could not check for access image %s: %s", access_image, e)
+
+    logger.info("Pulling access image %s ...", access_image)
+    try:
+        client.images.pull(access_image)
+        logger.info("Successfully pulled access image %s.", access_image)
+        return True
+    except Exception as e:
+        logger.error(
+            "Failed to pull access image %s: %s. "
+            "The operator must build and push it first: "
+            "docker build -t aorko123/access-sshd:latest ./AccessContainer && "
+            "docker push aorko123/access-sshd:latest",
+            access_image, e,
+        )
+        return False
 
 def save_debug_copy(job_id: str, build_dir: str) -> None:
     debug_dir = os.path.join(DEBUG_LOCAL_DIR, job_id)
@@ -316,7 +380,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
     (infra/daemon/registry error -> job RETRY_NEEDED).
     """
     if build_type == "interactive":
-        image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}-interactive:latest"
+        image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}-env:latest"
     else:
         image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
@@ -329,7 +393,9 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
             # Derived interactive builds do not copy project files (the base
             # image already contains the training code). Direct interactive
             # builds (include_project=True) copy the uploaded archive and pip
-            # install its requirements.txt before adding the sandbox layers.
+            # install its requirements.txt before adding the env layers.
+            # The env image is a clean training container (no SSH/Headscale);
+            # access is provided by the shared aorko123/access-sshd image.
             if include_project:
                 for item in os.listdir(project_dir):
                     src = os.path.join(project_dir, item)
@@ -339,15 +405,9 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                     else:
                         shutil.copy2(src, dst)
 
-            dockerfile_content = generate_interactive_dockerfile(base_image, with_project=include_project)
+            dockerfile_content = generate_env_dockerfile(base_image, with_project=include_project)
             with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
                 f.write(dockerfile_content)
-
-            entrypoint_content = generate_interactive_entrypoint()
-            entrypoint_path = os.path.join(build_dir, "interactive-entrypoint.sh")
-            with open(entrypoint_path, "w") as f:
-                f.write(entrypoint_content)
-            os.chmod(entrypoint_path, 0o755)
         else:
             for item in os.listdir(project_dir):
                 src = os.path.join(project_dir, item)
@@ -372,7 +432,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         if build_type == "interactive":
             emit_build_lines(job_id, build_log_buffer, [
                 "=" * 60,
-                f"Job {job_id}: building interactive Docker image",
+                f"Job {job_id}: building interactive env image",
                 f"Target image : {image_tag}",
                 f"Base image   : {base_image}",
                 "--- generated Dockerfile ---",
@@ -426,14 +486,12 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
             ])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
             if build_type == "interactive":
-                if include_project:
-                    # Direct interactive builds include user-supplied
-                    # requirements; pip resolution errors are user errors.
-                    joined = "\n".join(error_lines).lower()
-                    if "pip" in joined or "requirements" in joined:
-                        return "user", reason
-                # Derived interactive build failures are infra-layer
-                # (apt/tailscale/sshd setup), so treat them as retryable.
+                # Direct interactive builds include user-supplied requirements;
+                # pip resolution errors are user errors.
+                joined = "\n".join(error_lines).lower()
+                if "pip" in joined or "requirements" in joined:
+                    return "user", reason
+                # Other interactive build failures are infra-layer, retryable.
                 return "system", reason
             return "user", reason
 
@@ -459,7 +517,13 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
             if status:
                 logger.info("  [push] %s%s", status, f" {progress}" if progress else "")
         maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
-                
+
+        # For interactive builds, ensure the shared access image is available
+        # on this builder node so it can be pulled by the worker later.
+        if build_type == "interactive":
+            if not ensure_access_image(client):
+                return "system", "Failed to pull access image aorko123/access-sshd:latest"
+
     except docker.errors.ImageNotFound as e:
         logger.error("Base image not found for job %s: %s", job_id, e)
         return "system", f"Base image unavailable: {e}"

@@ -9,7 +9,7 @@ import docker
 from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL, DOCKER_HUB_USERNAME
 from database import init_db, is_job_processed, mark_job_processed
 from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_interactive_ready, notify_scheduler_job_failed
-from docker_ops import docker_login, build_push_and_clean, prune_old_base_images, resolve_interactive_base_image
+from docker_ops import docker_login, build_push_and_clean, prune_old_base_images, resolve_interactive_base_image, ensure_access_image
 
 def find_project_dir(extracted_dir: str) -> str:
     for entry in sorted(os.listdir(extracted_dir)):
@@ -80,21 +80,19 @@ def scan_and_process():
         try:
             if build_type == "interactive":
                 if base_job_id:
-                    # Derived interactive build: skip zip download/extraction;
-                    # the base image already contains the training code.
-                    base_image_tag = f"{DOCKER_HUB_USERNAME}/{base_job_id}:latest"
-                    temp_dir = tempfile.mkdtemp(prefix=f"interactive_{job_id}_")
-                    try:
-                        result = build_push_and_clean(
-                            client, job_id, temp_dir, command="",
-                            base_image=base_image_tag, build_type="interactive",
-                        )
-                    finally:
-                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    # Derived interactive build: reuse the base training image
+                    # ({user}/{base_job_id}:latest) as the env image — no build
+                    # needed. Just ensure the shared access image is available
+                    # and notify the scheduler.
+                    if not ensure_access_image(client):
+                        result = ("system", "Failed to pull access image aorko123/access-sshd:latest")
+                    else:
+                        result = None
                 else:
                     # Direct interactive build: resolve the environment from
-                    # the job's config spec and build a standalone sandbox
-                    # image with the user's code copied into it.
+                    # the job's config spec and build a standalone env image
+                    # with the user's code copied into it. The shared access
+                    # image is ensured inside build_push_and_clean.
                     env_config = job.get("config") or {}
                     base_image_tag = resolve_interactive_base_image(env_config)
                     logger.info(

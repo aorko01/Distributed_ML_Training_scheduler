@@ -41,17 +41,18 @@ def create_job(db: Session, job_data: dict):
 
 
 def create_interactive_job(db: Session, job_data: dict):
-    """Create an interactive job in one of two modes:
+    """Create an interactive job in one of two modes (two-container model):
 
     - Derived: base_job_id points at an existing training job. The interactive
-      job has no zip archive (object_key=None); the builder constructs the
-      base image tag from base_job_id and produces an image that overrides
-      the entrypoint to launch an SSH + Tailscale sandbox.
+      job has no zip archive (object_key=None); the builder reuses the base
+      training image ({user}/{base_job_id}:latest) as the env container image.
+      No env image is built. The shared access image (aorko123/access-sshd:latest)
+      provides SSH + tailnet.
     - Direct: object_key points at an uploaded archive and config carries the
       environment spec (python_version / pytorch_version / cuda_version or a
-      full base_image override). The builder builds a standalone sandbox
-      image from a fresh base (python/pytorch/cuda) and copies the user's
-      code into it.
+      full base_image override). The builder builds a standalone env image
+      ({user}/{job.id}-env:latest) from a fresh base and copies the user's
+      code into it. The shared access image provides SSH + tailnet.
     """
     base_job_id = job_data.get("base_job_id")
     user_id = job_data["user_id"]
@@ -266,11 +267,19 @@ async def _check_interactive_job_strategy(db: Session, request: WorkerResource) 
     """
     Strategy 0: Hand an interactive session to any idle worker that polls.
 
-    The worker stays scheduling-agnostic: the payload just carries the image
-    tag and the runtime credentials (headscale URL/pre-auth key, SSH public
-    key) the container entrypoint needs. The session record is created up
-    front by interactive_service.create_session() in PENDING state; here it is
-    bound to the pulling worker and moved to DEPLOYING.
+    The worker stays scheduling-agnostic: the payload carries the env image
+    tag, the shared access image tag, and the runtime credentials (headscale
+    URL/pre-auth key, SSH public key) the access container entrypoint needs.
+    The session record is created up front by interactive_service.create_session()
+    in PENDING state; here it is bound to the pulling worker and moved to
+    DEPLOYING.
+
+    Two-container model:
+    - env_image_tag: the training/environment container (no SSH/Headscale).
+      For derived sessions this is the base training job's image; for direct
+      sessions it is the freshly built env image.
+    - access_image_tag: the shared aorko123/access-sshd image (sshd + tailscaled)
+      that joins the env container's PID namespace via nsenter.
     """
     job = (
         db.query(Job)
@@ -305,14 +314,21 @@ async def _check_interactive_job_strategy(db: Session, request: WorkerResource) 
 
     await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
 
+    docker_hub_username = os.getenv('DOCKER_HUB_USERNAME', 'aorko123')
+    if job.base_job_id:
+        # Derived: reuse the base training job's image as the env image.
+        env_image_tag = f"{docker_hub_username}/{job.base_job_id}:latest"
+    else:
+        # Direct: the builder built a fresh env image for this job.
+        env_image_tag = f"{docker_hub_username}/{job.id}-env:latest"
+
     return {
         "flag": "interactive",
         "id": job.id,
         "job_id": job.id,
         "session_id": session.session_id,
-        "image_tag": (
-            f"{os.getenv('DOCKER_HUB_USERNAME', 'aorko123')}/{job.id}-interactive:latest"
-        ),
+        "env_image_tag": env_image_tag,
+        "access_image_tag": "aorko123/access-sshd:latest",
         "headscale_url": os.getenv("HEADSCALE_URL", ""),
         "headscale_auth_key": session.headscale_auth_key,
         "ssh_public_key": session.ssh_public_key,

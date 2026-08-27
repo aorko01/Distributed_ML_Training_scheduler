@@ -30,7 +30,7 @@ class InteractiveServiceError(Exception):
 def create_session(db: Session, user_id: str, base_job_id: str | None = None,
                    name: str | None = None, object_key: str | None = None,
                    env_config: dict | None = None) -> dict:
-    """Full deployment chain for an interactive session:
+    """Full deployment chain for an interactive session (two-container model):
 
     (a) create/reuse the interactive job record,
     (b) ask the Gateway to generate a session SSH keypair,
@@ -39,11 +39,13 @@ def create_session(db: Session, user_id: str, base_job_id: str | None = None,
 
     Two modes:
     - Derived: `base_job_id` points at an existing training job; the builder
-      derives the sandbox image from that job's image.
+      reuses that job's image as the env container (no rebuild). The shared
+      access image (aorko123/access-sshd:latest) provides SSH + tailnet.
     - Direct: `object_key` points at an uploaded archive and `env_config`
       carries the environment spec (python_version / pytorch_version /
-      cuda_version / base_image); the builder builds a standalone sandbox
-      image from scratch.
+      cuda_version / base_image); the builder builds a standalone env image
+      from scratch and copies the user's code into it. The shared access
+      image provides SSH + tailnet.
 
     There is no direct dispatch to any worker: the session is picked up by
     whichever idle worker next pulls a job (`POST /jobs/pull_job` returns it

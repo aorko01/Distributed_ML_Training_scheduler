@@ -79,6 +79,11 @@ CONTAINER_AS_ROOT = os.getenv("CONTAINER_AS_ROOT", "0").lower() in ("1", "true",
 # Seconds to wait for the container's entrypoint to print its Tailscale IP.
 INTERACTIVE_IP_TIMEOUT = int(os.getenv("INTERACTIVE_IP_TIMEOUT", "30"))
 
+# Shared access image (sshd + tailscaled) used by all interactive sessions.
+# Built and pushed to Docker Hub ONCE by the operator; the worker pulls it
+# per session. See AccessContainer/Dockerfile.
+INTERACTIVE_ACCESS_IMAGE = os.getenv("INTERACTIVE_ACCESS_IMAGE", "aorko123/access-sshd:latest")
+
 # File Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKER_ID_FILE = os.path.join(BASE_DIR, "worker_id.txt")

@@ -23,7 +23,12 @@ class CreateInteractiveSessionResponse(BaseModel):
 
 
 class InteractiveSessionReport(BaseModel):
-    """Worker -> Scheduler report of a deployed interactive container."""
+    """Worker -> Scheduler report of a deployed interactive container.
+
+    In the two-container model the worker deploys an env container (training
+    image) plus a shared access container (aorko123/access-sshd). The report
+    carries the access container's tailnet IP and lifecycle status.
+    """
     session_id: str
     headscale_ip: Optional[str] = None
     status: str  # "RUNNING" | "FAILED" | "STOPPED"
