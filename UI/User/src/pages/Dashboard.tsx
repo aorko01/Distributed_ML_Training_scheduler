@@ -58,6 +58,9 @@ const Dashboard: React.FC = () => {
       case 'Completed': return <span className="badge badge-success">Completed</span>;
       case 'Failed': return <span className="badge badge-failed">Failed</span>;
       case 'Interactive Ready': return <span className="badge badge-building">Interactive Ready</span>;
+      case 'Provisioning': return <span className="badge badge-building">Provisioning</span>;
+      case 'Interactive Running': return <span className="badge badge-running">Interactive Running</span>;
+      case 'Stopped': return <span className="badge badge-failed">Stopped</span>;
       default: return null;
     }
   };
@@ -130,7 +133,10 @@ const Dashboard: React.FC = () => {
               <option value="Retrying">Retrying</option>
               <option value="Completed">Completed</option>
               <option value="Failed">Failed</option>
+              <option value="Provisioning">Provisioning</option>
               <option value="Interactive Ready">Interactive Ready</option>
+              <option value="Interactive Running">Interactive Running</option>
+              <option value="Stopped">Stopped</option>
             </select>
           </div>
           <div>
@@ -175,32 +181,32 @@ const Dashboard: React.FC = () => {
                 key={job.id}
                 className="job-row"
                 onClick={() => {
-                  if (job.status === 'Interactive Ready') setConnectJob(job);
+                  if (job.status === 'Interactive Running') setConnectJob(job);
                   else navigate(`/jobs/${job.id}`);
                 }}
               >
                 <td style={{ fontWeight: 500 }}>{job.name}</td>
                 <td>{getStatusBadge(job.status)}</td>
                  <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
-                 <td>
-                   {job.status === 'Interactive Ready' ? (
-                     <span
-                       className="connect-chip"
-                       title="Connect to this session"
-                       onClick={(e) => {
-                         e.stopPropagation();
-                         setConnectJob(job);
-                       }}
-                     >
-                       <Zap size={12} />
-                       Connect
-                     </span>
-                   ) : (
-                     <span style={{ fontFamily: 'monospace' }}>
-                       {job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}
-                     </span>
-                   )}
-                 </td>
+                  <td>
+                    {job.status === 'Interactive Running' ? (
+                      <span
+                        className="connect-chip"
+                        title="Connect to this session"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConnectJob(job);
+                        }}
+                      >
+                        <Zap size={12} />
+                        Connect
+                      </span>
+                    ) : (
+                      <span style={{ fontFamily: 'monospace' }}>
+                        {job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}
+                      </span>
+                    )}
+                  </td>
                  <td>{formatDate(job.submittedAt)}</td>
                  <td>{job.gpuHours.toFixed(2)}</td>
                </tr>

@@ -1,6 +1,16 @@
 import { api, getToken, type ApiError } from './api';
 
-export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed' | 'Retrying' | 'Interactive Ready';
+export type JobStatus =
+  | 'Pending'
+  | 'Building'
+  | 'Running'
+  | 'Completed'
+  | 'Failed'
+  | 'Retrying'
+  | 'Interactive Ready'
+  | 'Provisioning'
+  | 'Interactive Running'
+  | 'Stopped';
 
 export interface Job {
   id: string;
@@ -40,15 +50,21 @@ interface BackendJob {
 const DUMMY_DEVICES = ['A100 80GB', 'H100 80GB', 'L4 24GB', 'V100 16GB'];
 
 const mapStatus = (status: string): JobStatus => {
-  switch (status) {
+  // Normalize so backend casing (e.g. "interactive_ready" vs "INTERACTIVE_READY")
+  // doesn't break the mapping.
+  const normalized = (status ?? '').toUpperCase();
+  switch (normalized) {
     case 'NOT_RUNNABLE': return 'Pending';
     case 'VRAM_ESTIMATION_PENDING': return 'Building';
-    case 'RUNNABLE': return 'Pending';
+    case 'RUNNABLE': return 'Provisioning';
     case 'IN_PROGRESS': return 'Running';
     case 'COMPLETED': return 'Completed';
     case 'FAILED': return 'Failed';
     case 'RETRY_NEEDED': return 'Retrying';
     case 'INTERACTIVE_READY': return 'Interactive Ready';
+    case 'INTERACTIVE_DEPLOYING': return 'Provisioning';
+    case 'INTERACTIVE_RUNNING': return 'Interactive Running';
+    case 'INTERACTIVE_STOPPED': return 'Stopped';
     default: return 'Pending';
   }
 };
