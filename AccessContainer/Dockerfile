@@ -21,6 +21,13 @@ RUN apt-get update && \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
+# nsenter must run as root to enter the env container's namespaces (needs
+# CAP_SYS_ADMIN). The SSH login user is the unprivileged `sandbox`, so make
+# nsenter setuid-root. The entrypoint re-asserts this at runtime to survive a
+# worker daemon with userns-remap (which remaps image-layer file ownership
+# away from root and would otherwise silently break this setuid bit).
+RUN chmod u+s /usr/bin/nsenter
+
 # Install Tailscale (for tailnet connectivity).
 RUN curl -fsSL https://tailscale.com/install.sh | sh
 

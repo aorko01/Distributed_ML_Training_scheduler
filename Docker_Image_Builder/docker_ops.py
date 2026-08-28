@@ -127,6 +127,13 @@ RUN apt-get update && \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
+# nsenter must run as root to enter the env container's namespaces (needs
+# CAP_SYS_ADMIN). The SSH login user is the unprivileged `sandbox`, so make
+# nsenter setuid-root. The entrypoint re-asserts this at runtime to survive a
+# worker daemon with userns-remap (which remaps image-layer file ownership
+# away from root and would otherwise silently break this setuid bit).
+RUN chmod u+s /usr/bin/nsenter
+
 # Install Tailscale (for tailnet connectivity).
 RUN curl -fsSL https://tailscale.com/install.sh | sh
 
@@ -161,6 +168,15 @@ set -e
 : "${SESSION_ID:?SESSION_ID is required}"
 : "${SSH_PUBLIC_KEY:?SSH_PUBLIC_KEY is required}"
 
+# nsenter must run as root to enter the env container's namespaces
+# (CAP_SYS_ADMIN). The SSH login user is the unprivileged `sandbox`, so make
+# nsenter setuid-root. Re-assert ownership + setuid at runtime because a
+# worker daemon with userns-remap enabled remaps image-layer file ownership
+# away from root (which would silently break the setuid bit baked into the
+# image). This runs as root (no USER directive in the Dockerfile).
+chown root:root /usr/bin/nsenter
+chmod u+s /usr/bin/nsenter
+
 echo "Starting access container for session ${SESSION_ID}..."
 
 # Start Tailscale daemon.
@@ -191,6 +207,8 @@ chmod 600 /home/sandbox/.ssh/authorized_keys
 # sshd config: force every connection to nsenter into the env container's
 # PID 1 (the env container's `sleep infinity`), entering all its namespaces
 # (mount, UTS, IPC, net, PID) so the user lands inside the training container.
+# nsenter runs as root via the setuid bit (see above) so the unprivileged
+# `sandbox` SSH login can still enter the env container's namespaces.
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/sandbox.conf <<'SSHD'
 PasswordAuthentication no

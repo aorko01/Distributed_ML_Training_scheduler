@@ -37,8 +37,7 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
     1. Pull env_image_tag and access_image_tag.
     2. Start the env container: ``docker run -d --rm --gpus all <env> sleep infinity``.
     3. Start the access container: ``docker run -d --rm --pid container:<env>
-       --cap-add SYS_ADMIN --cap-add SYS_PTRACE --device /dev/net/tun
-       --cap-add NET_ADMIN --cap-add NET_RAW -e ... <access>``.
+       --userns=host --cap-add ALL --device /dev/net/tun -e ... <access>``.
     4. Poll ``docker logs <access>`` for "Tailscale IP: 100.x.x.x".
     5. POST /interactive/report_ip to the Scheduler.
     6. Monitor BOTH containers; on either exit, stop both and report STOPPED.
@@ -83,11 +82,14 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
     access_cmd = [
         "docker", "run", "-d", "--rm",
         "--pid", f"container:{env_name}",
-        "--cap-add", "SYS_ADMIN",
-        "--cap-add", "SYS_PTRACE",
+        # Run in the host user namespace with all capabilities so nsenter (run as
+        # root via setuid) can enter the env container's namespaces. --userns=host
+        # is required even when the daemon has userns-remap enabled (--privileged
+        # alone does NOT disable userns-remap). --cap-add ALL covers SYS_ADMIN,
+        # SYS_PTRACE, NET_ADMIN, NET_RAW.
+        "--userns=host",
+        "--cap-add", "ALL",
         "--device", "/dev/net/tun",
-        "--cap-add", "NET_ADMIN",
-        "--cap-add", "NET_RAW",
         "-e", f"HEADSCALE_URL={headscale_url}",
         "-e", f"HEADSCALE_AUTHKEY={headscale_auth_key}",
         "-e", f"SESSION_ID={session_id}",
