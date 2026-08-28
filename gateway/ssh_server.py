@@ -36,7 +36,8 @@ def load_or_generate_host_key(path):
     return paramiko.Ed25519Key(filename=path)
 
 class GatewayServer(paramiko.ServerInterface):
-    def __init__(self):
+    def __init__(self, source_ip: str = ""):
+        self.source_ip = source_ip
         self.session_id = None
         self.headscale_ip = None
         self.event = threading.Event()
@@ -146,6 +147,24 @@ class GatewayServer(paramiko.ServerInterface):
             if client:
                 session_client.close(client)
             server_chan.close()
+            _notify_connection_closed(self.source_ip)
+
+def _notify_connection_closed(source_ip: str):
+    """Best-effort notification to the Scheduler that an SSH connection has
+    closed, so it can remove the source IP from the NSG whitelist."""
+    if not config.SCHEDULER_API_URL or not config.SCHEDULER_CALLBACK_SECRET:
+        return
+    try:
+        requests.post(
+            f"{config.SCHEDULER_API_URL}/interactive/connection/closed",
+            json={"source_ip": source_ip},
+            headers={"X-Gateway-Secret": config.SCHEDULER_CALLBACK_SECRET},
+            timeout=5,
+        )
+        logger.info(f"Notified scheduler of connection close for {source_ip}")
+    except Exception as e:
+        logger.warning(f"Failed to notify scheduler of connection close for {source_ip}: {e}")
+
 
 def start_ssh_server():
     host_key = load_or_generate_host_key(config.GATEWAY_HOST_KEY_PATH)
@@ -162,7 +181,7 @@ def start_ssh_server():
                 logger.info(f"Accepted connection from {addr}")
                 t = paramiko.Transport(client_sock)
                 t.add_server_key(host_key)
-                server = GatewayServer()
+                server = GatewayServer(addr[0])
                 try:
                     t.start_server(server=server)
                 except paramiko.SSHException:

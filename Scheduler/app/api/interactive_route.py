@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_active_user
@@ -7,8 +9,10 @@ from app.schemas.interactive_schema import (
     CreateInteractiveSessionRequest,
     CreateInteractiveSessionResponse,
     InteractiveSessionReport,
+    ConnectionClosedRequest,
 )
 from app.services import interactive_service
+from app.services import whitelist_tracker
 
 router = APIRouter()
 
@@ -56,6 +60,24 @@ def get_active_session(
         "session_id": session.session_id,
         "headscale_ip": session.headscale_ip,
     }
+
+
+@router.post("/connection/closed")
+async def connection_closed(
+    body: ConnectionClosedRequest,
+    request: Request,
+):
+    """Gateway callback: notifies the Scheduler that an SSH connection has
+    closed so the source IP can be removed from the NSG whitelist.
+
+    Guarded by a shared secret header (``X-Gateway-Secret``).
+    """
+    secret = request.headers.get("X-Gateway-Secret", "")
+    expected = os.getenv("GATEWAY_CALLBACK_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=401, detail="Invalid gateway secret")
+    await whitelist_tracker.remove(body.source_ip)
+    return {"status": "ok"}
 
 
 @router.get("/{session_id}")

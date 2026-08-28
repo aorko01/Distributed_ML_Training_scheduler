@@ -16,17 +16,24 @@ from app.api.interactive_route import router as interactive_router
 # Ensure the interactive session model is registered with Base metadata
 import app.models.interactive_session_model  # noqa: F401
 from app.services import watchdog_service
+from app.services import whitelist_tracker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     watcher = asyncio.create_task(watchdog_service.run_stall_watcher())
+    sweeper = asyncio.create_task(whitelist_tracker.sweep_loop())
     try:
         yield
     finally:
         watcher.cancel()
+        sweeper.cancel()
         try:
             await watcher
+        except asyncio.CancelledError:
+            pass
+        try:
+            await sweeper
         except asyncio.CancelledError:
             pass
 

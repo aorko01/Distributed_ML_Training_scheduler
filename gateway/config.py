@@ -19,6 +19,11 @@ GATEWAY_HOSTNAME = os.getenv("GATEWAY_HOSTNAME", "gateway")
 # Optional scheduler callback URL (not required for MVP).
 SCHEDULER_API_URL = os.getenv("SCHEDULER_API_URL", "")
 
+# Shared secret sent in the X-Gateway-Secret header when the gateway notifies
+# the Scheduler that an SSH connection has closed (so the Scheduler can remove
+# the source IP from the NSG whitelist).
+SCHEDULER_CALLBACK_SECRET = os.getenv("SCHEDULER_CALLBACK_SECRET", "")
+
 # SSH connection timeout in seconds.
 SSH_CONNECT_TIMEOUT = int(os.getenv("SSH_CONNECT_TIMEOUT", "10"))
 

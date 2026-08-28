@@ -45,3 +45,9 @@ class InteractiveSessionOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ConnectionClosedRequest(BaseModel):
+    """Gateway -> Scheduler callback sent when an SSH connection closes, so the
+    Scheduler can remove the source IP from the NSG whitelist."""
+    source_ip: str
