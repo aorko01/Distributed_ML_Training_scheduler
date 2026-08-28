@@ -47,16 +47,6 @@ services:
       HEADSCALE_URL: ${HEADSCALE_URL:-https://headscale.zulfiker.xyz}
       GATEWAY_PUBLIC_HOST: ${GATEWAY_PUBLIC_HOST:-}
       GATEWAY_SSH_PORT: ${GATEWAY_SSH_PORT:-2222}
-      # OCI NSG IP-whitelisting for the SSH gateway port (Instance Principal auth).
-      OCI_USE_INSTANCE_PRINCIPAL: ${OCI_USE_INSTANCE_PRINCIPAL:-true}
-      OCI_REGION: ${OCI_REGION:-}
-      OCI_COMPARTMENT_OCID: ${OCI_COMPARTMENT_OCID:-}
-      OCI_GATEWAY_NSG_OCID: ${OCI_GATEWAY_NSG_OCID:-}
-      # Shared secret for the gateway -> scheduler connection-closed callback.
-      GATEWAY_CALLBACK_SECRET: ${GATEWAY_CALLBACK_SECRET:-}
-      # Whitelist TTL / sweep interval.
-      WHITELIST_TTL_SECONDS: ${WHITELIST_TTL_SECONDS:-86400}
-      WHITELIST_SWEEP_INTERVAL: ${WHITELIST_SWEEP_INTERVAL:-300}
 
   # ---------------------------------------------------------------
   # Headscale management microservice: wraps pre-auth key create/revoke.
@@ -97,9 +87,8 @@ services:
     # Reached by the api over the compose network (http://gateway:8200)
     expose:
       - "8200"
-      - "2222"
-    # Port 2222 is NOT published to 0.0.0.0; the OCI NSG controls external
-    # access. The container still listens on 2222 internally.
+    ports:
+      - "${GATEWAY_SSH_PORT:-2222}:2222"
     environment:
       TAILSCALE_AUTH_KEY: ${GATEWAY_TAILSCALE_AUTH_KEY:-}
       HEADSCALE_URL: ${HEADSCALE_URL:-https://headscale.example.com}
@@ -108,7 +97,6 @@ services:
       SCHEDULER_API_URL: ${SCHEDULER_API_URL:-http://api:8000}
       GATEWAY_SSH_PORT: ${GATEWAY_SSH_PORT:-2222}
       GATEWAY_PUBLIC_HOST: ${GATEWAY_PUBLIC_HOST:-}
-      SCHEDULER_CALLBACK_SECRET: ${GATEWAY_CALLBACK_SECRET:-}
 
   pgadmin:
     image: dpage/pgadmin4

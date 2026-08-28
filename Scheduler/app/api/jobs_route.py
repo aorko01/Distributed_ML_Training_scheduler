@@ -1,11 +1,11 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from app.db.database import SessionLocal
-from app.services import job_service, log_service, interactive_service, whitelist_tracker
+from app.services import job_service, log_service, interactive_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
 from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest, InteractiveBuildRequest, InteractiveReadyRequest
@@ -538,21 +538,11 @@ async def job_logs_stream(websocket: WebSocket, job_id: str):
         db.close()
 
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException, Request
-
-def _get_source_ip(request: Request) -> str | None:
-    """Resolve the caller's source IP, preferring X-Forwarded-For (first hop)."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return None
+from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException
 
 @router.get("/{job_id}/connect")
-async def get_job_connect_info(
+def get_job_connect_info(
     job_id: str,
-    request: Request,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -569,12 +559,6 @@ async def get_job_connect_info(
     
     if not session:
         raise HTTPException(status_code=404, detail="No running interactive session for this job")
-    
-    # Capture the user's source IP and add it to the OCI NSG whitelist for
-    # the SSH gateway port (best-effort, never blocks the happy path).
-    source_ip = _get_source_ip(request)
-    if source_ip:
-        await whitelist_tracker.add(source_ip)
     
     return {
         "session_id": session.session_id,
