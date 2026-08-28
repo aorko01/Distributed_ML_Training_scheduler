@@ -564,7 +564,7 @@ def get_job_connect_info(
         "session_id": session.session_id,
         "headscale_ip": session.headscale_ip,
         "gateway_host": os.getenv("GATEWAY_PUBLIC_HOST", ""),
-        "gateway_ssh_port": int(os.getenv("GATEWAY_SSH_PORT", "2222")),
+        "gateway_ssh_port": int(os.getenv("GATEWAY_PUBLIC_SSH_PORT", os.getenv("GATEWAY_SSH_PORT", "443"))),
         "ssh_user": current_user.username,
         "container_user": "sandbox"
     }

@@ -54,6 +54,11 @@ def start_tailscale():
             f"--login-server={config.HEADSCALE_URL}",
             f"--authkey={config.TAILSCALE_AUTH_KEY}",
             f"--hostname={config.GATEWAY_HOSTNAME}",
+            # Do NOT let Tailscale manage /etc/resolv.conf. Otherwise it
+            # replaces Docker's resolver (127.0.0.11) with 100.100.100.100,
+            # breaking resolution of the `api` service name used for login and
+            # the connection-closed callback. Tailnet IP routing is unaffected.
+            "--accept-dns=false",
         ],
         check=True,
         capture_output=True,

@@ -80,8 +80,9 @@ class GatewayServer(paramiko.ServerInterface):
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def check_channel_shell_request(self, channel):
+        # Just signal that the client asked for a shell; the connection
+        # handler thread will launch the proxy once it claims the channel.
         self.event.set()
-        threading.Thread(target=self._proxy_shell, args=(channel,)).start()
         return True
 
     def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
@@ -155,31 +156,57 @@ def start_ssh_server():
     sock.listen(100)
     logger.info(f"SSH Gateway listening on port {config.GATEWAY_SSH_PORT}")
 
+    def _handle_connection(client_sock, addr):
+        try:
+            t = paramiko.Transport(client_sock)
+            t.add_server_key(host_key)
+            server = GatewayServer()
+            try:
+                t.start_server(server=server)
+            except paramiko.SSHException:
+                logger.warning("SSH negotiation failed from %s", addr)
+                return
+
+            # Claim the session channel the client opens after auth.
+            chan = t.accept(30)
+            if chan is None:
+                logger.warning("No channel opened from %s", addr)
+                t.close()
+                return
+
+            # Wait until the client actually requests a shell (sets the event).
+            if not server.event.wait(timeout=15):
+                logger.warning("No shell requested from %s; closing", addr)
+                chan.close()
+                t.close()
+                return
+
+            if not server.session_id or not server.headscale_ip:
+                logger.warning("No active session for %s; closing", addr)
+                chan.close()
+                t.close()
+                return
+
+            server._proxy_shell(chan)
+        except Exception as e:
+            logger.error("Connection handling error from %s: %s", addr, e)
+        finally:
+            try:
+                t.close()
+            except Exception:
+                pass
+
     def accept_loop():
         while True:
             try:
                 client_sock, addr = sock.accept()
                 logger.info(f"Accepted connection from {addr}")
-                t = paramiko.Transport(client_sock)
-                t.add_server_key(host_key)
-                server = GatewayServer()
-                try:
-                    t.start_server(server=server)
-                except paramiko.SSHException:
-                    logger.warning("SSH negotiation failed")
-                    continue
-                
-                # accept channels in the background so accept_loop isn't blocked
-                def wait_for_channel(t, server):
-                    chan = t.accept(20)
-                    if chan is None:
-                        logger.warning("No channel opened")
-                        t.close()
-                threading.Thread(target=wait_for_channel, args=(t, server)).start()
-                
+                threading.Thread(
+                    target=_handle_connection, args=(client_sock, addr), daemon=True
+                ).start()
             except Exception as e:
                 if sock.fileno() == -1:
-                    break # closed
+                    break  # closed
                 logger.error(f"Accept loop error: {e}")
 
     t = threading.Thread(target=accept_loop, daemon=True)

@@ -47,6 +47,10 @@ services:
       HEADSCALE_URL: ${HEADSCALE_URL:-https://headscale.zulfiker.xyz}
       GATEWAY_PUBLIC_HOST: ${GATEWAY_PUBLIC_HOST:-}
       GATEWAY_SSH_PORT: ${GATEWAY_SSH_PORT:-2222}
+      # Public-facing SSH port shown to users. External SSH arrives on :443
+      # (already open in the OCI firewall) via the sslh multiplexer, which
+      # forwards it to 127.0.0.1:2222. No OCI NSG / security-list change needed.
+      GATEWAY_PUBLIC_SSH_PORT: ${GATEWAY_PUBLIC_SSH_PORT:-443}
 
   # ---------------------------------------------------------------
   # Headscale management microservice: wraps pre-auth key create/revoke.
@@ -87,8 +91,11 @@ services:
     # Reached by the api over the compose network (http://gateway:8200)
     expose:
       - "8200"
+    # Published on 127.0.0.1 only. External SSH is via sslh on :443 (already
+    # open in the OCI firewall), which forwards to 127.0.0.1:2222. The gateway
+    # is therefore never directly exposed on a public interface.
     ports:
-      - "${GATEWAY_SSH_PORT:-2222}:2222"
+      - "127.0.0.1:2222:2222"
     environment:
       TAILSCALE_AUTH_KEY: ${GATEWAY_TAILSCALE_AUTH_KEY:-}
       HEADSCALE_URL: ${HEADSCALE_URL:-https://headscale.example.com}
