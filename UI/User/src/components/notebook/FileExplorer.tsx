@@ -44,7 +44,7 @@ const TREE: FileNode = {
 };
 
 const fileIcon = (node: FileNode, size = 15) => {
-  if (node.notebook) return <FileText size={size} color="#f59e0b" />;
+  if (node.notebook) return <FileText size={size} color="var(--text)" />;
   switch (node.kind) {
     case 'data': return <Database size={size} color="var(--accent-primary)" />;
     case 'image': return <ImageIcon size={size} color="var(--status-building)" />;

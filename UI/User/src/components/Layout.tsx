@@ -1,10 +1,20 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, Terminal, LogOut, Activity, User } from 'lucide-react';
-import { logout } from '../services/auth';
+import { LayoutDashboard, PlusCircle, Terminal, LogOut, User, Boxes, Moon, Sun } from 'lucide-react';
+import { logout, getUsername } from '../services/auth';
 
 const Layout: React.FC = () => {
   const navigate = useNavigate();
+  const username = getUsername() ?? 'user';
+
+  const [theme, setTheme] = useState<string>(
+    () => localStorage.getItem('theme') ?? 'dark'
+  );
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
 
   const handleLogout = () => {
     logout();
@@ -15,63 +25,79 @@ const Layout: React.FC = () => {
     <div className="app-container fade-in">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <Activity className="text-blue-500" size={24} color="var(--accent-primary)" />
-          <span>DistributeML</span>
+          <span className="brand-mark"><Boxes size={18} /></span>
+          <div>
+            <div className="brand-name">DistributeML</div>
+            <div className="brand-sub">Distributed Compute</div>
+          </div>
         </div>
-        
+
+        <div className="sidebar-section">Workspace</div>
         <nav className="sidebar-nav">
-          <NavLink 
-            to="/" 
+          <NavLink
+            to="/"
             end
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
-            <LayoutDashboard size={20} />
+            <LayoutDashboard size={19} />
             Dashboard
           </NavLink>
-          <NavLink 
-            to="/submit" 
+          <NavLink
+            to="/submit"
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
-            <PlusCircle size={20} />
+            <PlusCircle size={19} />
             Submit Job
           </NavLink>
           <NavLink
             to="/interactive"
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
-            <Terminal size={20} />
+            <Terminal size={19} />
             Interactive
           </NavLink>
         </nav>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-user">
+            <span className="sidebar-avatar">
+              {username.charAt(0).toUpperCase()}
+            </span>
+            <div className="sidebar-user-meta">
+              <div className="sidebar-user-name">{username}</div>
+              <div className="sidebar-user-role">Member</div>
+            </div>
+          </div>
+          <NavLink
+            to="/profile"
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            style={{ padding: '0.5rem 0.75rem' }}
+          >
+            <User size={17} />
+            Profile
+          </NavLink>
+          <button
+            onClick={handleLogout}
+            className="nav-item"
+            style={{ width: '100%', textAlign: 'left' }}
+          >
+            <LogOut size={17} />
+            Logout
+          </button>
+        </div>
       </aside>
 
       <main className="main-content">
-        <header className="top-header" style={{ display: 'flex', gap: '1.5rem' }}>
-          <NavLink 
-            to="/profile" 
-            style={({ isActive }) => ({
-              color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
-              textDecoration: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              fontWeight: 500,
-              fontSize: '0.875rem'
-            })}
+        <header className="top-header">
+          <span className="eyebrow">Distributed ML Training Scheduler</span>
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            aria-label="Toggle color theme"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           >
-            <User size={18} />
-            Profile
-          </NavLink>
-          <button 
-            onClick={handleLogout}
-            style={{ 
-              background: 'none', border: 'none', cursor: 'pointer', 
-              color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem',
-              fontWeight: 500, fontSize: '0.875rem'
-            }}
-          >
-            <LogOut size={18} />
-            Logout
+            {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
           </button>
         </header>
         <div className="page-content">

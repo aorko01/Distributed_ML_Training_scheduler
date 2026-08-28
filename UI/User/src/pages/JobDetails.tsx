@@ -246,7 +246,7 @@ const JobDetails: React.FC = () => {
           height: "100%",
         }}
       >
-        <Loader2 className="animate-spin text-blue-500" size={32} />
+        <Loader2 className="animate-spin" size={32} />
       </div>
     );
   }

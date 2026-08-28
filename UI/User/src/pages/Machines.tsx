@@ -164,7 +164,7 @@ const Interactive: React.FC = () => {
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-        <Loader2 className="animate-spin text-blue-500" size={32} />
+        <Loader2 className="animate-spin" size={32} />
       </div>
     );
   }
@@ -173,7 +173,12 @@ const Interactive: React.FC = () => {
 
   return (
     <div className="fade-in">
-      <h1>Interactive</h1>
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">Sessions</span>
+          <h1>Interactive</h1>
+        </div>
+      </div>
 
       <div className="card demo-banner">
         <Terminal size={18} color="var(--status-pending)" />
@@ -186,8 +191,8 @@ const Interactive: React.FC = () => {
       </div>
 
       {loadError && (
-        <div className="card demo-banner" style={{ borderColor: 'rgba(239, 68, 68, 0.4)' }}>
-          <p className="error-text" style={{ margin: 0 }}>Failed to load data: {loadError}</p>
+        <div className="alert alert-error" style={{ marginBottom: '1.5rem' }}>
+          Failed to load data: {loadError}
         </div>
       )}
 

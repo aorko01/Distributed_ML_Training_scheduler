@@ -46,7 +46,7 @@ const Profile: React.FC = () => {
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-        <Loader2 className="animate-spin text-blue-500" size={32} />
+        <Loader2 className="animate-spin" size={32} />
       </div>
     );
   }
@@ -57,7 +57,12 @@ const Profile: React.FC = () => {
 
   return (
     <div className="fade-in" style={{ maxWidth: '600px', margin: '0 auto' }}>
-      <h1>My Profile</h1>
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">Account</span>
+          <h1>My Profile</h1>
+        </div>
+      </div>
       
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem' }}>
@@ -72,7 +77,7 @@ const Profile: React.FC = () => {
 
         <form onSubmit={handleSave}>
           {error && (
-            <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'var(--status-failed)', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.875rem' }}>
+            <div className="alert alert-error" style={{ marginBottom: '1rem' }}>
               {error}
             </div>
           )}

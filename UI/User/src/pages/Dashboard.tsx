@@ -73,50 +73,58 @@ const Dashboard: React.FC = () => {
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-        <Loader2 className="animate-spin text-blue-500" size={32} />
+        <Loader2 className="animate-spin" size={32} />
       </div>
     );
   }
 
   return (
     <div className="fade-in">
-      <h1>Dashboard Overview</h1>
-      
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">Overview</span>
+          <h1>Dashboard</h1>
+        </div>
+      </div>
+
       {stats && (
         <div className="metrics-grid">
           <div className="metric-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div className="metric-head">
               <div className="metric-title">Queue Length</div>
-              <Activity size={20} color="var(--text-secondary)" />
+              <Activity size={18} className="metric-icon" />
             </div>
             <div className="metric-value">{stats.queueLength}</div>
           </div>
           <div className="metric-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div className="metric-head">
               <div className="metric-title">GPU Hours Used</div>
-              <Clock size={20} color="var(--text-secondary)" />
+              <Clock size={18} className="metric-icon" />
             </div>
             <div className="metric-value">{stats.gpuHoursUsed.toFixed(1)}</div>
           </div>
           <div className="metric-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div className="metric-head">
               <div className="metric-title">Job Count</div>
-              <CheckCircle2 size={20} color="var(--text-secondary)" />
+              <CheckCircle2 size={18} className="metric-icon" />
             </div>
             <div className="metric-value">{stats.jobCount}</div>
           </div>
           <div className="metric-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div className="metric-head">
               <div className="metric-title">Total Nodes</div>
-              <Server size={20} color="var(--text-secondary)" />
+              <Server size={18} className="metric-icon" />
             </div>
             <div className="metric-value">{stats.totalNodes}</div>
           </div>
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
-        <h2 style={{ margin: 0 }}>My Jobs</h2>
+      <div className="toolbar-row">
+        <div>
+          <span className="eyebrow">Workloads</span>
+          <h2 style={{ margin: 0 }}>My Jobs</h2>
+        </div>
         <div style={{ display: 'flex', gap: '1rem' }}>
           <div>
             <label className="form-label">Filter</label>

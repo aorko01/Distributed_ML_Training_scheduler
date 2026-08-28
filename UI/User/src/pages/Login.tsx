@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { login, isAuthenticated } from '../services/auth';
-import { Activity } from 'lucide-react';
+import { Boxes, Check } from 'lucide-react';
 
 const Login: React.FC = () => {
   const [username, setUsername] = useState('');
@@ -32,57 +32,79 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', alignItems: 'center', justifyContent: 'center' }}>
-      <div className="card glass fade-in" style={{ width: '100%', maxWidth: '400px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <Activity size={48} color="var(--accent-primary)" style={{ margin: '0 auto' }} />
-          <h1 style={{ marginTop: '1rem', marginBottom: '0.5rem' }}>DistributeML</h1>
-          <p>Login to manage your ML tasks</p>
+    <div className="auth-shell">
+      <section className="auth-brand">
+        <div className="auth-brand-mark">
+          <span className="brand-mark"><Boxes size={20} /></span>
+          <span className="auth-wordmark">DistributeML</span>
         </div>
 
-        {error && (
-          <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'var(--status-failed)', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.875rem' }}>
-            {error}
+        <div className="auth-hero">
+          <div className="auth-bigmark">ML</div>
+          <h1>Distributed compute, orchestrated.</h1>
+          <p>
+            Schedule training jobs across a fleet of GPU workers, spin up
+            interactive sessions, and watch every log stream in real time.
+          </p>
+          <div className="auth-feature-list">
+            <div className="auth-feature"><span className="tick"><Check size={11} /></span> Queue &amp; prioritize PyTorch / CUDA workloads</div>
+            <div className="auth-feature"><span className="tick"><Check size={11} /></span> Live interactive notebooks on dedicated accelerators</div>
+            <div className="auth-feature"><span className="tick"><Check size={11} /></span> Per-worker GPU, VRAM &amp; disk telemetry</div>
           </div>
-        )}
+        </div>
 
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label className="form-label">Username</label>
-            <input 
-              type="text" 
-              className="form-input" 
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="admin"
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Password</label>
-            <input 
-              type="password" 
-              className="form-input" 
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="admin"
-              required
-            />
-          </div>
-          <button 
-            type="submit" 
-            className="btn btn-primary" 
-            style={{ width: '100%', marginBottom: '1rem' }}
-            disabled={loading}
-          >
-            {loading ? 'Logging in...' : 'Login'}
-          </button>
-          
-          <div style={{ textAlign: 'center', fontSize: '0.875rem' }}>
-            Don't have an account? <Link to="/register" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>Register here</Link>
-          </div>
-        </form>
-      </div>
+        <div className="eyebrow">v0.0.0 · INFRASTRUCTURE CONSOLE</div>
+      </section>
+
+      <section className="auth-panel">
+        <div className="auth-card fade-in">
+          <h1>Sign in</h1>
+          <p className="sub">Access your jobs and compute resources.</p>
+
+          {error && (
+            <div className="alert alert-error" style={{ marginBottom: '1.25rem' }}>
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label className="form-label">Username</label>
+              <input
+                type="text"
+                className="form-input"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+                required
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Password</label>
+              <input
+                type="password"
+                className="form-input"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              style={{ width: '100%', marginTop: '0.5rem' }}
+              disabled={loading}
+            >
+              {loading ? 'Signing in…' : 'Sign in'}
+            </button>
+
+            <div className="auth-footer-note">
+              No account? <Link to="/register">Create one</Link>
+            </div>
+          </form>
+        </div>
+      </section>
     </div>
   );
 };

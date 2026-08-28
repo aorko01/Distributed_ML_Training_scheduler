@@ -98,7 +98,12 @@ const SubmitJob: React.FC = () => {
 
   return (
     <div className="fade-in" style={{ maxWidth: '800px', margin: '0 auto' }}>
-      <h1>Submit New Job</h1>
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">New Workload</span>
+          <h1>Submit Job</h1>
+        </div>
+      </div>
       
       <div className="card">
         <form onSubmit={handleSubmit}>
@@ -129,11 +134,11 @@ const SubmitJob: React.FC = () => {
                   <option key={v.version} value={v.version}>{v.version}</option>
                 ))}
               </select>
-              {versionError && (
-                <p style={{ fontSize: '0.75rem', color: 'var(--status-failed)', marginTop: '0.25rem' }}>
-                  {versionError}
-                </p>
-              )}
+                {versionError && (
+                  <p className="alert alert-error" style={{ marginTop: '0.5rem' }}>
+                    {versionError}
+                  </p>
+                )}
             </div>
             <div className="form-group">
               <label className="form-label">CUDA / cuDNN Version</label>
@@ -179,21 +184,7 @@ const SubmitJob: React.FC = () => {
                 </div>
               )}
             </div>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '0.5rem',
-                marginTop: '0.75rem',
-                padding: '0.75rem',
-                backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                border: '1px solid rgba(245, 158, 11, 0.35)',
-                borderRadius: '6px',
-                color: 'var(--status-warning, #f59e0b)',
-                fontSize: '0.825rem',
-                lineHeight: 1.5,
-              }}
-            >
+            <div className="alert alert-warn">
               <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: '0.15rem' }} />
               <span>
                 Your ZIP must include a <strong>requirements.txt</strong>. Please pin <strong>absolute package
@@ -252,16 +243,7 @@ const SubmitJob: React.FC = () => {
           </div>
 
           {submitError && (
-            <div
-              style={{
-                padding: '0.75rem',
-                backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                color: 'var(--status-failed)',
-                borderRadius: '6px',
-                marginTop: '1rem',
-                fontSize: '0.875rem',
-              }}
-            >
+            <div className="alert alert-error" style={{ marginTop: '1rem' }}>
               {submitError}
             </div>
           )}

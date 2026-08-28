@@ -482,7 +482,7 @@ const NotebookWorkspace: React.FC = () => {
           <button className="nb-icon-btn" onClick={() => navigate('/')} title="Back to dashboard">
             <ArrowLeft size={17} />
           </button>
-          <FileText size={16} color="#f59e0b" />
+          <FileText size={16} color="var(--text)" />
           <input
             className="nb-title-input"
             value={activeTab?.name ?? ''}
@@ -564,7 +564,7 @@ const NotebookWorkspace: React.FC = () => {
                     className={`nb-tab ${tab.id === activeTabId ? 'active' : ''}`}
                     onClick={() => setActiveTabId(tab.id)}
                   >
-                    <FileText size={14} color="#f59e0b" />
+                    <FileText size={14} color="var(--text)" />
                     <span>{tab.name}</span>
                     <button className="nb-tab-close" onClick={(e) => closeTab(tab.id, e)}>
                       <X size={12} />
