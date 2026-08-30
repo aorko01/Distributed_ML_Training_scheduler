@@ -9,6 +9,7 @@ from executor import JobExecutor
 from telemetry import record_heartbeat, record_event, is_paused
 import runtime_config
 import server
+import interactive_handler
 
 logger = logging.getLogger("worker")
 
@@ -24,7 +25,8 @@ def heartbeat_loop(api: SchedulerAPI, stop_event: threading.Event):
             node_info = collect_node_info()
             response = api.send_heartbeat(
                 gpu_type, free_vram,
-                {**node_info, "gpu_load": gpu_load, "gpus_in_use": count_gpus_in_use()},
+                {**node_info, "gpu_load": gpu_load, "gpus_in_use": count_gpus_in_use(),
+                 "interactive_ssessions": interactive_handler.get_active_sessions()},
             )
             record_heartbeat(True)
             _handle_scheduler_commands(api, response or {})

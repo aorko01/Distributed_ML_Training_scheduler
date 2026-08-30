@@ -1,11 +1,13 @@
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 
 import requests
 from sqlalchemy.orm import Session
 
+from app.core.redis import redis_client
 from app.models.interactive_session_model import (
     InteractiveSession,
     InteractiveSessionStatus,
@@ -155,7 +157,7 @@ def create_session(db: Session, user_id: str, base_job_id: str | None = None,
     }
 
 
-def update_session_ip(db: Session, session_id: str, headscale_ip: str | None,
+async def update_session_ip(db: Session, session_id: str, headscale_ip: str | None,
                       status: str = "RUNNING") -> dict:
     record = get_session(db, session_id)
     if not record:
@@ -188,6 +190,15 @@ def update_session_ip(db: Session, session_id: str, headscale_ip: str | None,
 
     db.commit()
     db.refresh(record)
+
+    # Record interactive container liveness so the watchdog can detect a
+    # container that stops heartbeating even if the worker is still alive.
+    if status == "RUNNING":
+        await redis_client.set(
+            f"interactive_heartbeat:{record.session_id}",
+            int(time.time()),
+            ex=3600,
+        )
 
     return {
         "session_id": record.session_id,
@@ -264,25 +275,36 @@ def get_active_session_for_user(db: Session, user_id: str):
 
 
 
-def list_sessions(db: Session) -> list[dict]:
+async def list_sessions(db: Session) -> list[dict]:
     sessions = (
         db.query(InteractiveSession)
         .order_by(InteractiveSession.created_at.desc())
         .all()
     )
-    return [
-        {
-            "session_id": s.session_id,
-            "job_id": s.job_id,
-            "user_id": s.user_id,
-            "base_job_id": s.base_job_id,
-            "worker_id": s.worker_id,
-            "headscale_ip": s.headscale_ip,
-            "status": s.status.value,
-            "created_at": s.created_at.isoformat() if s.created_at else None,
-        }
-        for s in sessions
-    ]
+    result = []
+    for s in sessions:
+        last_heartbeat_at = None
+        raw = await redis_client.get(f"interactive_heartbeat:{s.session_id}")
+        if raw is not None:
+            try:
+                last_heartbeat_at = int(raw)
+            except (TypeError, ValueError):
+                pass
+        result.append(
+            {
+                "session_id": s.session_id,
+                "job_id": s.job_id,
+                "user_id": s.user_id,
+                "base_job_id": s.base_job_id,
+                "worker_id": s.worker_id,
+                "last_worker_id": s.last_worker_id,
+                "headscale_ip": s.headscale_ip,
+                "status": s.status.value,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "last_heartbeat_at": last_heartbeat_at,
+            }
+        )
+    return result
 
 
 def _delete_gateway_key(session_id: str):

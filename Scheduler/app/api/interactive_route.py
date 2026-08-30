@@ -38,13 +38,13 @@ def create_interactive_session(
 
 
 @router.post("/report_ip")
-def report_ip(
+async def report_ip(
     body: InteractiveSessionReport,
     db: Session = Depends(get_db),
 ):
     """Worker callback: reports the container's tailnet IP (or stopped/failed)."""
     try:
-        return interactive_service.update_session_ip(
+        return await interactive_service.update_session_ip(
             db, body.session_id, body.headscale_ip, body.status
         )
     except interactive_service.InteractiveServiceError as e:
@@ -52,8 +52,8 @@ def report_ip(
 
 
 @router.get("/sessions")
-def list_sessions(db: Session = Depends(get_db)):
-    return interactive_service.list_sessions(db)
+async def list_sessions(db: Session = Depends(get_db)):
+    return await interactive_service.list_sessions(db)
 
 
 @router.get("/sessions/active")

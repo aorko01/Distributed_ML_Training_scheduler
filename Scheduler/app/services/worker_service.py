@@ -15,6 +15,12 @@ HEARTBEAT_TTL = 15
 LAST_HEARTBEAT_KEY_PREFIX = "worker_heartbeat:"
 LAST_HEARTBEAT_TTL = 3600  # seconds; refreshed on every heartbeat
 
+# Per-container liveness for interactive sessions, piggybacked on the worker
+# heartbeat. Written by the worker (via process_heartbeat) and by
+# interactive_service.update_session_ip when a container reports RUNNING.
+INTERACTIVE_HEARTBEAT_KEY_PREFIX = "interactive_heartbeat:"
+INTERACTIVE_HEARTBEAT_TTL = 3600  # seconds; refreshed on every heartbeat
+
 
 def get_total_gpus(db: Session) -> int:
     """Total number of GPUs across all registered workers."""
@@ -59,6 +65,7 @@ async def process_heartbeat(Heartbeat: HeartbeatSchema):
     if exists_in_redis:
         await _update_redis_worker(key, Heartbeat)
         await _update_db_worker_metrics(Heartbeat)
+        await _update_interactive_heartbeats(Heartbeat)
         return True
 
     # Worker not in Redis, check DB
@@ -69,9 +76,25 @@ async def process_heartbeat(Heartbeat: HeartbeatSchema):
             return False
         await _update_redis_worker(key, Heartbeat)
         await _update_db_worker_metrics(Heartbeat)
+        await _update_interactive_heartbeats(Heartbeat)
         return True
     finally:
         db.close()
+
+
+async def _update_interactive_heartbeats(Heartbeat: HeartbeatSchema):
+    """Record liveness for each interactive container the worker reports as active.
+
+    The worker piggybacks the list of running interactive session IDs on its
+    heartbeat; we stamp a Redis key per session so the watchdog can detect a
+    container that stops heartbeating even while the worker is still alive.
+    """
+    for sid in Heartbeat.interactive_ssessions:
+        await redis_client.set(
+            INTERACTIVE_HEARTBEAT_KEY_PREFIX + sid,
+            int(time.time()),
+            ex=INTERACTIVE_HEARTBEAT_TTL,
+        )
 
 
 async def _update_redis_worker(key: str, Heartbeat: HeartbeatSchema):

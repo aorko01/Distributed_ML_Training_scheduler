@@ -100,6 +100,7 @@ def run_migrations():
         "CREATE INDEX IF NOT EXISTS ix_interactive_sessions_job_id ON interactive_sessions (job_id)",
         "CREATE INDEX IF NOT EXISTS ix_interactive_sessions_user_id ON interactive_sessions (user_id)",
         "CREATE INDEX IF NOT EXISTS ix_interactive_sessions_session_id ON interactive_sessions (session_id)",
+        "ALTER TABLE interactive_sessions ADD COLUMN IF NOT EXISTS last_worker_id VARCHAR",
     ]
     with engine.begin() as conn:
         for statement in statements:

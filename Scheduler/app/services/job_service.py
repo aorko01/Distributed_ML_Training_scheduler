@@ -219,6 +219,21 @@ from app.core.redis import redis_client
 JOB_WORKER_KEY_PREFIX = "job_worker:"
 
 
+async def _worker_busy_with_jobs(db: Session, worker_id: str) -> bool:
+    """Return True if the worker is currently running a batch job
+    (IN_PROGRESS or VRAM_ESTIMATION_PENDING) tracked via the job_worker Redis map."""
+    running_jobs = (
+        db.query(Job)
+        .filter(Job.status.in_([JobStatus.IN_PROGRESS, JobStatus.VRAM_ESTIMATION_PENDING]))
+        .all()
+    )
+    for job in running_jobs:
+        assigned = await redis_client.get(JOB_WORKER_KEY_PREFIX + job.id)
+        if assigned == worker_id:
+            return True
+    return False
+
+
 async def _get_connected_workers_vram() -> list[float]:
     """Retrieve available VRAM for all currently connected workers from Redis."""
     keys = await redis_client.keys("worker:*")
@@ -281,6 +296,11 @@ async def _check_interactive_job_strategy(db: Session, request: WorkerResource) 
     - access_image_tag: the shared aorko123/access-sshd image (sshd + tailscaled)
       that joins the env container's PID namespace via nsenter.
     """
+    # Never dispatch interactive work to a machine that is already running a
+    # batch job (IN_PROGRESS or VRAM_ESTIMATION_PENDING).
+    if await _worker_busy_with_jobs(db, request.worker_id):
+        return None
+
     job = (
         db.query(Job)
         .filter(Job.status == JobStatus.INTERACTIVE_READY)
@@ -290,13 +310,22 @@ async def _check_interactive_job_strategy(db: Session, request: WorkerResource) 
     if not job:
         return None
 
+    # Serialize dispatch: lock the PENDING session row with FOR UPDATE so two
+    # workers cannot both claim the same session. Also skip sessions previously
+    # dispatched to this worker (last_worker_id) to avoid re-dispatching to a
+    # machine that just lost its container.
     session = (
         db.query(InteractiveSession)
         .filter(
             InteractiveSession.job_id == job.id,
             InteractiveSession.status == InteractiveSessionStatus.PENDING,
+            or_(
+                InteractiveSession.last_worker_id.is_(None),
+                InteractiveSession.last_worker_id != request.worker_id,
+            ),
         )
         .order_by(InteractiveSession.created_at.asc())
+        .with_for_update()
         .first()
     )
     if not session:
@@ -307,6 +336,7 @@ async def _check_interactive_job_strategy(db: Session, request: WorkerResource) 
     job.device = request.gpu_type
 
     session.worker_id = request.worker_id
+    session.last_worker_id = request.worker_id
     session.status = InteractiveSessionStatus.DEPLOYING
     db.commit()
     db.refresh(job)
@@ -477,6 +507,24 @@ async def get_next_job_for_worker(db: Session, request: WorkerResource):
 
     # Do not assign any job to a worker reserved for testing.
     if worker.is_testing is True:
+        return None
+
+    # Block pulls while a machine hosts an interactive session (DEPLOYING through
+    # STOPPING). The worker is busy deploying/running/tearing down its interactive
+    # container and must not pull additional batch jobs.
+    active_interactive = (
+        db.query(InteractiveSession)
+        .filter(
+            InteractiveSession.worker_id == request.worker_id,
+            InteractiveSession.status.in_([
+                InteractiveSessionStatus.DEPLOYING,
+                InteractiveSessionStatus.RUNNING,
+                InteractiveSessionStatus.STOPPING,
+            ]),
+        )
+        .first()
+    )
+    if active_interactive:
         return None
 
     for strategy in SCHEDULING_STRATEGIES:

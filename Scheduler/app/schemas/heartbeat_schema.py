@@ -14,6 +14,9 @@ class HeartbeatSchema(BaseModel):
     available_disk: float | None = None
     hostname: str | None = None
     ip_address: str | None = None
+    # Session IDs of interactive containers this worker currently has running
+    # (piggybacked on the heartbeat so the scheduler can track container liveness).
+    interactive_ssessions: list[str] = []
 
 class HeartbeatResponse(BaseModel):
     status: str
