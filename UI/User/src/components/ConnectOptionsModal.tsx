@@ -20,6 +20,7 @@ interface ConnectOptionsModalProps {
 
 const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose }) => {
   const [copied, setCopied] = useState(false);
+  const [copiedPassword, setCopiedPassword] = useState(false);
   const [connectInfo, setConnectInfo] = useState<JobConnectInfo | null>(null);
   const [connectError, setConnectError] = useState(false);
   const [loadingConnect, setLoadingConnect] = useState(true);
@@ -63,6 +64,17 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
     }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleCopyPassword = async () => {
+    if (!connectInfo?.ssh_password) return;
+    try {
+      await navigator.clipboard.writeText(connectInfo.ssh_password);
+    } catch {
+      // Clipboard unavailable — the password is visible anyway.
+    }
+    setCopiedPassword(true);
+    setTimeout(() => setCopiedPassword(false), 2000);
   };
 
   return (
@@ -138,6 +150,26 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
                       {copied ? <Check size={14} color="var(--status-success)" /> : <Copy size={14} />}
                     </button>
                   </div>
+                  {connectInfo.ssh_password && (
+                    <>
+                      <div style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                        One-time password
+                      </div>
+                      <div className="cn-cmd">
+                        <code>{connectInfo.ssh_password}</code>
+                        <button
+                          className="cn-copy-btn"
+                          onClick={handleCopyPassword}
+                          aria-label="Copy one-time password"
+                        >
+                          {copiedPassword ? <Check size={14} color="var(--status-success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                      <div style={{ marginTop: '0.4rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                        Expires in {Math.ceil(connectInfo.ssh_password_ttl_seconds / 60)} min · single use
+                      </div>
+                    </>
+                  )}
                   <button
                     className="btn btn-secondary"
                     style={{ width: '100%', marginTop: 'auto' }}

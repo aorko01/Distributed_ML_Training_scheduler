@@ -43,31 +43,23 @@ class GatewayServer(paramiko.ServerInterface):
 
     def check_auth_password(self, username, password):
         try:
-            login_url = f"{config.SCHEDULER_API_URL}/auth/login"
-            resp = requests.post(login_url, json={"username": username, "password": password}, timeout=5)
+            verify_url = f"{config.SCHEDULER_API_URL}/interactive/sessions/verify-ephemeral"
+            resp = requests.post(
+                verify_url,
+                json={"username": username, "password": password},
+                timeout=5,
+            )
             if resp.status_code != 200:
                 logger.warning(f"Authentication failed for user {username}")
                 return paramiko.AUTH_FAILED
-            
-            token = resp.json().get("access_token")
-            if not token:
-                logger.warning("No access token returned from login")
-                return paramiko.AUTH_FAILED
 
-            active_sessions_url = f"{config.SCHEDULER_API_URL}/interactive/sessions/active"
-            headers = {"Authorization": f"Bearer {token}"}
-            sess_resp = requests.get(active_sessions_url, headers=headers, timeout=5)
-            if sess_resp.status_code != 200:
-                logger.warning(f"No active session for user {username}")
-                return paramiko.AUTH_FAILED
-            
-            sess_data = sess_resp.json()
-            self.session_id = sess_data.get("session_id")
-            self.headscale_ip = sess_data.get("headscale_ip")
+            data = resp.json()
+            self.session_id = data.get("session_id")
+            self.headscale_ip = data.get("headscale_ip")
             if not self.session_id or not self.headscale_ip:
                 logger.warning("Session data incomplete")
                 return paramiko.AUTH_FAILED
-            
+
             logger.info(f"User {username} authenticated successfully for session {self.session_id}")
             return paramiko.AUTH_SUCCESSFUL
         except Exception as e:

@@ -181,6 +181,8 @@ export interface JobConnectInfo {
   gateway_ssh_port: number;
   ssh_user: string;
   container_user: string;
+  ssh_password: string;
+  ssh_password_ttl_seconds: number;
 }
 
 export const fetchJobConnectInfo = async (jobId: string): Promise<JobConnectInfo> => {

@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_active_user
@@ -9,8 +10,19 @@ from app.schemas.interactive_schema import (
     InteractiveSessionReport,
 )
 from app.services import interactive_service
+from app.services.ephemeral_password_service import verify_ephemeral_password
 
 router = APIRouter()
+
+
+class EphemeralPasswordVerifyRequest(BaseModel):
+    username: str
+    password: str
+
+
+class EphemeralPasswordVerifyResponse(BaseModel):
+    session_id: str
+    headscale_ip: str
 
 
 @router.post("/create", response_model=CreateInteractiveSessionResponse)
@@ -56,6 +68,22 @@ def get_active_session(
         "session_id": session.session_id,
         "headscale_ip": session.headscale_ip,
     }
+
+
+@router.post("/sessions/verify-ephemeral", response_model=EphemeralPasswordVerifyResponse)
+def verify_ephemeral_password_route(
+    body: EphemeralPasswordVerifyRequest = Body(...),
+):
+    """Gateway calls this (no JWT) to validate a one-time SSH password.
+
+    The password was issued by the Scheduler when the user requested connect
+    info for a running interactive session. On success the gateway learns the
+    session_id and headscale_ip to proxy the SSH channel to.
+    """
+    result = verify_ephemeral_password(body.username, body.password)
+    if result is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired one-time password")
+    return result
 
 
 @router.get("/{session_id}")

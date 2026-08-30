@@ -16,7 +16,9 @@ HEADSCALE_URL = os.getenv("HEADSCALE_URL", "")
 # Hostname this node registers under in the tailnet.
 GATEWAY_HOSTNAME = os.getenv("GATEWAY_HOSTNAME", "gateway")
 
-# Optional scheduler callback URL (not required for MVP).
+# Scheduler API URL. Required for SSH auth: the gateway validates the
+# user's one-time SSH password against the Scheduler's ephemeral-password
+# verification endpoint (POST /interactive/sessions/verify-ephemeral).
 SCHEDULER_API_URL = os.getenv("SCHEDULER_API_URL", "")
 
 # SSH connection timeout in seconds.

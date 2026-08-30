@@ -559,14 +559,24 @@ def get_job_connect_info(
     
     if not session:
         raise HTTPException(status_code=404, detail="No running interactive session for this job")
-    
+
+    if not session.headscale_ip:
+        raise HTTPException(status_code=404, detail="Session not ready")
+
+    from app.services.ephemeral_password_service import issue_ephemeral_password
+    password = issue_ephemeral_password(
+        current_user.username, session.session_id, session.headscale_ip
+    )
+
     return {
         "session_id": session.session_id,
         "headscale_ip": session.headscale_ip,
         "gateway_host": os.getenv("GATEWAY_PUBLIC_HOST", ""),
         "gateway_ssh_port": int(os.getenv("GATEWAY_PUBLIC_SSH_PORT", os.getenv("GATEWAY_SSH_PORT", "443"))),
         "ssh_user": current_user.username,
-        "container_user": "sandbox"
+        "container_user": "sandbox",
+        "ssh_password": password,
+        "ssh_password_ttl_seconds": 300,
     }
 
 
