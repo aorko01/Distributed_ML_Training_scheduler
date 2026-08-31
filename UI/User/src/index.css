@@ -35,12 +35,30 @@
   --c-success:      #4cc38a;
   --c-success-soft: rgba(76,195,138,0.14);
   --c-success-border: rgba(76,195,138,0.45);
-  --c-warn:         #e0a458;
-  --c-warn-soft:    rgba(224,164,88,0.14);
-  --c-warn-border:  rgba(224,164,88,0.45);
+  --c-pending:      #e0a458;
+  --c-pending-soft: rgba(224,164,88,0.14);
+  --c-pending-border: rgba(224,164,88,0.45);
+  --c-building:     #7a8eff;
+  --c-building-soft: rgba(122,142,255,0.14);
+  --c-building-border: rgba(122,142,255,0.45);
+  --c-running:      #3b82f6;
+  --c-running-soft: rgba(59,130,246,0.14);
+  --c-running-border: rgba(59,130,246,0.45);
+  --c-retrying:     #eab308;
+  --c-retrying-soft: rgba(234,179,8,0.14);
+  --c-retrying-border: rgba(234,179,8,0.45);
+  --c-success-completed: #10b981;
+  --c-success-completed-soft: rgba(16,185,129,0.14);
+  --c-success-completed-border: rgba(16,185,129,0.45);
   --c-danger:       #ef6b6b;
   --c-danger-soft:  rgba(239,107,107,0.14);
   --c-danger-border: rgba(239,107,107,0.45);
+  --c-stopped:      #64748b;
+  --c-stopped-soft: rgba(100,116,139,0.14);
+  --c-stopped-border: rgba(100,116,139,0.45);
+  --c-interactive:  #06b6d4;
+  --c-interactive-soft: rgba(6,182,212,0.14);
+  --c-interactive-border: rgba(6,182,212,0.45);
 
   --terminal-bg:    #07080b;
   --terminal-header:#0f1015;
@@ -550,25 +568,81 @@ input[type="checkbox"] {
 }
 .badge-running::before, .badge-live::before { content: '\25CF'; color: var(--c-success); }
 
-/* Pending / building / provisioning / retrying — amber, pulsing ring */
-.badge-pending, .badge-building, .badge-retrying, .badge-provisioning {
-  background-color: var(--c-warn-soft);
-  border-color: var(--c-warn-border);
-  color: var(--c-warn);
+/* Pending — amber, pulsing ring */
+.badge-pending {
+  background-color: var(--c-pending-soft);
+  border-color: var(--c-pending-border);
+  color: var(--c-pending);
 }
-.badge-pending::before, .badge-building::before, .badge-retrying::before, .badge-provisioning::before {
+.badge-pending::before {
   content: '\25CB';
-  color: var(--c-warn);
+  color: var(--c-pending);
+  animation: pulseRing 1.6s ease-in-out infinite;
+}
+
+/* Building — indigo, subtle solid */
+.badge-building {
+  background-color: var(--c-building-soft);
+  border-color: var(--c-building-border);
+  color: var(--c-building);
+}
+.badge-building::before {
+  content: '\25CB';
+  color: var(--c-building);
+  animation: pulseRing 1.6s ease-in-out infinite;
+}
+
+/* Retrying — amber, pulsing ring */
+.badge-retrying {
+  background-color: var(--c-retrying-soft);
+  border-color: var(--c-retrying-border);
+  color: var(--c-retrying);
+}
+.badge-retrying::before {
+  content: '\25CB';
+  color: var(--c-retrying);
+  animation: pulseRing 1.6s ease-in-out infinite;
+}
+
+/* Provisioning — indigo, subtle solid */
+.badge-provisioning {
+  background-color: var(--c-building-soft);
+  border-color: var(--c-building-border);
+  color: var(--c-building);
+}
+.badge-provisioning::before {
+  content: '\25CB';
+  color: var(--c-building);
   animation: pulseRing 1.6s ease-in-out infinite;
 }
 
 /* Completed / success — green tint */
 .badge-success {
-  background-color: var(--c-success-soft);
-  border-color: var(--c-success-border);
-  color: var(--c-success);
+  background-color: var(--c-success-completed-soft);
+  border-color: var(--c-success-completed-border);
+  color: var(--c-success-completed);
 }
-.badge-success::before { content: '\2713'; color: var(--c-success); }
+.badge-success::before { content: '\2713'; color: var(--c-success-completed); }
+
+/* Interactive Ready — cyan */
+.badge-interactive-ready {
+  background-color: var(--c-interactive-soft);
+  border-color: var(--c-interactive-border);
+  color: var(--c-interactive);
+}
+.badge-interactive-ready::before { content: '\25CF'; color: var(--c-interactive); }
+
+/* Interactive Running — cyan, animated */
+.badge-interactive-running {
+  background-color: var(--c-interactive-soft);
+  border-color: var(--c-interactive-border);
+  color: var(--c-interactive);
+}
+.badge-interactive-running::before {
+  content: '\25CF';
+  color: var(--c-interactive);
+  animation: blink 1.6s steps(2) infinite;
+}
 
 /* Failed / stopped — red tint, dashed */
 .badge-failed {
@@ -578,6 +652,14 @@ input[type="checkbox"] {
   color: var(--c-danger);
 }
 .badge-failed::before { content: '\2715'; color: var(--c-danger); }
+
+/* Stopped — slate gray */
+.badge-stopped {
+  background-color: var(--c-stopped-soft);
+  border-color: var(--c-stopped-border);
+  color: var(--c-stopped);
+}
+.badge-stopped::before { content: '\25A0'; color: var(--c-stopped); }
 
 /* Machine online / offline */
 .badge-online {
@@ -594,6 +676,7 @@ input[type="checkbox"] {
 }
 .badge-offline::before { content: '\25A0'; }
 
+/* Status dot for online */
 .status-dot {
   width: 7px;
   height: 7px;
