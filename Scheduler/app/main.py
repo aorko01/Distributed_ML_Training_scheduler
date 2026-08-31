@@ -14,13 +14,16 @@ from app.api.auth_route import router as auth_router
 from app.api.docker_route import router as docker_router
 from app.api.resource_route import router as resources_router
 from app.api.interactive_route import router as interactive_router
+from app.api.admin_route import router as admin_router
 # Ensure the interactive session model is registered with Base metadata
 import app.models.interactive_session_model  # noqa: F401
 from app.services import watchdog_service
+from app.db.seed import seed_admin_user
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    seed_admin_user()
     watcher = asyncio.create_task(watchdog_service.run_stall_watcher())
     try:
         yield
@@ -64,3 +67,4 @@ app.include_router(auth_router, tags=["auth"])
 app.include_router(docker_router, prefix="/docker", tags=["docker"])
 app.include_router(resources_router, prefix="/resources", tags=["resources"])
 app.include_router(interactive_router, prefix="/interactive", tags=["interactive"])
+app.include_router(admin_router)

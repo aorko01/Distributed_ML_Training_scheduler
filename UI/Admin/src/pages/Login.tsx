@@ -89,9 +89,6 @@ const Login: React.FC = () => {
           <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={loading}>
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
-          <p style={{ textAlign: 'center', marginTop: '1rem', fontSize: '0.75rem' }}>
-            Dummy credentials — <span className="mono">admin / admin</span>
-          </p>
         </form>
       </div>
     </div>

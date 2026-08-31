@@ -1,18 +1,18 @@
-import React, { useMemo, useState } from 'react';
-import { Search, UserCheck, UserX, Trash2, ShieldAlert } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 import {
   users as seedUsers,
   type ManagedUser,
   type UserRole,
   type UserSortKey,
 } from '../data/mock';
+import { fetchAdminUsers, type AdminUser } from '../services/api';
 
 type RoleFilter = 'all' | UserRole;
 type StatusFilter = 'all' | 'active' | 'disabled';
 
 const ROLE_LABEL: Record<UserRole, string> = {
   admin: 'Admin',
-  researcher: 'Researcher',
   user: 'User',
 };
 
@@ -20,14 +20,42 @@ const getRoleBadge = (role: UserRole) => (
   <span className={`badge badge-role-${role}`}>{ROLE_LABEL[role]}</span>
 );
 
+const toManagedUser = (u: AdminUser): ManagedUser => ({
+  id: u.user_id,
+  username: u.username,
+  name: u.name || u.username,
+  email: u.email,
+  role: u.is_superuser ? 'admin' : 'user',
+  jobsCount: u.jobs_count,
+  gpuHours: u.gpu_hours,
+  status: u.is_active ? 'active' : 'disabled',
+  created: new Date(u.created_at || Date.now()).toISOString().slice(0, 10),
+});
+
 const Users: React.FC = () => {
   const [userList, setUserList] = useState<ManagedUser[]>(seedUsers);
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<UserSortKey>('name');
-  const [confirmUser, setConfirmUser] = useState<ManagedUser | null>(null);
-  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAdminUsers()
+      .then((apiUsers) => {
+        if (!cancelled) {
+          setUserList(apiUsers.map(toManagedUser));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setUserList(seedUsers);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const visibleUsers = useMemo(() => {
     const filtered = userList.filter((u) => {
@@ -51,39 +79,6 @@ const Users: React.FC = () => {
       }
     });
   }, [userList, roleFilter, statusFilter, search, sortKey]);
-
-  const showFeedback = (msg: string) => {
-    setActionFeedback(msg);
-    window.setTimeout(() => setActionFeedback(null), 3000);
-  };
-
-  const toggleStatus = (user: ManagedUser) => {
-    setUserList((prev) =>
-      prev.map((u) =>
-        u.id === user.id ? { ...u, status: u.status === 'active' ? 'disabled' : 'active' } : u,
-      ),
-    );
-    showFeedback(
-      `${user.username} ${user.status === 'active' ? 'disabled' : 'activated'}`,
-    );
-  };
-
-  const promote = (user: ManagedUser) => {
-    setUserList((prev) =>
-      prev.map((u) =>
-        u.id === user.id
-          ? { ...u, role: u.role === 'user' ? 'researcher' : u.role === 'researcher' ? 'admin' : u.role }
-          : u,
-      ),
-    );
-    showFeedback(`${user.username} promoted to ${user.role === 'user' ? 'researcher' : 'admin'}`);
-  };
-
-  const deleteUser = (user: ManagedUser) => {
-    setUserList((prev) => prev.filter((u) => u.id !== user.id));
-    setConfirmUser(null);
-    showFeedback(`${user.username} deleted`);
-  };
 
   return (
     <div className="fade-in">
@@ -114,7 +109,6 @@ const Users: React.FC = () => {
             >
               <option value="all">All Roles</option>
               <option value="admin">Admin</option>
-              <option value="researcher">Researcher</option>
               <option value="user">User</option>
             </select>
           </div>
@@ -147,20 +141,6 @@ const Users: React.FC = () => {
             </select>
           </div>
         </div>
-
-        {actionFeedback && (
-          <div
-            style={{
-              fontSize: '0.875rem',
-              color: 'var(--accent-primary)',
-              backgroundColor: 'rgba(59, 130, 246, 0.1)',
-              padding: '0.5rem 1rem',
-              borderRadius: 6,
-            }}
-          >
-            {actionFeedback}
-          </div>
-        )}
       </div>
 
       <div className="table-container">
@@ -174,13 +154,12 @@ const Users: React.FC = () => {
               <th>Jobs</th>
               <th>GPU Hours</th>
               <th>Created</th>
-              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {visibleUsers.length === 0 && (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
+                <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
                   No users match the current filters.
                 </td>
               </tr>
@@ -222,74 +201,11 @@ const Users: React.FC = () => {
                 <td>{user.jobsCount}</td>
                 <td>{user.gpuHours.toFixed(1)}</td>
                 <td>{user.created}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    {user.role !== 'admin' && (
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => promote(user)}
-                        title="Promote role"
-                      >
-                        <ShieldAlert size={14} />
-                        Promote
-                      </button>
-                    )}
-                    <button
-                      className={`btn btn-sm ${user.status === 'active' ? 'btn-danger' : 'btn-success'}`}
-                      onClick={() => toggleStatus(user)}
-                    >
-                      {user.status === 'active' ? <UserX size={14} /> : <UserCheck size={14} />}
-                      {user.status === 'active' ? 'Disable' : 'Enable'}
-                    </button>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => setConfirmUser(user)}
-                      title="Delete user"
-                    >
-                      <Trash2 size={14} color="var(--status-failed)" />
-                    </button>
-                  </div>
-                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-
-      {confirmUser && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0,0,0,0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 50,
-          }}
-          onClick={() => setConfirmUser(null)}
-        >
-          <div
-            className="card glass"
-            style={{ width: '100%', maxWidth: 420 }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ marginTop: 0 }}>Delete user</h3>
-            <p>
-              Are you sure you want to delete <strong>{confirmUser.name}</strong> (@
-              {confirmUser.username})? This action cannot be undone.
-            </p>
-            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
-              <button className="btn btn-secondary" onClick={() => setConfirmUser(null)}>
-                Cancel
-              </button>
-              <button className="btn btn-danger" onClick={() => deleteUser(confirmUser)}>
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

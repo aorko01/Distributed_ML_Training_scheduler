@@ -1,11 +1,12 @@
-import React, { useMemo, useState } from 'react';
-import { ArrowUp, ArrowDown, Check, X, Zap, Clock, Search } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Clock, Search } from 'lucide-react';
 import {
   queueJobs as seedJobs,
   type PriorityLevel,
   type PriorityRequestStatus,
   type QueueJob,
 } from '../data/mock';
+import { fetchAdminJobs, type AdminJob } from '../services/api';
 
 type PriorityFilter = 'all' | PriorityLevel;
 type RequestFilter = 'all' | 'pending' | 'approved' | 'denied';
@@ -38,12 +39,39 @@ const formatRelative = (iso: string) => {
   return `${Math.round(hrs / 24)}d ago`;
 };
 
+const toQueueJob = (j: AdminJob): QueueJob => ({
+  id: j.id,
+  name: j.name || j.id.slice(0, 8),
+  user: j.username,
+  priority: j.priority === 'HIGH' ? 'high' : j.priority === 'REQUESTED' ? 'medium' : 'low',
+  vramRequired: j.vram_required ?? 0,
+  submittedAt: j.created_at || new Date().toISOString(),
+  priorityRequest: j.priority === 'REQUESTED' ? 'pending' : 'none',
+});
+
 const JobQueue: React.FC = () => {
   const [jobs, setJobs] = useState<QueueJob[]>(seedJobs);
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
   const [requestFilter, setRequestFilter] = useState<RequestFilter>('all');
   const [search, setSearch] = useState('');
-  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAdminJobs()
+      .then((apiJobs) => {
+        if (!cancelled) {
+          setJobs(apiJobs.map(toQueueJob));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setJobs(seedJobs);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const visibleJobs = useMemo(() => {
     return jobs.filter((job) => {
@@ -56,37 +84,6 @@ const JobQueue: React.FC = () => {
       return true;
     });
   }, [jobs, priorityFilter, requestFilter, search]);
-
-  const showFeedback = (msg: string) => {
-    setActionFeedback(msg);
-    window.setTimeout(() => setActionFeedback(null), 3000);
-  };
-
-  const move = (index: number, dir: -1 | 1) => {
-    const target = index + dir;
-    if (target < 0 || target >= jobs.length) return;
-    setJobs((prev) => {
-      const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-    showFeedback(`Moved ${jobs[index].name} ${dir === -1 ? 'up' : 'down'} in the queue`);
-  };
-
-  const decidePriority = (job: QueueJob, decision: 'approved' | 'denied') => {
-    setJobs((prev) =>
-      prev.map((j) =>
-        j.id === job.id
-          ? { ...j, priorityRequest: decision, priority: decision === 'approved' ? 'high' : j.priority }
-          : j,
-      ),
-    );
-    showFeedback(
-      decision === 'approved'
-        ? `Priority request approved for ${job.name}`
-        : `Priority request denied for ${job.name}`,
-    );
-  };
 
   return (
     <div className="fade-in">
@@ -136,20 +133,6 @@ const JobQueue: React.FC = () => {
             </select>
           </div>
         </div>
-
-        {actionFeedback && (
-          <div
-            style={{
-              fontSize: '0.875rem',
-              color: 'var(--accent-primary)',
-              backgroundColor: 'rgba(59, 130, 246, 0.1)',
-              padding: '0.5rem 1rem',
-              borderRadius: 6,
-            }}
-          >
-            {actionFeedback}
-          </div>
-        )}
       </div>
 
       <div className="table-container">
@@ -160,16 +143,15 @@ const JobQueue: React.FC = () => {
               <th>Job</th>
               <th>User</th>
               <th>Priority</th>
-              <th>GPUs</th>
+              <th>VRAM (GB)</th>
               <th>Submitted</th>
               <th>Priority Request</th>
-              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {visibleJobs.length === 0 && (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
+                <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
                   No jobs match the current filters.
                 </td>
               </tr>
@@ -189,7 +171,7 @@ const JobQueue: React.FC = () => {
                   </td>
                   <td>{job.user}</td>
                   <td>{getPriorityBadge(job.priority)}</td>
-                  <td>{job.gpuRequested}</td>
+                  <td>{job.vramRequired}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
                       <Clock size={14} color="var(--text-secondary)" />
@@ -198,49 +180,6 @@ const JobQueue: React.FC = () => {
                   </td>
                   <td>
                     {getRequestBadge(job.priorityRequest)}
-                    {job.priorityRequest === 'pending' && (
-                      <div style={{ display: 'flex', gap: '0.375rem', marginTop: '0.375rem' }}>
-                        <button
-                          className="btn btn-success btn-icon"
-                          onClick={() => decidePriority(job, 'approved')}
-                          title="Approve priority request"
-                        >
-                          <Check size={14} />
-                        </button>
-                        <button
-                          className="btn btn-danger btn-icon"
-                          onClick={() => decidePriority(job, 'denied')}
-                          title="Deny priority request"
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <button
-                        className="btn btn-secondary btn-icon"
-                        onClick={() => move(realIndex, -1)}
-                        disabled={realIndex === 0}
-                        title="Move up"
-                      >
-                        <ArrowUp size={14} />
-                      </button>
-                      <button
-                        className="btn btn-secondary btn-icon"
-                        onClick={() => move(realIndex, 1)}
-                        disabled={realIndex === jobs.length - 1}
-                        title="Move down"
-                      >
-                        <ArrowDown size={14} />
-                      </button>
-                      {job.priorityRequest === 'pending' && (
-                        <span style={{ alignSelf: 'center' }} title="Priority escalation requested">
-                          <Zap size={14} color="var(--status-building)" />
-                        </span>
-                      )}
-                    </div>
                   </td>
                 </tr>
               );
@@ -248,11 +187,6 @@ const JobQueue: React.FC = () => {
           </tbody>
         </table>
       </div>
-
-      <p style={{ marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-        Tip: Use the up/down arrows to reorder the queue. Approved priority requests automatically
-        promote a job to High priority.
-      </p>
     </div>
   );
 };

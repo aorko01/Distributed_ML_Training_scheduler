@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { Server, Gauge, ListOrdered, Cpu, TrendingUp } from 'lucide-react';
-import RingChart from '../components/RingChart';
 import BarChart from '../components/BarChart';
 import {
   clusterOverview as mockOverview,
@@ -65,23 +64,14 @@ const Overview: React.FC = () => {
     setSelectedPoint(null);
   };
 
-  const { nodesOnline, nodesTotal, clusterLoad, queueDepth, gpusAllocated, gpusTotal, distribution } = {
+  const { nodesOnline, nodesTotal, clusterLoad, queueDepth, gpusAllocated, gpusTotal } = {
     nodesOnline: stats.nodes_online,
     nodesTotal: stats.nodes_total,
     clusterLoad: stats.cluster_load,
     queueDepth: stats.queue_depth,
     gpusAllocated: stats.gpus_allocated,
     gpusTotal: stats.gpus_total,
-    distribution: mockOverview.distribution,
   };
-
-  const distributionSegments = [
-    { label: 'Batch Training', value: distribution.batch, color: 'var(--batch-color)' },
-    { label: 'Experimentation', value: distribution.experimentation, color: 'var(--experiment-color)' },
-    { label: 'Idle', value: distribution.idle, color: 'var(--idle-color)' },
-  ];
-
-  const totalDistribution = distribution.batch + distribution.experimentation + distribution.idle;
 
   const gpuUsagePercent = gpusTotal > 0 ? Math.round((gpusAllocated / gpusTotal) * 100) : 0;
 
@@ -105,7 +95,7 @@ const Overview: React.FC = () => {
               / {nodesTotal}
             </span>
           </div>
-          <div className="metric-sub">{nodesTotal - nodesOnline} offline or draining</div>
+          <div className="metric-sub">{nodesTotal - nodesOnline} offline</div>
         </div>
 
         <div className="metric-card">
@@ -150,73 +140,46 @@ const Overview: React.FC = () => {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: '1.5rem' }}>
-        <div className="card chart-card">
-          <div className="chart-card-header">
-            <h3 style={{ margin: 0 }}>Resource Distribution</h3>
-          </div>
-          <div className="ring-container">
-            <RingChart
-              segments={distributionSegments}
-              centerLabel={`${gpusAllocated}`}
-              centerSub="GPUs busy"
-            />
-            <div className="ring-legend">
-              {distributionSegments.map((seg) => (
-                <div key={seg.label} className="legend-item">
-                  <span className="legend-dot" style={{ backgroundColor: seg.color }} />
-                  <span>{seg.label}</span>
-                  <span className="legend-value">{seg.value}%</span>
-                  <span className="legend-pct">
-                    ({Math.round((seg.value / totalDistribution) * 100)})
-                  </span>
-                </div>
-              ))}
-            </div>
+      <div className="card chart-card">
+        <div className="chart-card-header">
+          <h3 style={{ margin: 0 }}>Job Throughput</h3>
+          <div className="segmented">
+            {PERIODS.map((p) => (
+              <button
+                key={p.value}
+                className={period === p.value ? 'active' : ''}
+                onClick={() => handlePeriodChange(p.value)}
+              >
+                {p.label}
+              </button>
+            ))}
           </div>
         </div>
-
-        <div className="card chart-card">
-          <div className="chart-card-header">
-            <h3 style={{ margin: 0 }}>Job Throughput</h3>
-            <div className="segmented">
-              {PERIODS.map((p) => (
-                <button
-                  key={p.value}
-                  className={period === p.value ? 'active' : ''}
-                  onClick={() => handlePeriodChange(p.value)}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <BarChart
-            data={throughputData}
-            onSelect={(i) => setSelectedPoint(i)}
-          />
-          <div
-            style={{
-              marginTop: '1rem',
-              paddingTop: '1rem',
-              borderTop: '1px solid var(--border-color)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.75rem',
-              fontSize: '0.875rem',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            <TrendingUp size={16} color="var(--accent-primary)" />
-            {selectedDatum ? (
-              <span>
-                <strong style={{ color: 'var(--text-primary)' }}>{selectedDatum.jobs} jobs</strong> completed
-                during <strong style={{ color: 'var(--text-primary)' }}>{selectedDatum.label}</strong>
-              </span>
-            ) : (
-              <span>Select a bar to see details.</span>
-            )}
-          </div>
+        <BarChart
+          data={throughputData}
+          onSelect={(i) => setSelectedPoint(i)}
+        />
+        <div
+          style={{
+            marginTop: '1rem',
+            paddingTop: '1rem',
+            borderTop: '1px solid var(--border-color)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            fontSize: '0.875rem',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <TrendingUp size={16} color="var(--accent-primary)" />
+          {selectedDatum ? (
+            <span>
+              <strong style={{ color: 'var(--text-primary)' }}>{selectedDatum.jobs} jobs</strong> completed
+              during <strong style={{ color: 'var(--text-primary)' }}>{selectedDatum.label}</strong>
+            </span>
+          ) : (
+            <span>Select a bar to see details.</span>
+          )}
         </div>
       </div>
     </div>

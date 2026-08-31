@@ -1,4 +1,4 @@
-export type NodeStatus = 'online' | 'offline' | 'draining';
+export type NodeStatus = 'online' | 'offline';
 export type NodeSortKey = 'name' | 'load' | 'mem' | 'gpus' | 'vram' | 'running';
 export type NodeFilter = 'all' | NodeStatus;
 
@@ -26,13 +26,7 @@ export interface ThroughputPoint {
 
 export type ThroughputPeriod = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
-export interface ResourceDistribution {
-  batch: number;
-  experimentation: number;
-  idle: number;
-}
-
-export type UserRole = 'admin' | 'researcher' | 'user';
+export type UserRole = 'admin' | 'user';
 export type UserStatus = 'active' | 'disabled';
 export type UserSortKey = 'name' | 'role' | 'jobs' | 'gpuHours' | 'created';
 export type UserFilter = 'all' | UserRole | UserStatus;
@@ -57,7 +51,7 @@ export interface QueueJob {
   name: string;
   user: string;
   priority: PriorityLevel;
-  gpuRequested: number;
+  vramRequired: number;
   submittedAt: string;
   priorityRequest: PriorityRequestStatus;
 }
@@ -69,7 +63,6 @@ export interface ClusterOverview {
   queueDepth: number;
   gpusAllocated: number;
   gpusTotal: number;
-  distribution: ResourceDistribution;
 }
 
 const NODE_POOLS: { ipBase: string; gpu: string; vram: number; count: number; nodes: number }[] = [
@@ -94,11 +87,6 @@ export const clusterOverview: ClusterOverview = {
   queueDepth: 18,
   gpusAllocated: 89,
   gpusTotal: 148,
-  distribution: {
-    batch: 46,
-    experimentation: 26,
-    idle: 28,
-  },
 };
 
 export const nodes: ClusterNode[] = NODE_POOLS.flatMap((pool, poolIdx) =>
@@ -106,8 +94,7 @@ export const nodes: ClusterNode[] = NODE_POOLS.flatMap((pool, poolIdx) =>
     const global = poolIdx * 100 + i;
     const status: NodeStatus =
       i === 0 && poolIdx === 1 ? 'offline'
-      : i === 0 && poolIdx === 4 ? 'draining'
-      : Math.random() < 0.06 ? 'draining'
+      : Math.random() < 0.06 ? 'offline'
       : 'online';
     const load = status === 'offline' ? 0 : Math.min(100, Math.round(25 + Math.random() * 70));
     const mem = status === 'offline' ? 0 : Math.min(100, Math.round(15 + Math.random() * 80));
@@ -178,7 +165,7 @@ export const throughput: Record<ThroughputPeriod, ThroughputPoint[]> = THROUGHPU
 export const users: ManagedUser[] = Array.from({ length: 24 }, (_, i) => {
   const firstName = FIRST_NAMES[i % FIRST_NAMES.length];
   const lastName = LAST_NAMES[(i * 3) % LAST_NAMES.length];
-  const role: UserRole = i === 0 ? 'admin' : i % 5 === 0 ? 'researcher' : 'user';
+  const role: UserRole = i === 0 ? 'admin' : 'user';
   const status: UserStatus = i % 8 === 0 ? 'disabled' : 'active';
   return {
     id: `user-${i}`,
@@ -200,14 +187,14 @@ export const queueJobs: QueueJob[] = Array.from({ length: 18 }, (_, i) => {
   const priority: PriorityLevel = i % 4 === 0 ? 'high' : i % 3 === 0 ? 'medium' : 'low';
   const request: PriorityRequestStatus =
     i === 1 ? 'pending' : i === 3 ? 'pending' : i === 7 ? 'approved' : i === 9 ? 'denied' : 'none';
-  const gpuRequested = priority === 'high' ? 8 : priority === 'medium' ? 4 : [1, 2][i % 2];
+  const vramRequired = priority === 'high' ? 8 : priority === 'medium' ? 4 : [1, 2][i % 2];
   const hoursAgo = 1 + i * 3;
   return {
     id: `job-${100 + i}`,
     name: `${JOB_NAMES[i % JOB_NAMES.length]}-${100 + i}`,
     user: JOB_USERS[i % JOB_USERS.length],
     priority,
-    gpuRequested,
+    vramRequired,
     submittedAt: new Date(Date.now() - hoursAgo * 3600_000).toISOString(),
     priorityRequest: request,
   };

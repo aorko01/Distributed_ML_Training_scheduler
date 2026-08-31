@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, Server, Terminal, Unplug } from 'lucide-react';
+import { Search, Server } from 'lucide-react';
 import {
   nodes as seedNodes,
   type ClusterNode,
@@ -13,7 +13,6 @@ type StatusFilter = 'all' | NodeStatus;
 const STATUS_LABEL: Record<NodeStatus, string> = {
   online: 'Online',
   offline: 'Offline',
-  draining: 'Draining',
 };
 
 const getStatusBadge = (status: NodeStatus) => (
@@ -52,7 +51,6 @@ const Nodes: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<NodeSortKey>('name');
-  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,26 +100,6 @@ const Nodes: React.FC = () => {
     });
   }, [nodeList, statusFilter, search, sortKey]);
 
-  const showFeedback = (msg: string) => {
-    setActionFeedback(msg);
-    window.setTimeout(() => setActionFeedback(null), 3000);
-  };
-
-  const handleDisconnect = (node: ClusterNode) => {
-    setNodeList((prev) =>
-      prev.map((n) =>
-        n.id === node.id
-          ? { ...n, status: n.status === 'online' ? 'offline' : 'online', load: 0, mem: 0, runningJobs: 0 }
-          : n,
-      ),
-    );
-    showFeedback(`${node.name} disconnected`);
-  };
-
-  const handleSsh = (node: ClusterNode) => {
-    showFeedback(`Opening SSH session to ${node.name} (${node.ip}:${node.sshPort})...`);
-  };
-
   return (
     <div className="fade-in">
       <h1>Cluster Nodes</h1>
@@ -152,7 +130,6 @@ const Nodes: React.FC = () => {
               <option value="all">All Statuses</option>
               <option value="online">Online</option>
               <option value="offline">Offline</option>
-              <option value="draining">Draining</option>
             </select>
           </div>
           <div className="toolbar-group">
@@ -172,20 +149,6 @@ const Nodes: React.FC = () => {
             </select>
           </div>
         </div>
-
-        {actionFeedback && (
-          <div
-            style={{
-              fontSize: '0.875rem',
-              color: 'var(--accent-primary)',
-              backgroundColor: 'rgba(59, 130, 246, 0.1)',
-              padding: '0.5rem 1rem',
-              borderRadius: 6,
-            }}
-          >
-            {actionFeedback}
-          </div>
-        )}
       </div>
 
       <div className="table-container">
@@ -200,13 +163,12 @@ const Nodes: React.FC = () => {
               <th>Load</th>
               <th>Mem</th>
               <th>Jobs</th>
-              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {visibleNodes.length === 0 && (
               <tr>
-                <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
+                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
                   No nodes match the current filters.
                 </td>
               </tr>
@@ -252,25 +214,6 @@ const Nodes: React.FC = () => {
                   </div>
                 </td>
                 <td>{node.runningJobs}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleSsh(node)}
-                    >
-                      <Terminal size={14} />
-                      SSH
-                    </button>
-                    <button
-                      className="btn btn-danger btn-sm"
-                      onClick={() => handleDisconnect(node)}
-                      disabled={node.status === 'offline'}
-                    >
-                      <Unplug size={14} />
-                      Disconnect
-                    </button>
-                  </div>
-                </td>
               </tr>
             ))}
           </tbody>

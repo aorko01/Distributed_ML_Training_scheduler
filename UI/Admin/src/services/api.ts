@@ -1,4 +1,8 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+import { getToken } from './auth';
+
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+
+// --- Types ---
 
 export interface ApiNode {
   worker_id: string;
@@ -43,27 +47,85 @@ export interface ThroughputResponse {
   yearly: ThroughputPoint[];
 }
 
-export async function fetchNodes(): Promise<ApiNode[]> {
-  const resp = await fetch(`${API_BASE}/workers/nodes`);
+export interface AdminUser {
+  user_id: string;
+  username: string;
+  name: string | null;
+  email: string;
+  is_active: boolean;
+  is_superuser: boolean;
+  created_at: string | null;
+  jobs_count: number;
+  gpu_hours: number;
+}
+
+export interface AdminJob {
+  id: string;
+  name: string | null;
+  user_id: string;
+  username: string;
+  priority: string;
+  status: string;
+  vram_required: number | null;
+  reason_for_priority: string | null;
+  build_type: string;
+  created_at: string | null;
+}
+
+export interface CurrentUser {
+  user_id: string;
+  username: string;
+  name: string | null;
+  email: string;
+  is_active: boolean;
+  is_superuser: boolean;
+}
+
+// --- Helpers ---
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...init?.headers,
+    },
+  });
   if (!resp.ok) {
-    throw new Error(`Failed to fetch nodes: ${resp.status}`);
+    throw new Error(`Request failed: ${resp.status}`);
   }
-  const data = (await resp.json()) as NodesResponse;
+  return resp.json() as Promise<T>;
+}
+
+// --- API functions ---
+
+export async function fetchNodes(): Promise<ApiNode[]> {
+  const data = await request<NodesResponse>('/workers/nodes');
   return data.nodes ?? [];
 }
 
 export async function fetchOverview(): Promise<OverviewStats> {
-  const resp = await fetch(`${API_BASE}/scheduler/overview`);
-  if (!resp.ok) {
-    throw new Error(`Failed to fetch overview: ${resp.status}`);
-  }
-  return (await resp.json()) as OverviewStats;
+  return request<OverviewStats>('/scheduler/overview');
 }
 
 export async function fetchThroughput(): Promise<ThroughputResponse> {
-  const resp = await fetch(`${API_BASE}/scheduler/throughput`);
-  if (!resp.ok) {
-    throw new Error(`Failed to fetch throughput: ${resp.status}`);
-  }
-  return (await resp.json()) as ThroughputResponse;
+  return request<ThroughputResponse>('/scheduler/throughput');
+}
+
+export async function fetchMe(): Promise<CurrentUser> {
+  return request<CurrentUser>('/auth/me');
+}
+
+export async function fetchAdminUsers(): Promise<AdminUser[]> {
+  return request<AdminUser[]>('/admin/users');
+}
+
+export async function fetchAdminJobs(): Promise<AdminJob[]> {
+  return request<AdminJob[]>('/admin/jobs');
 }
