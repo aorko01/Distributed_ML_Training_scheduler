@@ -3,6 +3,7 @@ import os
 import select
 import socket
 import threading
+import time
 import traceback
 import requests
 import paramiko
@@ -66,6 +67,15 @@ class GatewayServer(paramiko.ServerInterface):
             logger.error(f"Error during authentication: {e}")
             return paramiko.AUTH_FAILED
 
+    def get_allowed_auths(self, username):
+        """Advertise both password and publickey auth so VS Code Remote SSH
+        knows password auth is available."""
+        return "password,publickey"
+
+    def check_auth_publickey(self, username, key):
+        """Reject publickey auth — sessions use ephemeral passwords only."""
+        return paramiko.AUTH_FAILED
+
     def check_channel_request(self, kind, chanid):
         if kind == "session":
             return paramiko.OPEN_SUCCEEDED
@@ -74,11 +84,12 @@ class GatewayServer(paramiko.ServerInterface):
     def check_channel_shell_request(self, channel):
         # Just signal that the client asked for a shell; the connection
         # handler thread will launch the proxy once it claims the channel.
+        channel.gateway_request = ("shell", None)
         self.event.set()
         return True
 
     def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
-        self.pty_info = (width, height)
+        channel.gateway_pty = (width, height)
         return True
 
     def check_channel_window_change_request(self, channel, width, height, pixelwidth, pixelheight):
@@ -87,6 +98,56 @@ class GatewayServer(paramiko.ServerInterface):
         channel.gateway_window_change = (width, height)
         return True
 
+    def check_channel_exec_request(self, channel, command):
+        """Accept exec requests — VS Code uses these for OS detection and setup
+        before opening a shell."""
+        channel.gateway_request = ("exec", command)
+        self.event.set()
+        return True
+
+    def check_channel_subsystem_request(self, channel, name):
+        """Accept subsystem requests (e.g. SFTP) for VS Code file sync."""
+        channel.gateway_request = ("subsystem", name)
+        self.event.set()
+        return True
+
+    def _proxy_loop(self, server_chan, client_chan):
+        """Bidirectional byte-level proxy between two channels."""
+        server_chan.setblocking(0)
+        client_chan.setblocking(0)
+
+        while True:
+            r, _, _ = select.select([server_chan, client_chan], [], [], 1.0)
+
+            if hasattr(server_chan, "gateway_window_change") and server_chan.gateway_window_change:
+                w, h = server_chan.gateway_window_change
+                server_chan.gateway_window_change = None
+                try:
+                    client_chan.resize_pty(width=w, height=h)
+                except Exception as e:
+                    logger.warning(f"Error resizing PTY: {e}")
+
+            if server_chan in r:
+                try:
+                    data = server_chan.recv(4096)
+                    if len(data) == 0:
+                        break
+                    client_chan.sendall(data)
+                except socket.timeout:
+                    pass
+
+            if client_chan in r:
+                try:
+                    data = client_chan.recv(4096)
+                    if len(data) == 0:
+                        break
+                    server_chan.sendall(data)
+                except socket.timeout:
+                    pass
+
+            if server_chan.closed or client_chan.closed:
+                break
+
     def _proxy_shell(self, server_chan):
         client = None
         try:
@@ -94,46 +155,59 @@ class GatewayServer(paramiko.ServerInterface):
             client = session_client.connect(self.session_id, self.headscale_ip)
             client_chan = client.invoke_shell()
 
-            if hasattr(self, "pty_info"):
-                client_chan.resize_pty(*self.pty_info)
+            pty_info = getattr(server_chan, "gateway_pty", None)
+            if pty_info:
+                client_chan.resize_pty(*pty_info)
 
-            server_chan.setblocking(0)
-            client_chan.setblocking(0)
-
-            while True:
-                r, _, _ = select.select([server_chan, client_chan], [], [], 1.0)
-
-                if hasattr(server_chan, "gateway_window_change") and server_chan.gateway_window_change:
-                    w, h = server_chan.gateway_window_change
-                    server_chan.gateway_window_change = None
-                    try:
-                        client_chan.resize_pty(width=w, height=h)
-                    except Exception as e:
-                        logger.warning(f"Error resizing PTY: {e}")
-
-                if server_chan in r:
-                    try:
-                        data = server_chan.recv(4096)
-                        if len(data) == 0:
-                            break
-                        client_chan.sendall(data)
-                    except socket.timeout:
-                        pass
-                
-                if client_chan in r:
-                    try:
-                        data = client_chan.recv(4096)
-                        if len(data) == 0:
-                            break
-                        server_chan.sendall(data)
-                    except socket.timeout:
-                        pass
-                
-                if server_chan.closed or client_chan.closed:
-                    break
-
+            self._proxy_loop(server_chan, client_chan)
         except Exception as e:
             logger.error(f"Proxy error: {e}")
+            traceback.print_exc()
+        finally:
+            if client:
+                session_client.close(client)
+            server_chan.close()
+
+    def _proxy_exec(self, server_chan, command):
+        """Proxy an exec channel: run `command` on the container and stream output."""
+        client = None
+        try:
+            logger.info(f"Connecting to container {self.headscale_ip} for session {self.session_id} (exec: {command!r})")
+            client = session_client.connect(self.session_id, self.headscale_ip)
+            client_chan = client.get_transport().open_session()
+            client_chan.exec_command(command)
+
+            self._proxy_loop(server_chan, client_chan)
+
+            # Propagate exit status back to the client.
+            try:
+                deadline = time.time() + 10
+                while not client_chan.exit_status_ready() and time.time() < deadline:
+                    time.sleep(0.1)
+                if client_chan.exit_status_ready():
+                    server_chan.send_exit_status(client_chan.recv_exit_status())
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Exec proxy error: {e}")
+            traceback.print_exc()
+        finally:
+            if client:
+                session_client.close(client)
+            server_chan.close()
+
+    def _proxy_subsystem(self, server_chan, name):
+        """Proxy a subsystem channel (e.g. SFTP) between client and container."""
+        client = None
+        try:
+            logger.info(f"Connecting to container {self.headscale_ip} for session {self.session_id} (subsystem: {name})")
+            client = session_client.connect(self.session_id, self.headscale_ip)
+            client_chan = client.get_transport().open_session()
+            client_chan.invoke_subsystem(name)
+
+            self._proxy_loop(server_chan, client_chan)
+        except Exception as e:
+            logger.error(f"Subsystem proxy error ({name}): {e}")
             traceback.print_exc()
         finally:
             if client:
@@ -148,6 +222,46 @@ def start_ssh_server():
     sock.listen(100)
     logger.info(f"SSH Gateway listening on port {config.GATEWAY_SSH_PORT}")
 
+    def _handle_channel(server, chan, addr):
+        """Handle a single channel after auth and accept."""
+        try:
+            if not server.event.wait(timeout=15):
+                logger.warning("No request from %s on channel; closing", addr)
+                chan.close()
+                return
+
+            if not server.session_id or not server.headscale_ip:
+                logger.warning("No active session for %s; closing", addr)
+                chan.close()
+                return
+
+            # Wait briefly for per-channel request type to be set (may have been
+            # set by a *different* channel's request that fired the shared event).
+            req = getattr(chan, "gateway_request", None)
+            deadline = time.time() + 5
+            while req is None and time.time() < deadline:
+                time.sleep(0.1)
+                req = getattr(chan, "gateway_request", None)
+
+            if req is None:
+                logger.warning("No channel request type determined for %s; closing", addr)
+                chan.close()
+                return
+
+            kind, payload = req
+            if kind == "exec":
+                server._proxy_exec(chan, payload)
+            elif kind == "subsystem":
+                server._proxy_subsystem(chan, payload)
+            else:  # "shell" or fallback
+                server._proxy_shell(chan)
+        except Exception as e:
+            logger.error("Channel handling error from %s: %s", addr, e)
+            try:
+                chan.close()
+            except Exception:
+                pass
+
     def _handle_connection(client_sock, addr):
         try:
             t = paramiko.Transport(client_sock)
@@ -159,27 +273,25 @@ def start_ssh_server():
                 logger.warning("SSH negotiation failed from %s", addr)
                 return
 
-            # Claim the session channel the client opens after auth.
-            chan = t.accept(30)
-            if chan is None:
-                logger.warning("No channel opened from %s", addr)
-                t.close()
-                return
+            # Accept channels in a loop — VS Code multiplexes exec, SFTP,
+            # and shell channels over a single transport.
+            while t.is_active():
+                try:
+                    chan = t.accept(30)
+                except Exception:
+                    break
+                if chan is None:
+                    # Timeout — check if transport is still alive.
+                    if not t.is_active():
+                        break
+                    continue
 
-            # Wait until the client actually requests a shell (sets the event).
-            if not server.event.wait(timeout=15):
-                logger.warning("No shell requested from %s; closing", addr)
-                chan.close()
-                t.close()
-                return
-
-            if not server.session_id or not server.headscale_ip:
-                logger.warning("No active session for %s; closing", addr)
-                chan.close()
-                t.close()
-                return
-
-            server._proxy_shell(chan)
+                logger.info(f"Channel opened from {addr}: {chan.chanid}")
+                threading.Thread(
+                    target=_handle_channel,
+                    args=(server, chan, addr),
+                    daemon=True,
+                ).start()
         except Exception as e:
             logger.error("Connection handling error from %s: %s", addr, e)
         finally:
