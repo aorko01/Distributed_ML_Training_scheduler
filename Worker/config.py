@@ -84,6 +84,13 @@ INTERACTIVE_IP_TIMEOUT = int(os.getenv("INTERACTIVE_IP_TIMEOUT", "30"))
 # per session. See AccessContainer/Dockerfile.
 INTERACTIVE_ACCESS_IMAGE = os.getenv("INTERACTIVE_ACCESS_IMAGE", "aorko123/access-sshd:latest")
 
+# Hard cap on interactive session lifetime (seconds). After this the worker
+# tears the session down and reports STOPPED. 0 disables the cap.
+INTERACTIVE_SESSION_TIMEOUT = int(os.getenv("INTERACTIVE_SESSION_TIMEOUT", "3600"))
+# If no SSH connection is established within this many seconds of the session
+# starting, the worker tears it down and reports STOPPED. 0 disables.
+INTERACTIVE_NO_CONNECT_TIMEOUT = int(os.getenv("INTERACTIVE_NO_CONNECT_TIMEOUT", "600"))
+
 # File Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKER_ID_FILE = os.path.join(BASE_DIR, "worker_id.txt")

@@ -18,6 +18,9 @@ IP_POLL_INTERVAL = 1.0
 # Shared access image (sshd + tailscaled) used by all interactive sessions.
 ACCESS_IMAGE = config.INTERACTIVE_ACCESS_IMAGE
 
+SESSION_TIMEOUT = float(config.INTERACTIVE_SESSION_TIMEOUT)
+NO_CONNECT_TIMEOUT = float(config.INTERACTIVE_NO_CONNECT_TIMEOUT)
+
 # session_id -> dict of container info (env + access) for monitoring / stop.
 _active_containers: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -174,6 +177,25 @@ def _wait_for_tailscale_ip(session_id: str) -> str | None:
     return None
 
 
+def _has_active_connection(session_id: str) -> bool:
+    """Return True if the access container currently has an active sshd session."""
+    import subprocess
+
+    access_name = _container_name(session_id, "access")
+    try:
+        result = subprocess.run(
+            ["docker", "exec", access_name, "sh", "-c",
+             'grep -la "sshd:" /proc/[0-9]*/cmdline 2>/dev/null | wc -l'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            count = result.stdout.strip()
+            return count.isdigit() and int(count) > 0
+    except Exception:
+        pass
+    return False
+
+
 def _monitor_container(api, session_id: str):
     """Report 'stopped' once either the env or access container exits."""
     import subprocess
@@ -185,6 +207,10 @@ def _monitor_container(api, session_id: str):
 
     env_name = info["env_name"]
     access_name = info["access_name"]
+
+    started_at = time.time()
+    ever_connected = False
+    stop_reason = "container_exit"
 
     while True:
         env_state = subprocess.run(
@@ -198,12 +224,22 @@ def _monitor_container(api, session_id: str):
         env_running = env_state.returncode == 0 and env_state.stdout.strip() == "running"
         access_running = access_state.returncode == 0 and access_state.stdout.strip() == "running"
         if not env_running or not access_running:
+            stop_reason = "container_exit"
+            break
+        if _has_active_connection(session_id):
+            ever_connected = True
+        elapsed = time.time() - started_at
+        if SESSION_TIMEOUT > 0 and elapsed >= SESSION_TIMEOUT:
+            stop_reason = "session_timeout"
+            break
+        if NO_CONNECT_TIMEOUT > 0 and not ever_connected and elapsed >= NO_CONNECT_TIMEOUT:
+            stop_reason = "no_connect_timeout"
             break
         time.sleep(5)
 
     with _lock:
         _active_containers.pop(session_id, None)
-    logger.info("Interactive containers for session %s exited; reporting stopped.", session_id)
+    logger.info("Interactive containers for session %s stopped (%s); reporting stopped.", session_id, stop_reason)
     _stop_container(session_id)
     try:
         api.report_interactive_ip(session_id, None, "STOPPED")
