@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 interface LogLine {
   type: 'info' | 'warn' | 'error' | 'success';
@@ -14,7 +14,6 @@ interface LogTerminalProps {
 const LogTerminal: React.FC<LogTerminalProps> = ({ logs, jobId }) => {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = React.useState(true);
-  const [isDownloading, setIsDownloading] = useState(false);
 
   useEffect(() => {
     if (bodyRef.current && autoScroll) {
@@ -45,47 +44,6 @@ const LogTerminal: React.FC<LogTerminalProps> = ({ logs, jobId }) => {
     return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
   };
 
-  const handleDownload = async () => {
-    if (!jobId || isDownloading) return;
-
-    try {
-      setIsDownloading(true);
-
-      const token = localStorage.getItem('auth_token');
-      const response = await fetch(`${API_BASE_URL}/jobs/download_output`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token && { 'Authorization': `Bearer ${token}` }),
-        },
-        body: JSON.stringify({ job_id: jobId }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Download failed:', errorText);
-        return;
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const filename = `job-${jobId}-output.zip`;
-
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-
-    } catch (error) {
-      console.error('Error downloading output:', error);
-    } finally {
-      setIsDownloading(false);
-    }
-  };
-
   return (
     <div className="terminal-window">
       <div className="terminal-header">
@@ -95,16 +53,6 @@ const LogTerminal: React.FC<LogTerminalProps> = ({ logs, jobId }) => {
           <div className="mac-btn maximize"></div>
         </div>
         <div className="terminal-title">bash - job {jobId}</div>
-        <div className="terminal-actions">
-          <button
-            onClick={handleDownload}
-            disabled={isDownloading}
-            className="download-button"
-            title="Download Output"
-          >
-            {isDownloading ? 'Downloading...' : 'Download Output'}
-          </button>
-        </div>
       </div>
       <div className="terminal-body" ref={bodyRef} onScroll={handleScroll}>
         {logs.map((log, index) => (
@@ -120,7 +68,5 @@ const LogTerminal: React.FC<LogTerminalProps> = ({ logs, jobId }) => {
     </div>
   );
 };
-
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 export default LogTerminal;
