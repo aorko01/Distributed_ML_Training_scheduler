@@ -1,7 +1,7 @@
 import threading
 from config import (
     HEARTBEAT_INTERVAL, JOB_POLL_INTERVAL, LOG_PUSH_INTERVAL,
-    LOG_UPLOAD_INTERVAL,
+    LOG_UPLOAD_INTERVAL, CONTAINER_HEALTH_INTERVAL,
 )
 
 _lock = threading.Lock()
@@ -10,6 +10,7 @@ _values = {
     "job_poll_interval": float(JOB_POLL_INTERVAL),
     "log_push_interval": float(LOG_PUSH_INTERVAL),
     "log_upload_interval": float(LOG_UPLOAD_INTERVAL),
+    "container_health_interval": float(CONTAINER_HEALTH_INTERVAL),
 }
 
 

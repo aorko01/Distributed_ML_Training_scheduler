@@ -69,6 +69,7 @@ DOCKER_HUB_USERNAME = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
 CONTAINER_OUTPUT_MOUNT = os.getenv("CONTAINER_OUTPUT_MOUNT", "/output")
 LOG_UPLOAD_INTERVAL = int(os.getenv("LOG_UPLOAD_INTERVAL", "60"))
 LOG_PUSH_INTERVAL = float(os.getenv("LOG_PUSH_INTERVAL", "1.0"))
+CONTAINER_HEALTH_INTERVAL = int(os.getenv("CONTAINER_HEALTH_INTERVAL", "30"))
 
 # Run training/estimation containers as the worker's own UID/GID so files
 # written into the output mount are owned by the worker: readable for upload

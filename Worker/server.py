@@ -101,6 +101,7 @@ class ConfigState(BaseModel):
     jobPollIntervalSec: float
     logPushIntervalSec: float
     logUploadIntervalSec: float
+    containerHealthIntervalSec: float
 
 
 class Status(BaseModel):
@@ -212,6 +213,7 @@ def get_config():
         jobPollIntervalSec=runtime_config.get("job_poll_interval"),
         logPushIntervalSec=runtime_config.get("log_push_interval"),
         logUploadIntervalSec=runtime_config.get("log_upload_interval"),
+        containerHealthIntervalSec=runtime_config.get("container_health_interval"),
     )
 
 
@@ -221,6 +223,7 @@ class ConfigUpdate(BaseModel):
     jobPollIntervalSec: float | None = None
     logPushIntervalSec: float | None = None
     logUploadIntervalSec: float | None = None
+    containerHealthIntervalSec: float | None = None
 
 
 @app.put("/api/config", response_model=ConfigState)
@@ -234,6 +237,8 @@ def update_config(update: ConfigUpdate):
         pairs["log_push_interval"] = update.logPushIntervalSec
     if update.logUploadIntervalSec is not None:
         pairs["log_upload_interval"] = update.logUploadIntervalSec
+    if update.containerHealthIntervalSec is not None:
+        pairs["container_health_interval"] = update.containerHealthIntervalSec
     runtime_config.set_many(pairs)
 
     if update.schedulerUrl is not None and update.schedulerUrl.strip() != config_module.get_scheduler_url():

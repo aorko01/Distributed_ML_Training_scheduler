@@ -10,6 +10,7 @@ from telemetry import record_heartbeat, record_event, is_paused
 import runtime_config
 import server
 import interactive_handler
+import container_health
 
 logger = logging.getLogger("worker")
 
@@ -42,7 +43,6 @@ def _handle_scheduler_commands(api: SchedulerAPI, response: dict):
     requests for interactive sessions are delivered here. Delivery repeats
     until the worker reports the container stopped via report_ip; stopping is
     idempotent."""
-    import interactive_handler
 
     for session_id in response.get("stop_sessions", []):
         logger.info("Scheduler requested stop for interactive session %s", session_id)
@@ -103,6 +103,14 @@ def main():
     )
     heartbeat_thread.start()
     job_thread.start()
+
+    container_health_thread = threading.Thread(
+        target=container_health.container_health_loop,
+        args=(stop_event,),
+        name="container-health",
+        daemon=True,
+    )
+    container_health_thread.start()
 
     api_host = os.getenv("WORKER_API_HOST", "127.0.0.1")
     api_port = int(os.getenv("WORKER_API_PORT", "8600"))
