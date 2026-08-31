@@ -15,7 +15,7 @@ services:
     container_name: app-redis
     restart: always
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
 
   api:
     build: .
@@ -29,14 +29,14 @@ services:
       - ./app:/app/app
       - ./uploads:/app/uploads
       - ./output:/app/output
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port ${API_PORT:-8000} --reload
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-app}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-secret-key-change-in-production}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_PORT: ${REDIS_PORT:-6379}
       OBJECT_STORE_URL: ${OBJECT_STORE_URL:-http://localhost:8010}
       OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-uploads}
       OBJECT_OUTPUT_BUCKET: ${OBJECT_OUTPUT_BUCKET:-outputs}
@@ -68,7 +68,7 @@ services:
     environment:
       AUTH_TOKEN: ${HEADSCALE_MGMT_AUTH_TOKEN:-change-me}
       HEADSCALE_USER: ${HEADSCALE_USER:-sandbox}
-      PREAUTH_KEY_EXPIRY: "3600"
+      PREAUTH_KEY_EXPIRY: ${PREAUTH_KEY_EXPIRY:-3600}
       # Headscale control plane reached over its public HTTPS API
       HEADSCALE_API_URL: ${HEADSCALE_API_URL:-https://headscale.zulfiker.xyz}
       HEADSCALE_API_KEY: ${HEADSCALE_API_KEY:-}
@@ -113,7 +113,7 @@ services:
     depends_on:
       - db
     ports:
-      - "127.0.0.1:5050:80"
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?set in .env}
