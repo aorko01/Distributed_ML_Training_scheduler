@@ -51,6 +51,7 @@ services:
       # (already open in the OCI firewall) via the sslh multiplexer, which
       # forwards it to 127.0.0.1:2222. No OCI NSG / security-list change needed.
       GATEWAY_PUBLIC_SSH_PORT: ${GATEWAY_PUBLIC_SSH_PORT:-443}
+      CORS_ORIGINS: ${CORS_ORIGINS}
 
   # ---------------------------------------------------------------
   # Headscale management microservice: wraps pre-auth key create/revoke.
