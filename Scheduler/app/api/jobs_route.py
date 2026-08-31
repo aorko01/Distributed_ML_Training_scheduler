@@ -410,6 +410,30 @@ def get_output_by_id(request: JobIDRequest, db: Session = Depends(get_db)):
         return {"error": str(e)}
 
 
+@router.post("/download_output")
+def download_output(request: JobIDRequest, db: Session = Depends(get_db)):
+    try:
+        job_id = request.job_id
+
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return {"error": f"Job not found for job_id {job_id}"}
+
+        if not job.object_key:
+            return {"error": f"No object key found for job_id {job_id}"}
+
+        from app.utils.file_utils import download_from_object_store
+        result = download_from_object_store(job_id, job.object_key)
+
+        if "error" in result:
+            return result
+
+        return {"message": "Output downloaded successfully", "file_path": result.get("file_path")}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.get("/queue_length")
 def get_queue_length(
     current_user: User = Depends(get_current_active_user),

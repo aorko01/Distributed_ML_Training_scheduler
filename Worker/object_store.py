@@ -125,13 +125,14 @@ class ObjectStore:
 
     def download(self, object_key: str) -> bytes | None:
         try:
-            resp = requests.get(
-                f"{self.base_url}/objects/{self.bucket}/{object_key}", timeout=30
+            from config import OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET
+            response = requests.get(
+                f"{OBJECT_STORE_URL}/objects/{OBJECT_OUTPUT_BUCKET}/{object_key}", timeout=30
             )
-            if resp.status_code == 404:
+            if response.status_code == 404:
                 return None
-            resp.raise_for_status()
-            return resp.content
+            response.raise_for_status()
+            return response.content
         except Exception as e:
             logger.warning("Failed to download %s: %s", object_key, e)
             return None

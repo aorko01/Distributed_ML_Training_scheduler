@@ -79,7 +79,46 @@ def save_to_object_store(
 
     stored_object_key = upload_response.json().get("object_key", object_key)
 
-    return {
-        "object_key": stored_object_key,
-        "files": matched_files,
-    }
+    def download_from_object_store(job_id: str, object_key: str) -> dict:
+    import shutil
+
+    try:
+        from config import OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET
+
+        response = requests.post(
+            f"{OBJECT_STORE_URL}/objects/presign_download",
+            data={
+                "bucket": OBJECT_OUTPUT_BUCKET,
+                "object_key": object_key,
+            },
+            timeout=600,
+        )
+
+        if response.status_code == 404:
+            return {"error": f"Object not found: {object_key}"}
+
+        response.raise_for_status()
+
+        presigned_url = response.json().get("url")
+        if not presigned_url:
+            return {"error": f"No presigned URL returned for {object_key}"}
+
+        download_response = requests.get(presigned_url, timeout=3600)
+        download_response.raise_for_status()
+
+        base_dir = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+
+        output_dir = os.path.join(base_dir, "output")
+        os.makedirs(output_dir, exist_ok=True)
+
+        file_path = os.path.join(output_dir, f"{job_id}_output.zip")
+
+        with open(file_path, "wb") as f:
+            f.write(download_response.content)
+
+        return {"message": "Success", "file_path": file_path}
+
+    except Exception as e:
+        return {"error": str(e)}
