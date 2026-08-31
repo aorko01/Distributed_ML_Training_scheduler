@@ -57,10 +57,10 @@ const Dashboard: React.FC = () => {
       case 'Retrying': return <span className="badge badge-retrying">Retrying</span>;
       case 'Completed': return <span className="badge badge-success">Completed</span>;
       case 'Failed': return <span className="badge badge-failed">Failed</span>;
-      case 'Interactive Ready': return <span className="badge badge-interactive-ready">Interactive Ready</span>;
-      case 'Provisioning': return <span className="badge badge-provisioning">Provisioning</span>;
-      case 'Interactive Running': return <span className="badge badge-interactive-running">Interactive Running</span>;
-      case 'Stopped': return <span className="badge badge-stopped">Stopped</span>;
+      case 'Interactive Ready': return <span className="badge badge-building">Interactive Ready</span>;
+      case 'Provisioning': return <span className="badge badge-building">Provisioning</span>;
+      case 'Interactive Running': return <span className="badge badge-running">Interactive Running</span>;
+      case 'Stopped': return <span className="badge badge-failed">Stopped</span>;
       default: return null;
     }
   };
