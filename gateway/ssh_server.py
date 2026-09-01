@@ -89,7 +89,7 @@ class GatewayServer(paramiko.ServerInterface):
         return True
 
     def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
-        channel.gateway_pty = (width, height)
+        channel.gateway_pty = (term, width, height, modes)
         return True
 
     def check_channel_window_change_request(self, channel, width, height, pixelwidth, pixelheight):
@@ -135,7 +135,7 @@ class GatewayServer(paramiko.ServerInterface):
                 except Exception as e:
                     logger.warning(f"Error resizing PTY: {e}")
 
-            if server_chan in r:
+            if server_chan in r or server_chan.recv_ready():
                 try:
                     data = server_chan.recv(4096)
                     if len(data) == 0:
@@ -148,7 +148,7 @@ class GatewayServer(paramiko.ServerInterface):
                     logger.debug("Error proxying server->client: %s", e)
                     break
 
-            if client_chan in r:
+            if client_chan in r or client_chan.recv_ready():
                 try:
                     data = client_chan.recv(4096)
                     if len(data) == 0:
@@ -166,19 +166,45 @@ class GatewayServer(paramiko.ServerInterface):
                 break
 
     def _proxy_shell(self, server_chan):
+        """Proxy a shell channel between the client and the container.
+
+        When the client requests a PTY (interactive terminal), we allocate a
+        PTY on the container side too.  When VS Code opens a shell *without*
+        a PTY (e.g. for the install script), we skip PTY allocation so the
+        container shell runs non-interactively and doesn't echo piped input
+        back to the client.
+        """
         client = None
         try:
             logger.info(f"Connecting to container {self.headscale_ip} for session {self.session_id}")
             client = session_client.connect(self.session_id, self.headscale_ip)
-            client_chan = client.invoke_shell()
-
             pty_info = getattr(server_chan, "gateway_pty", None)
+
             if pty_info:
-                logger.info("Applying PTY size %s to container shell", pty_info)
-                client_chan.resize_pty(*pty_info)
+                # Interactive terminal: allocate PTY on the container side.
+                term, width, height, _modes = pty_info
+                client_chan = client.get_transport().open_session()
+                client_chan.get_pty(term=term, width=width, height=height)
+                client_chan.invoke_shell()
+                logger.info("Container shell with PTY: term=%s %sx%s", term, width, height)
+            else:
+                # Non-interactive shell (VS Code install script, exec-like usage).
+                # No PTY → piped input is not echoed back.
+                client_chan = client.get_transport().open_session()
+                client_chan.invoke_shell()
 
             self._proxy_loop(server_chan, client_chan)
             logger.info("Shell proxy ended for session %s", self.session_id)
+
+            # Propagate exit status back to the client.
+            try:
+                deadline = time.time() + 10
+                while not client_chan.exit_status_ready() and time.time() < deadline:
+                    time.sleep(0.1)
+                if client_chan.exit_status_ready():
+                    server_chan.send_exit_status(client_chan.recv_exit_status())
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"Proxy error: {e}")
             traceback.print_exc()
