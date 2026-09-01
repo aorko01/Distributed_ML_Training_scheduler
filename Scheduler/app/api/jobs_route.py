@@ -1,7 +1,8 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from app.db.database import SessionLocal
@@ -432,6 +433,63 @@ def download_output(request: JobIDRequest, db: Session = Depends(get_db)):
 
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.get("/{job_id}/download_output")
+def download_job_output_stream(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Stream job output directly from the object store to the client."""
+    try:
+        job = db.query(Job).filter(Job.id == job_id, Job.user_id == current_user.user_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        if not job.object_key:
+            raise HTTPException(status_code=404, detail="No output available for this job")
+
+        import requests as http_requests
+        from config import OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET
+
+        presign_response = http_requests.post(
+            f"{OBJECT_STORE_URL}/objects/presign_download",
+            data={
+                "bucket": OBJECT_OUTPUT_BUCKET,
+                "object_key": job.object_key,
+            },
+            timeout=30,
+        )
+
+        if presign_response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Output not found in object store")
+
+        presign_response.raise_for_status()
+        presigned_url = presign_response.json().get("url")
+        if not presigned_url:
+            raise HTTPException(status_code=500, detail="Failed to get download URL")
+
+        def stream_file():
+            with http_requests.get(presigned_url, stream=True, timeout=3600) as resp:
+                resp.raise_for_status()
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        yield chunk
+
+        job_name = (job.name or job_id).replace(" ", "_").lower()
+        return StreamingResponse(
+            stream_file(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{job_name}-output.zip"'
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/queue_length")

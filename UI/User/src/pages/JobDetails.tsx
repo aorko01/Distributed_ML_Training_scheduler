@@ -4,164 +4,13 @@ import {
   fetchJobById,
   fetchJobLogs,
   streamJobLogs,
+  downloadJobOutput,
   type Job,
   type JobStatus,
   type LogLine,
 } from "../services/jobs";
 import LogTerminal from "../components/LogTerminal";
 import { ArrowLeft, Download, Loader2 } from "lucide-react";
-
-interface ZipEntry {
-  path: string;
-  content: string;
-}
-
-const buildDummyOutputEntries = (job: Job): ZipEntry[] => [
-  {
-    path: "submitted/train.py",
-    content: `# Dummy submitted training script for ${job.name}\nprint('Starting training...')\n`,
-  },
-  {
-    path: "submitted/config.json",
-    content: JSON.stringify(
-      {
-        jobId: job.id,
-        model: job.name,
-        pytorchVersion: job.pytorchVersion,
-        cudaVersion: job.cudaVersion,
-      },
-      null,
-      2,
-    ),
-  },
-  {
-    path: "generated/metrics.json",
-    content: JSON.stringify(
-      {
-        status: job.status,
-        accuracy: 0.91,
-        loss: 0.23,
-        note: "Dummy training output generated for the UI preview.",
-      },
-      null,
-      2,
-    ),
-  },
-];
-
-const crc32Table = (() => {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i += 1) {
-    let crc = i;
-    for (let j = 0; j < 8; j += 1) {
-      crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
-    }
-    table[i] = crc >>> 0;
-  }
-  return table;
-})();
-
-const utf8Bytes = new TextEncoder();
-
-const crc32 = (bytes: Uint8Array): number => {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc = crc32Table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-};
-
-const writeUint16LE = (view: DataView, offset: number, value: number) => {
-  view.setUint16(offset, value, true);
-};
-
-const writeUint32LE = (view: DataView, offset: number, value: number) => {
-  view.setUint32(offset, value, true);
-};
-
-const toArrayBuffer = (chunk: Uint8Array) => {
-  const buffer = new ArrayBuffer(chunk.byteLength);
-  new Uint8Array(buffer).set(chunk);
-  return buffer;
-};
-
-const createZipBlob = (entries: ZipEntry[]) => {
-  const localFiles: Uint8Array[] = [];
-  const centralDirectory: Uint8Array[] = [];
-  let offset = 0;
-
-  entries.forEach((entry) => {
-    const nameBytes = utf8Bytes.encode(entry.path);
-    const dataBytes = utf8Bytes.encode(entry.content);
-    const checksum = crc32(dataBytes);
-
-    const localHeader = new Uint8Array(
-      30 + nameBytes.length + dataBytes.length,
-    );
-    const localView = new DataView(localHeader.buffer);
-    writeUint32LE(localView, 0, 0x04034b50);
-    writeUint16LE(localView, 4, 20);
-    writeUint16LE(localView, 6, 0);
-    writeUint16LE(localView, 8, 0);
-    writeUint16LE(localView, 10, 0);
-    writeUint16LE(localView, 12, 0);
-    writeUint32LE(localView, 14, checksum);
-    writeUint32LE(localView, 18, dataBytes.length);
-    writeUint32LE(localView, 22, dataBytes.length);
-    writeUint16LE(localView, 26, nameBytes.length);
-    writeUint16LE(localView, 28, 0);
-    localHeader.set(nameBytes, 30);
-    localHeader.set(dataBytes, 30 + nameBytes.length);
-    localFiles.push(localHeader);
-
-    const centralHeader = new Uint8Array(46 + nameBytes.length);
-    const centralView = new DataView(centralHeader.buffer);
-    writeUint32LE(centralView, 0, 0x02014b50);
-    writeUint16LE(centralView, 4, 20);
-    writeUint16LE(centralView, 6, 20);
-    writeUint16LE(centralView, 8, 0);
-    writeUint16LE(centralView, 10, 0);
-    writeUint16LE(centralView, 12, 0);
-    writeUint16LE(centralView, 14, 0);
-    writeUint32LE(centralView, 16, checksum);
-    writeUint32LE(centralView, 20, dataBytes.length);
-    writeUint32LE(centralView, 24, dataBytes.length);
-    writeUint16LE(centralView, 28, nameBytes.length);
-    writeUint16LE(centralView, 30, 0);
-    writeUint16LE(centralView, 32, 0);
-    writeUint16LE(centralView, 34, 0);
-    writeUint16LE(centralView, 36, 0);
-    writeUint32LE(centralView, 38, 0);
-    writeUint32LE(centralView, 42, offset);
-    centralHeader.set(nameBytes, 46);
-    centralDirectory.push(centralHeader);
-
-    offset += localHeader.length;
-  });
-
-  const centralDirectorySize = centralDirectory.reduce(
-    (total, chunk) => total + chunk.length,
-    0,
-  );
-  const endRecord = new Uint8Array(22);
-  const endView = new DataView(endRecord.buffer);
-  writeUint32LE(endView, 0, 0x06054b50);
-  writeUint16LE(endView, 4, 0);
-  writeUint16LE(endView, 6, 0);
-  writeUint16LE(endView, 8, entries.length);
-  writeUint16LE(endView, 10, entries.length);
-  writeUint32LE(endView, 12, centralDirectorySize);
-  writeUint32LE(endView, 16, offset);
-  writeUint16LE(endView, 20, 0);
-
-  const blobParts: BlobPart[] = [
-    ...localFiles.map(toArrayBuffer),
-    ...centralDirectory.map(toArrayBuffer),
-    toArrayBuffer(endRecord),
-  ];
-
-  return new Blob(blobParts, { type: "application/zip" });
-};
 
 const JobDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -171,18 +20,20 @@ const JobDetails: React.FC = () => {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [liveStatus, setLiveStatus] = useState<JobStatus | undefined>(undefined);
 
-  const handleDownloadOutput = () => {
-    if (!job) return;
+  const [downloading, setDownloading] = useState(false);
 
-    const zipBlob = createZipBlob(buildDummyOutputEntries(job));
-    const downloadUrl = URL.createObjectURL(zipBlob);
-    const link = document.createElement("a");
-    link.href = downloadUrl;
-    link.download = `${job.name.replace(/\s+/g, "_").toLowerCase()}-output.zip`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(downloadUrl);
+  const handleDownloadOutput = async () => {
+    if (!job || downloading) return;
+
+    setDownloading(true);
+    try {
+      await downloadJobOutput(job.id, job.name);
+    } catch (error) {
+      console.error("Failed to download output:", error);
+      alert("Failed to download output. Please try again.");
+    } finally {
+      setDownloading(false);
+    }
   };
 
   useEffect(() => {
@@ -312,9 +163,10 @@ const JobDetails: React.FC = () => {
             gap: "0.5rem",
           }}
           onClick={handleDownloadOutput}
+          disabled={downloading}
         >
-          <Download size={18} />
-          Download Output
+          {downloading ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+          {downloading ? "Downloading..." : "Download Output"}
         </button>
       </div>
 

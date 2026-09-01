@@ -388,6 +388,34 @@ const classifyLogLine = (text: string): LogLine['type'] => {
   return 'info';
 };
 
+export const downloadJobOutput = async (jobId: string, jobName: string): Promise<void> => {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_BASE_URL}/jobs/${jobId}/download_output`, {
+    method: 'GET',
+    headers,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Download failed with status ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+  link.download = `${jobName.replace(/\s+/g, '_').toLowerCase()}-output.zip`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(downloadUrl);
+};
+
 export const fetchJobLogs = async (id: string): Promise<LogLine[]> => {
   try {
     const data = await api.get<{ content?: string } | { error: string }>(
