@@ -5,12 +5,31 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      - DOCKER_BUILD_ATTEMPTS=${DOCKER_BUILD_ATTEMPTS:-3}
+      - DOCKER_BUILD_CHUNK_SIZE=${DOCKER_BUILD_CHUNK_SIZE:-25}
+      - DOCKER_BUILD_RETRY_BACKOFF=${DOCKER_BUILD_RETRY_BACKOFF:-10}
     volumes:
       # Mount the Docker socket so we can build images from inside the container
       - /var/run/docker.sock:/var/run/docker.sock
       # Persist the processed-jobs and base-images tracker across restarts
       - builder-data:/data
-      - ./debug_jobs:/app/debug_jobs   
+      - ./debug_jobs:/app/debug_jobs
+    tmpfs:
+      # Stage build dirs and pip caches in tmpfs to keep containerd overlay clean.
+      - /tmp
 
 volumes:
   builder-data:
+
+# ─── Host-side daemon notes ──────────────────────────────────────────
+# The containerd "failed to export layer: CreateDiff ... lstat" error lives
+# on the HOST Docker daemon, not inside this container.  If retries + chunked
+# pip installs do not fully resolve it, the operator should:
+#   1. Ensure ≥20% free disk under /var/lib/docker (df -h /var/lib/docker).
+#   2. Raise nofile ulimit for dockerd (systemd: LimitNOFILE=infinity or
+#      set "default-ulimits" in /etc/docker/daemon.json).
+#   3. Keep dockerd, containerd, and the kernel up to date.
+#   4. As a last resort, disable the containerd image store:
+#      {"features":{"containerd-snapshotter":false}} in daemon.json.
+# ──────────────────────────────────────────────────────────────────────

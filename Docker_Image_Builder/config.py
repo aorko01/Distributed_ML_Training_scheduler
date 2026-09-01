@@ -31,6 +31,12 @@ DEBUG_LOCAL_DIR = os.environ.get("DEBUG_LOCAL_DIR", "./debug_jobs")
 # Build settings
 DOCKER_BUILD_NO_CACHE = os.environ.get("DOCKER_BUILD_NO_CACHE", "false").strip().lower() in ("1", "true", "yes", "on")
 
+# Build resilience (containerd "failed to export layer: CreateDiff ... lstat"
+# failures on very large pip layers). Backwards-compatible defaults.
+DOCKER_BUILD_ATTEMPTS = max(1, int(os.environ.get("DOCKER_BUILD_ATTEMPTS", "3")))
+DOCKER_BUILD_CHUNK_SIZE = max(1, int(os.environ.get("DOCKER_BUILD_CHUNK_SIZE", "25")))
+DOCKER_BUILD_RETRY_BACKOFF = max(0, int(os.environ.get("DOCKER_BUILD_RETRY_BACKOFF", "10")))
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,

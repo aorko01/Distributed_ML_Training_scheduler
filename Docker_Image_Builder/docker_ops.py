@@ -11,6 +11,7 @@ from config import (
     DEBUG_SAVE_LOCAL, DEBUG_LOCAL_DIR, logger,
     OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET, OBJECT_STORE_BUCKET,
     DOCKER_BUILD_NO_CACHE,
+    DOCKER_BUILD_ATTEMPTS, DOCKER_BUILD_CHUNK_SIZE, DOCKER_BUILD_RETRY_BACKOFF,
 )
 from database import update_base_image_usage, get_old_base_images, remove_base_image_record
 from api import send_log_lines
@@ -22,7 +23,65 @@ def docker_login(client: docker.DockerClient):
     else:
         logger.info("No Docker Hub password provided, assuming already logged in.")
 
-def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
+def _split_requirements(build_dir: str, project_dir: str, chunk_size: int) -> list[str]:
+    """Split a requirements.txt into chunk files for layered pip installs.
+
+    Returns a list of filenames (relative to build_dir) to install in order.
+    If the file doesn't exist, contains pip options/includes, or fits in one
+    chunk, returns ["requirements.txt"] (single-layer fallback).
+    """
+    req_path = os.path.join(project_dir, "requirements.txt")
+    if not os.path.exists(req_path):
+        return []
+
+    with open(req_path, "r") as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    if not lines:
+        return []
+
+    # If any line looks like a pip option, reference, or include, do not split
+    for line in lines:
+        if line.startswith("-") or "-r " in line or "-c " in line or line.startswith("--"):
+            return ["requirements.txt"]
+
+    if len(lines) <= chunk_size:
+        return ["requirements.txt"]
+
+    chunks = []
+    for i in range(0, len(lines), chunk_size):
+        chunk_lines = lines[i:i + chunk_size]
+        chunk_name = f"requirements-part-{i // chunk_size + 1:03d}.txt"
+        chunk_path = os.path.join(build_dir, chunk_name)
+        with open(chunk_path, "w") as f:
+            f.write("\n".join(chunk_lines) + "\n")
+        chunks.append(chunk_name)
+
+    return chunks
+
+
+def _write_dockerignore(build_dir: str) -> None:
+    """Write a conservative .dockerignore into the build context directory."""
+    entries = [
+        ".git", ".gitignore", "__pycache__", "*.pyc", "*.pyo",
+        ".pytest_cache", ".mypy_cache", ".DS_Store", ".idea", ".vscode",
+        ".venv", "venv", "*.egg-info",
+    ]
+    with open(os.path.join(build_dir, ".dockerignore"), "w") as f:
+        f.write("\n".join(entries) + "\n")
+
+
+def _is_containerd_export_error(text: str) -> bool:
+    """Return True if the error text looks like a containerd layer-export failure."""
+    lowered = text.lower()
+    return (
+        "failed to export layer" in lowered
+        or "creatediff" in lowered
+        or "mount callback failed" in lowered
+        or (("lstat" in lowered) and ("no such file or directory" in lowered or "snapshot" in lowered))
+    )
+
+def generate_dockerfile(project_dir: str, command: str, base_image: str, requirement_files: list[str] | None = None) -> str:
     has_requirements = os.path.exists(os.path.join(project_dir, "requirements.txt"))
     lines = [
         f"FROM {base_image}", "",
@@ -31,16 +90,26 @@ def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
         "RUN find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true",
         "",
         "WORKDIR /workspace", "",
-        "COPY . /workspace/", ""
     ]
-    if has_requirements:
-        lines += ["RUN pip install --no-cache-dir -r requirements.txt", ""]
-    
+
+    if requirement_files is not None and requirement_files:
+        # Copy only requirement files first for better layer caching
+        copy_files = " ".join(requirement_files)
+        lines += [f"COPY {copy_files} /workspace/", ""]
+        for rf in requirement_files:
+            lines += [f"RUN pip install --no-cache-dir -r {rf}", ""]
+        lines += ["COPY . /workspace/", ""]
+    elif has_requirements:
+        lines += ["COPY . /workspace/", "",
+                  "RUN pip install --no-cache-dir -r requirements.txt", ""]
+    else:
+        lines += ["COPY . /workspace/", ""]
+
     if command:
         lines += [f"CMD {command}"]
     else:
         lines += ['CMD ["python"]']
-    
+
     return "\n".join(lines)
 
 
@@ -76,7 +145,7 @@ def resolve_interactive_base_image(env_config: dict | None) -> str:
     return f"python:{python_version}-slim"
 
 
-def generate_env_dockerfile(base_image: str, with_project: bool = False) -> str:
+def generate_env_dockerfile(base_image: str, with_project: bool = False, requirement_files: list[str] | None = None) -> str:
     """Generate a Dockerfile for a clean interactive environment image.
 
     This image contains NO sshd and NO Tailscale/Headscale — it is a pure
@@ -104,26 +173,29 @@ def generate_env_dockerfile(base_image: str, with_project: bool = False) -> str:
     ]
 
     if with_project:
-        lines += [
-            "WORKDIR /workspace",
-            "",
-            "COPY . /workspace/",
-            "",
-            "RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi",
-            "",
-        ]
+        lines += ["WORKDIR /workspace", ""]
+        if requirement_files is not None and requirement_files:
+            copy_files = " ".join(requirement_files)
+            lines += [
+                f"COPY {copy_files} /workspace/",
+                "",
+            ]
+            for rf in requirement_files:
+                lines += [f"RUN pip install --no-cache-dir -r {rf}", ""]
+            lines += ["COPY . /workspace/", ""]
+        else:
+            lines += [
+                "COPY . /workspace/",
+                "",
+                "RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi",
+                "",
+            ]
 
-    # Login shells (bash -l) do NOT source ~/.bashrc, but conda/virtualenv
-    # activation lives in ~/.bashrc. Create ~/.bash_profile that sources it
-    # so interactive SSH logins (HOME=/root) get the full Python environment.
     lines += [
         'RUN if [ ! -f /root/.bash_profile ]; then \\',
         "      printf '\\n# Source .bashrc for login shells (conda/virtualenv activation)\\n[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\\n' > /root/.bash_profile; \\",
         '    fi',
         '',
-    ]
-
-    lines += [
         'CMD ["sleep", "infinity"]',
     ]
     return "\n".join(lines)
@@ -428,6 +500,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
     else:
         image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
     build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
+    _write_dockerignore(build_dir)
 
     # Track base image usage
     update_base_image_usage(base_image)
@@ -449,7 +522,8 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                     else:
                         shutil.copy2(src, dst)
 
-            dockerfile_content = generate_env_dockerfile(base_image, with_project=include_project)
+            requirement_files = _split_requirements(build_dir, project_dir, DOCKER_BUILD_CHUNK_SIZE)
+            dockerfile_content = generate_env_dockerfile(base_image, with_project=include_project, requirement_files=requirement_files)
             with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
                 f.write(dockerfile_content)
         else:
@@ -461,7 +535,8 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                 else:
                     shutil.copy2(src, dst)
 
-            dockerfile_content = generate_dockerfile(project_dir, command, base_image)
+            requirement_files = _split_requirements(build_dir, project_dir, DOCKER_BUILD_CHUNK_SIZE)
+            dockerfile_content = generate_dockerfile(project_dir, command, base_image, requirement_files=requirement_files)
             with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
                 f.write(dockerfile_content)
 
@@ -498,44 +573,60 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
             ])
         last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
-        try:
-            _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True, nocache=DOCKER_BUILD_NO_CACHE)
-            for chunk in build_logs:
-                chunk_lines = []
-                if "error" in chunk:
-                    chunk_lines.append(f"Docker error: {chunk['error']}")
-                if "stream" in chunk and chunk["stream"].strip():
-                    for stream_line in chunk["stream"].splitlines():
-                        stream_line = stream_line.strip()
-                        if not stream_line or not should_upload_build_line(stream_line):
-                            continue
-                        chunk_lines.append(stream_line)
-                if "status" in chunk and chunk["status"].strip():
-                    status_line = chunk["status"].strip()
-                    if should_upload_build_line(status_line):
-                        chunk_lines.append(status_line)
+        max_attempts = DOCKER_BUILD_ATTEMPTS
+        build_error = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True, nocache=DOCKER_BUILD_NO_CACHE)
+                for chunk in build_logs:
+                    chunk_lines = []
+                    if "error" in chunk:
+                        chunk_lines.append(f"Docker error: {chunk['error']}")
+                    if "stream" in chunk and chunk["stream"].strip():
+                        for stream_line in chunk["stream"].splitlines():
+                            stream_line = stream_line.strip()
+                            if not stream_line or not should_upload_build_line(stream_line):
+                                continue
+                            chunk_lines.append(stream_line)
+                    if "status" in chunk and chunk["status"].strip():
+                        status_line = chunk["status"].strip()
+                        if should_upload_build_line(status_line):
+                            chunk_lines.append(status_line)
+                    emit_build_lines(job_id, build_log_buffer, chunk_lines)
+                    if chunk_lines:
+                        last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
+                break  # Build succeeded
+            except (docker.errors.BuildError, docker.errors.APIError) as e:
+                raw = str(e) + "\n" + "\n".join(_extract_build_log_lines(e))
+                if attempt < max_attempts and _is_containerd_export_error(raw):
+                    emit_build_lines(job_id, build_log_buffer, [
+                        f"Containerd layer export error (attempt {attempt}/{max_attempts}): retrying ..."
+                    ] + _extract_build_log_lines(e)[-3:])
+                    last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+                    try:
+                        client.images.prune(filters={"dangling": True})
+                    except Exception:
+                        pass
+                    time.sleep(DOCKER_BUILD_RETRY_BACKOFF)
+                    continue
+                build_error = e
+                break
 
-                emit_build_lines(job_id, build_log_buffer, chunk_lines)
-                if chunk_lines:
-                    last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
-        except docker.errors.BuildError as e:
-            logger.error("Build failed for job %s: %s", job_id, e)
-            reason = f"Build failed: {e}"
-            error_lines = _extract_build_log_lines(e)
+        if build_error is not None:
+            logger.error("Build failed for job %s: %s", job_id, build_error)
+            reason = f"Build failed: {build_error}"
+            error_lines = _extract_build_log_lines(build_error)
             if not error_lines:
-                error_lines = [str(e).strip()]
+                error_lines = [str(build_error).strip()]
             emit_build_lines(job_id, build_log_buffer, [
                 "Build failed with BuildError:",
                 *error_lines,
             ])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
             if build_type == "interactive":
-                # Direct interactive builds include user-supplied requirements;
-                # pip resolution errors are user errors.
                 joined = "\n".join(error_lines).lower()
                 if "pip" in joined or "requirements" in joined:
                     return "user", reason
-                # Other interactive build failures are infra-layer, retryable.
                 return "system", reason
             return "user", reason
 
