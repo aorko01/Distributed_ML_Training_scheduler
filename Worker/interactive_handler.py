@@ -74,6 +74,7 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
     env_cmd = [
         "docker", "run", "-d", "--rm",
         "--gpus", "all",
+        "--userns=host",
         "--name", env_name,
         env_image_tag,
         "sleep", "infinity",
@@ -126,6 +127,9 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
             "access_name": access_name,
         }
 
+    # Prepare env container for VS Code Remote-SSH (create /home/sandbox, tools).
+    _prepare_env_container(env_name, access_name)
+
     # 4. Poll access container logs for the tailnet IP.
     headscale_ip = _wait_for_tailscale_ip(session_id)
     if not headscale_ip:
@@ -156,6 +160,83 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
 def _container_name(session_id: str, role: str = "env") -> str:
     """Generate a deterministic container name for a session's env or access container."""
     return f"interactive-{session_id[:24]}-{role}"
+
+
+def _prepare_env_container(env_name: str, access_name: str) -> None:
+    """Best-effort preparation of the env container for VS Code Remote-SSH.
+
+    Creates /home/sandbox owned by the sandbox user and installs basic tools
+    (curl, tar, gzip) if available. Never raises — all failures are logged and
+    swallowed so the session can still proceed.
+    """
+    import subprocess
+
+    # 1. Resolve sandbox UID/GID from the access container.
+    uid, gid = "1000", "1000"
+    try:
+        id_out = subprocess.run(
+            ["docker", "exec", access_name, "id", "-u", "sandbox"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if id_out.returncode == 0 and id_out.stdout.strip().isdigit():
+            uid = id_out.stdout.strip()
+        gid_out = subprocess.run(
+            ["docker", "exec", access_name, "id", "-g", "sandbox"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if gid_out.returncode == 0 and gid_out.stdout.strip().isdigit():
+            gid = gid_out.stdout.strip()
+    except Exception as exc:
+        logger.warning("Could not resolve sandbox UID/GID from %s: %s", access_name, exc)
+
+    # 2. Create /home/sandbox in the env container, owned by sandbox.
+    try:
+        subprocess.run(
+            ["docker", "exec", "-u", "0", env_name, "bash", "-c",
+             f"mkdir -p /home/sandbox && chown {uid}:{gid} /home/sandbox && chmod 755 /home/sandbox"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as exc:
+        logger.warning("Failed to create /home/sandbox in %s: %s", env_name, exc)
+
+    # 3. Best-effort tool install (curl, tar, gzip) — skip on non-Debian images.
+    try:
+        subprocess.run(
+            ["docker", "exec", "-u", "0", env_name, "bash", "-c",
+             "command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1 && exit 0 || true"],
+            capture_output=True, text=True, timeout=10,
+        )
+        check = subprocess.run(
+            ["docker", "exec", "-u", "0", env_name, "bash", "-c",
+             "command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if check.returncode != 0:
+            subprocess.run(
+                ["docker", "exec", "-u", "0", env_name, "bash", "-c",
+                 "if command -v apt-get >/dev/null 2>&1; then "
+                 "apt-get update -qq && "
+                 "apt-get install -y --no-install-recommends curl ca-certificates tar gzip && "
+                 "rm -rf /var/lib/apt/lists/*; fi"],
+                capture_output=True, text=True, timeout=300,
+            )
+    except Exception as exc:
+        logger.warning("Best-effort tool install in %s skipped: %s", env_name, exc)
+
+    # 4. Diagnostics.
+    try:
+        df_out = subprocess.run(
+            ["docker", "exec", env_name, "df", "-h", "/"],
+            capture_output=True, text=True, timeout=10,
+        )
+        logger.info("Env %s df -h /: %s", env_name, df_out.stdout.strip())
+        ls_out = subprocess.run(
+            ["docker", "exec", env_name, "ls", "-ld", "/home", "/home/sandbox"],
+            capture_output=True, text=True, timeout=10,
+        )
+        logger.info("Env %s ls -ld /home /home/sandbox: %s", env_name, ls_out.stdout.strip())
+    except Exception as exc:
+        logger.warning("Diagnostics for %s failed: %s", env_name, exc)
 
 
 def _wait_for_tailscale_ip(session_id: str) -> str | None:

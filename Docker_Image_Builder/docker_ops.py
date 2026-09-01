@@ -85,7 +85,22 @@ def generate_env_dockerfile(base_image: str, with_project: bool = False) -> str:
     start from a fresh base and copy the uploaded project into /workspace,
     installing requirements.txt if present.
     """
-    lines = [f"FROM {base_image}", "", "USER root", ""]
+    lines = [
+        f"FROM {base_image}", "",
+        "USER root",
+        "# Prepare home directory for VS Code Remote-SSH (sandbox user, UID 1000)",
+        "RUN mkdir -p /home/sandbox && chown 1000:1000 /home/sandbox && chmod 755 /home/sandbox",
+        "# Install tools needed by VS Code server installer (skip silently on non-Debian)",
+        "RUN if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates tar gzip && rm -rf /var/lib/apt/lists/*; fi",
+        "",
+    ]
+    lines += [
+        "# Prepare home directory for VS Code Remote-SSH (sandbox user, UID 1000)",
+        "RUN mkdir -p /home/sandbox && chown 1000:1000 /home/sandbox && chmod 755 /home/sandbox",
+        "# Install tools needed by VS Code server installer (skip silently on non-Debian)",
+        "RUN if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates tar gzip && rm -rf /var/lib/apt/lists/*; fi",
+        "",
+    ]
 
     if with_project:
         lines += [
