@@ -27,6 +27,11 @@ SEED_PREFIX = "seed-"
 # use the same image pattern as training containers — skip them.
 VRAM_PREFIX = "vram-"
 
+# Training containers launched by the executor are named
+# "train-<job_id>-<uuid>" so the health check can identify them reliably
+# (image tags are unreliable for containers in the "created" state).
+TRAIN_PREFIX = "train-"
+
 # Image prefix for training containers launched by the executor.
 _TRAINING_IMAGE_PREFIX = f"{config.DOCKER_HUB_USERNAME}/"
 
@@ -79,16 +84,28 @@ def check_and_cleanup_containers():
         ):
             continue
 
-        # Training containers (image matches DOCKER_HUB_USERNAME/<job_id>:latest)
-        # are only legitimate if they belong to the currently active job. Kill
-        # anything else — an orphan (no active job) or a stale container from a
-        # job reassigned to another worker — regardless of Docker status. This
-        # also protects containers the executor is currently starting: the
-        # executor persists the job id BEFORE docker run, so a starting
-        # container always matches the active job and is skipped here.
-        if _is_training_container(container):
+        # Training containers are only legitimate if they belong to the
+        # currently active job. Kill anything else — an orphan (no active job)
+        # or a stale container from a job reassigned to another worker —
+        # regardless of Docker status. This also protects containers the
+        # executor is currently starting: the executor persists the job id
+        # BEFORE docker run, so a starting container always matches the active
+        # job and is skipped here.
+        #
+        # Identification is name-based first (the executor names training
+        # containers "train-<job_id>-<uuid>"), which is reliable even for
+        # "created" containers where image tags may be unavailable. The
+        # image-tag check is kept as a fallback for pre-existing containers
+        # not named by the executor.
+        if name.startswith(TRAIN_PREFIX):
+            container_job_id = _extract_job_id_from_name(name)
+        elif _is_training_container(container):
             container_job_id = _extract_job_id(container)
-            if container_job_id is None or container_job_id != active_job_id:
+        else:
+            container_job_id = None
+
+        if container_job_id is not None:
+            if container_job_id != active_job_id:
                 reason = (
                     "orphaned" if active_job_id is None
                     else f"stale (expected job {active_job_id}, got {container_job_id})"
@@ -161,9 +178,41 @@ def _extract_job_id(container) -> str | None:
     return None
 
 
+def _extract_job_id_from_name(name: str) -> str | None:
+    """Extract the job_id from a training container's name.
+
+    Training containers launched by the executor are named
+    ``train-<job_id>-<uuid>`` (the uuid is a 12-char hex string with no
+    dashes).  The job_id is everything between the ``train-`` prefix and the
+    trailing uuid segment.
+    """
+    if not name.startswith(TRAIN_PREFIX):
+        return None
+    remainder = name[len(TRAIN_PREFIX):]
+    # Split off the trailing uuid segment (the last "-"-separated part).
+    if "-" not in remainder:
+        return None
+    return remainder.rsplit("-", 1)[0]
+
+
 def _kill_container(container):
-    """Forcefully kill a container, removing it if kill fails."""
+    """Forcefully kill a container, removing it if kill fails.
+
+    For containers that are not running (e.g. ``created``, ``exited``,
+    ``dead``), ``kill()`` raises a 409 error because there is no running
+    process to signal — skip straight to ``remove(force=True)`` in those
+    cases to avoid the error.
+    """
     name = container.name or container.short_id
+    if container.status != "running":
+        try:
+            container.remove(force=True)
+            logger.info("Force-removed non-running container %s (status=%s).",
+                        name, container.status)
+        except Exception as e:
+            logger.error("Failed to remove container %s: %s", name, e)
+        return
+
     try:
         container.kill()
         logger.info("Killed container %s.", name)

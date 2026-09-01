@@ -419,6 +419,7 @@ class JobExecutor:
                               finalize: bool = True):
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
+            "--name", f"train-{job_id}-{uuid.uuid4().hex[:12]}",
             *self._container_user_args(),
             "-v", f"{_docker_host_path(job_output_dir)}:{mount_target}",
             image_name,
