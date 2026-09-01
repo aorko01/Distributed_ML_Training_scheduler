@@ -69,18 +69,32 @@ def create_interactive_job(db: Session, job_data: dict):
 
     if base_job_id:
         # Reuse an existing interactive session for this base job so the image
-        # is never built twice (one pending build OR one ready session max).
+        # is never built twice. The partial unique index
+        # uq_jobs_base_job_interactive enforces at most one interactive job per
+        # base_job_id, so we must check for ANY existing row regardless of
+        # status — not just NOT_RUNNABLE / INTERACTIVE_READY.
         existing = (
             db.query(Job)
             .filter(
                 Job.user_id == user_id,
                 Job.base_job_id == base_job_id,
                 Job.build_type == "interactive",
-                Job.status.in_([JobStatus.NOT_RUNNABLE, JobStatus.INTERACTIVE_READY]),
             )
             .first()
         )
         if existing:
+            # If the previous session is in a terminal or failed state, reset
+            # it so the user can retry the build without hitting a constraint
+            # violation.
+            terminal_states = {
+                JobStatus.INTERACTIVE_STOPPED,
+                JobStatus.FAILED,
+            }
+            if existing.status in terminal_states:
+                existing.status = JobStatus.NOT_RUNNABLE
+                existing.failure_reason = None
+                db.commit()
+                db.refresh(existing)
             return existing
 
     default_name = None
