@@ -145,6 +145,64 @@ def resolve_interactive_base_image(env_config: dict | None) -> str:
     return f"python:{python_version}-slim"
 
 
+_DEV_TOOLSET_BOOTSTRAP = r"""# Detect package manager and install a full dev toolset.
+# Supports Debian/Ubuntu (apt), Alpine (apk), and RHEL/CentOS (yum/dnf).
+# Skips silently when no supported package manager is found (e.g. distroless).
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+        apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make \
+            git curl wget ca-certificates gnupg \
+            sudo vim nano tmux htop procps \
+            iproute2 net-tools dnsutils \
+            zip unzip bzip2 xz-utils rsync jq file less \
+            openssh-client \
+            python3 python3-pip python3-venv \
+        && rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache \
+            build-base gcc g++ make \
+            git curl wget ca-certificates sudo \
+            vim nano tmux htop procps \
+            busybox-extras iproute2 bind-tools \
+            zip unzip openssh-client \
+            py3-pip; \
+    elif command -v yum >/dev/null 2>&1; then \
+        yum install -y --setopt=tsflags=nodocs \
+            gcc gcc-c++ make \
+            git curl wget ca-certificates sudo \
+            vim-enhanced nano tmux htop procps-ng \
+            iproute net-tools bind-utils \
+            zip unzip bzip2 xz rsync jq file less \
+            openssh-clients \
+            python3 python3-pip \
+        && yum clean all && rm -rf /var/cache/yum; \
+    elif command -v dnf >/dev/null 2>&1; then \
+        dnf install -y --setopt=tsflags=nodocs \
+            gcc gcc-c++ make \
+            git curl wget ca-certificates sudo \
+            vim-enhanced nano tmux htop procps-ng \
+            iproute net-tools bind-utils \
+            zip unzip bzip2 xz rsync jq file less \
+            openssh-clients \
+            python3 python3-pip \
+        && dnf clean all && rm -rf /var/cache/dnf; \
+    fi
+# Configure passwordless sudo for root and sandbox user (created if missing).
+RUN echo 'root ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/99-sandbox && \
+    chmod 0440 /etc/sudoers.d/99-sandbox && \
+    if id -u sandbox >/dev/null 2>&1; then \
+        echo 'sandbox ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers.d/99-sandbox; \
+    else \
+        useradd -m -s /bin/bash sandbox 2>/dev/null || adduser -D -s /bin/sh sandbox; \
+        echo 'sandbox ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers.d/99-sandbox; \
+    fi
+# Ensure python3/pip are on PATH (some images put them under /usr/local/bin).
+ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+"""
+
+
 def generate_env_dockerfile(base_image: str, with_project: bool = False, requirement_files: list[str] | None = None) -> str:
     """Generate a Dockerfile for a clean interactive environment image.
 
@@ -153,6 +211,11 @@ def generate_env_dockerfile(base_image: str, with_project: bool = False, require
     Access (SSH + tailnet) is provided by a separate, shared access image
     (``aorko123/access-sshd:latest``) that joins the env container's PID
     namespace via nsenter.
+
+    The env image is self-sufficient: it installs a full dev toolset
+    (compilers, git, editors, network/proc utilities, Python + pip) and
+    configures passwordless sudo so the container behaves like a normal
+    Linux dev VM.
 
     Derived builds (with_project=False) are based on a training job's image
     that already contains the training code. Direct builds (with_project=True)
@@ -167,9 +230,8 @@ def generate_env_dockerfile(base_image: str, with_project: bool = False, require
         "RUN find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true",
         "# Prepare home directory for VS Code Remote-SSH (sandbox user, UID 1000)",
         "RUN mkdir -p /home/sandbox && chown 1000:1000 /home/sandbox && chmod 755 /home/sandbox",
-        "# Install tools needed by VS Code server installer (skip silently on non-Debian)",
-        "RUN if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates tar gzip && rm -rf /var/lib/apt/lists/*; fi",
         "",
+        _DEV_TOOLSET_BOOTSTRAP,
     ]
 
     if with_project:
@@ -484,6 +546,38 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
         if not deduped or deduped[-1] != line:
             deduped.append(line)
     return deduped
+
+
+def build_derived_env_image(client: docker.DockerClient, job_id: str, base_image_tag: str) -> tuple[str, str] | None:
+    """Build and push an env image for a derived interactive session.
+
+    Layers the full dev-toolset env Dockerfile (``generate_env_dockerfile``
+    with ``with_project=False``, no requirement files) on top of the base
+    training image (``{user}/{base_job_id}:latest``) and pushes the result as
+    ``{user}/{job_id}-env:latest``.
+
+    Reuses the existing build/push/clean logic in
+    :func:`build_push_and_clean` (``include_project=False``). The base image
+    already contains the training code, so nothing is copied into the build
+    context. Handling of user/system failures, build log streaming, access
+    image pulling, and local cleanup are identical to direct builds.
+
+    Returns None on success, or a (failure_type, reason) tuple on failure.
+    """
+    logger.info(
+        "Derived interactive env build for %s: base=%s",
+        job_id, base_image_tag,
+    )
+    update_base_image_usage(base_image_tag)
+
+    # Empty context: with_project=False means no files are copied, so the
+    # generated Dockerfile installs only the dev toolset on top of the base.
+    with tempfile.TemporaryDirectory(prefix=f"derived_env_{job_id}_") as empty_dir:
+        return build_push_and_clean(
+            client, job_id, project_dir=empty_dir, command="",
+            base_image=base_image_tag, build_type="interactive",
+            include_project=False,
+        )
 
 
 def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> tuple[str, str] | None:

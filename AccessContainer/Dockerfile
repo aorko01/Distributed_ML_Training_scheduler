@@ -5,6 +5,13 @@
 # and routes the user's shell into the env container via nsenter (shared PID
 # namespace).
 #
+# Note: this image only carries the SSH/tailnet access layer. The user's
+# shell runs inside the *env* container, which is now self-sufficient as a
+# dev VM (full toolset + passwordless sudo + python3/pip baked in at build
+# time by Docker_Image_Builder, with a non-fatal runtime bootstrap fallback
+# in Worker/interactive_handler.py). No tooling is needed here, so nothing
+# to rebuild when the env toolset changes.
+#
 # Build & push commands (run from the repo root):
 #   docker build -t aorko123/access-sshd:latest ./AccessContainer
 #   docker push aorko123/access-sshd:latest
