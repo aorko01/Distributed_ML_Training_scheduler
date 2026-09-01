@@ -5,7 +5,6 @@ import {
   ArrowDown,
   ArrowUp,
   BookOpen,
-  Braces,
   Check,
   Copy,
   Eraser,
@@ -18,87 +17,18 @@ import {
   Power,
   RotateCcw,
   Share2,
-  Terminal,
   Timer,
   Trash2,
   X,
-  Zap,
 } from 'lucide-react';
 import FileExplorer from '../components/notebook/FileExplorer';
-import FakeTerminal from '../components/notebook/FakeTerminal';
 import SessionPanel from '../components/notebook/SessionPanel';
 import {
   makeCodeCell,
   makeMarkdownCell,
   type NotebookCell,
   type NotebookTab,
-  type OutputBlock,
 } from '../components/notebook/types';
-
-const PYTORCH_VERSION = '2.3.1';
-const CUDA_VERSION = '12.1';
-const ACCELERATOR = 'A100 80GB';
-
-const WELCOME_CELLS = (): NotebookCell[] => [
-  makeMarkdownCell(
-    '# Interactive session ready!\n\nThis notebook runs on **node-a100-04** with a dedicated *NVIDIA A100 80GB* attached.\n\n- Persistent `/workspace` storage\n- Pre-installed PyTorch stack\n- Built-in terminal for installs and shell work',
-  ),
-  makeCodeCell(
-    'import torch\n\nprint("GPU:", torch.cuda.get_device_name(0))\nprint("CUDA available:", torch.cuda.is_available())',
-  ),
-  makeMarkdownCell(
-    '## Next steps\n\n1. Browse `data/` in the file explorer\n2. Open the terminal panel for `pip install`s\n3. Press **Run all** and watch the kernel go',
-  ),
-  makeCodeCell(''),
-];
-
-const simulateExecution = (source: string): OutputBlock[] => {
-  const trimmed = source.trim();
-  if (!trimmed) return [];
-
-  if (trimmed.startsWith('!')) {
-    const cmd = trimmed.slice(1).trim();
-    if (cmd.startsWith('pip install')) {
-      const pkg = cmd.replace('pip install', '').trim().split(/\s+/)[0] || 'package';
-      return [
-        { kind: 'text', text: `Collecting ${pkg}` },
-        { kind: 'text', text: `  Downloading ${pkg}-1.2.3-cp311-cp311-manylinux_2_17_x86_64.whl (8.4 MB)` },
-        { kind: 'text', text: `Installing collected packages: ${pkg}` },
-        { kind: 'success', text: `Successfully installed ${pkg}-1.2.3` },
-      ];
-    }
-    if (cmd === 'nvidia-smi') {
-      return [{ kind: 'text', text: 'NVIDIA A100 80GB · 62C · 12672MiB / 81920MiB · 68% util' }];
-    }
-    return [{ kind: 'text', text: `[dummy] \`${cmd}\` executed on node-a100-04` }];
-  }
-
-  const lower = trimmed.toLowerCase();
-  if (lower.includes('cuda.is_available')) {
-    return [
-      { kind: 'text', text: 'GPU: NVIDIA A100 80GB (cuda:0)' },
-      { kind: 'text', text: 'CUDA available: True' },
-      { kind: 'success', text: `PyTorch ${PYTORCH_VERSION} · CUDA ${CUDA_VERSION} · cuDNN 8.9.7` },
-    ];
-  }
-  if (lower === 'import torch' || lower.includes('import torch')) {
-    return [{ kind: 'text', text: `torch ${PYTORCH_VERSION}+cu${CUDA_VERSION.replace('.', '')} loaded` }];
-  }
-
-  const printMatch = trimmed.match(/print\(\s*(["'])([\s\S]*?)\1\s*\)/);
-  if (printMatch) return [{ kind: 'text', text: printMatch[2] }];
-
-  const arith = trimmed.match(/^(\d+(?:\.\d+)?)\s*([+\-*/])\s*(\d+(?:\.\d+)?)$/);
-  if (arith) {
-    const a = parseFloat(arith[1]);
-    const b = parseFloat(arith[3]);
-    const result =
-      arith[2] === '+' ? a + b : arith[2] === '-' ? a - b : arith[2] === '*' ? a * b : b === 0 ? NaN : a / b;
-    return [{ kind: 'text', text: String(result) }];
-  }
-
-  return [];
-};
 
 const formatClock = (seconds: number) => {
   const h = Math.floor(seconds / 3600);
@@ -257,7 +187,22 @@ const NotebookWorkspace: React.FC = () => {
   const navigate = useNavigate();
 
   const initialTabs = useMemo<NotebookTab[]>(
-    () => [{ id: 'welcome', name: 'Welcome.ipynb', cells: WELCOME_CELLS() }],
+    () => [{
+      id: 'welcome',
+      name: 'Welcome.ipynb',
+      cells: [
+        makeMarkdownCell(
+          '# Interactive session ready!\n\nYour notebook is connected to a dedicated GPU worker.\n\n- Persistent `/workspace` storage\n- Pre-installed PyTorch stack\n- Built-in terminal for installs and shell work',
+        ),
+        makeCodeCell(
+          'import torch\n\nprint("GPU:", torch.cuda.get_device_name(0))\nprint("CUDA available:", torch.cuda.is_available())',
+        ),
+        makeMarkdownCell(
+          '## Next steps\n\n1. Browse files in the file explorer\n2. Open the terminal panel for `pip install`s\n3. Press **Run all** and watch the kernel go',
+        ),
+        makeCodeCell(''),
+      ],
+    }],
     [],
   );
 
@@ -265,7 +210,6 @@ const NotebookWorkspace: React.FC = () => {
   const [activeTabId, setActiveTabId] = useState<string>('welcome');
   const [showExplorer, setShowExplorer] = useState(true);
   const [showPanel, setShowPanel] = useState(true);
-  const [showTerminal, setShowTerminal] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
   const [uptime, setUptime] = useState(1543);
@@ -332,7 +276,7 @@ const NotebookWorkspace: React.FC = () => {
                   ...t,
                   cells: t.cells.map((c) =>
                     c.id === cellId
-                      ? { ...c, state: 'done', execCount: startCount, outputs: simulateExecution(c.source) }
+                      ? { ...c, state: 'done', execCount: startCount, outputs: [] }
                       : c,
                   ),
                 }
@@ -443,7 +387,7 @@ const NotebookWorkspace: React.FC = () => {
       setActiveTabId(existing.id);
       return;
     }
-    const tab: NotebookTab = { id: `nb-${Date.now()}`, name, cells: name === 'Welcome.ipynb' ? WELCOME_CELLS() : [makeCodeCell()] };
+    const tab: NotebookTab = { id: `nb-${Date.now()}`, name, cells: [makeCodeCell()] };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
   };
@@ -470,7 +414,7 @@ const NotebookWorkspace: React.FC = () => {
   };
 
   const stopSession = () => {
-    if (window.confirm('Stop this interactive session? GPU will be released. (Dummy action)')) {
+    if (window.confirm('Stop this interactive session? GPU will be released.')) {
       navigate('/');
     }
   };
@@ -498,12 +442,6 @@ const NotebookWorkspace: React.FC = () => {
         </div>
 
         <div className="nb-header-right">
-          <span className="nb-pill" title="Environment">
-            <Braces size={13} /> PyTorch {PYTORCH_VERSION} · CUDA {CUDA_VERSION}
-          </span>
-          <span className="nb-pill nb-pill-accel" title="Accelerator">
-            <Zap size={13} color="var(--status-pending)" /> {ACCELERATOR}
-          </span>
           <span className="nb-pill" title="Session uptime">
             <Timer size={13} /> {formatClock(uptime)}
           </span>
@@ -524,13 +462,6 @@ const NotebookWorkspace: React.FC = () => {
             onClick={() => setShowExplorer((v) => !v)}
           >
             <Folder size={19} />
-          </button>
-          <button
-            className={`nb-rail-btn ${showTerminal ? 'active' : ''}`}
-            title="Toggle terminal"
-            onClick={() => setShowTerminal((v) => !v)}
-          >
-            <Terminal size={19} />
           </button>
           <button
             className={`nb-rail-btn ${showPanel ? 'active' : ''}`}
@@ -614,11 +545,9 @@ const NotebookWorkspace: React.FC = () => {
         </section>
 
         {showPanel && (
-          <SessionPanel busy={busy} uptimeSeconds={uptime} onOpenTerminal={() => setShowTerminal(true)} />
+          <SessionPanel busy={busy} uptimeSeconds={uptime} />
         )}
       </div>
-
-      {showTerminal && <FakeTerminal onClose={() => setShowTerminal(false)} />}
 
       {toast && <div className="nb-toast">{toast}</div>}
 

@@ -16,33 +16,6 @@ interface FileNode {
   notebook?: boolean;
 }
 
-const TREE: FileNode = {
-  name: '/workspace',
-  children: [
-    {
-      name: 'data',
-      children: [
-        { name: 'train_images.pt', kind: 'data' },
-        { name: 'val_images.pt', kind: 'data' },
-        { name: 'labels.csv' },
-        { name: 'sample_grid.png', kind: 'image' },
-      ],
-    },
-    {
-      name: 'models',
-      children: [{ name: 'resnet50_best.pth', kind: 'data' }],
-    },
-    {
-      name: 'output',
-      children: [{ name: 'checkpoints', children: [] }],
-    },
-    { name: 'Welcome.ipynb', notebook: true },
-    { name: 'train.py', kind: 'code' },
-    { name: 'requirements.txt' },
-    { name: 'README.md' },
-  ],
-};
-
 const fileIcon = (node: FileNode, size = 15) => {
   if (node.notebook) return <FileText size={size} color="var(--text)" />;
   switch (node.kind) {
@@ -54,12 +27,13 @@ const fileIcon = (node: FileNode, size = 15) => {
 };
 
 interface FileExplorerProps {
+  files?: FileNode[];
   onOpenNotebook: (name: string) => void;
   onNewNotebook: () => void;
 }
 
-const FileExplorer: React.FC<FileExplorerProps> = ({ onOpenNotebook, onNewNotebook }) => {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(['data']));
+const FileExplorer: React.FC<FileExplorerProps> = ({ files = [], onOpenNotebook, onNewNotebook }) => {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string>('');
 
   const toggle = (path: string) => {
@@ -107,12 +81,17 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onOpenNotebook, onNewNotebo
           <button className="nb-mini-btn" title="New notebook" onClick={onNewNotebook}>
             <FilePlus size={14} />
           </button>
-          <button className="nb-mini-btn" title="Upload files (coming soon)" disabled style={{ opacity: 0.4 }}>
-            <FileText size={14} />
-          </button>
         </div>
       </div>
-      <div className="nb-explorer-tree">{renderNodes(TREE.children ?? [], '', 0)}</div>
+      <div className="nb-explorer-tree">
+        {files.length === 0 ? (
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', padding: '0.75rem' }}>
+            No files loaded.
+          </p>
+        ) : (
+          renderNodes(files, '', 0)
+        )}
+      </div>
     </aside>
   );
 };

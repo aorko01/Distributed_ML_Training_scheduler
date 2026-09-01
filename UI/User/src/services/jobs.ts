@@ -47,8 +47,6 @@ interface BackendJob {
   base_job_id?: string;
 }
 
-const DUMMY_DEVICES = ['A100 80GB', 'H100 80GB', 'L4 24GB', 'V100 16GB'];
-
 const mapStatus = (status: string): JobStatus => {
   // Normalize so backend casing (e.g. "interactive_ready" vs "INTERACTIVE_READY")
   // doesn't break the mapping.
@@ -107,71 +105,27 @@ const mapJob = (job: BackendJob): Job => {
   };
 };
 
-let mockJobs: Job[] = [
-  {
-    id: 'job-101',
-    name: 'ResNet50_ImageNet',
-    status: 'Running',
-    pytorchVersion: '2.3.1',
-    cudaVersion: '12.1',
-    submittedAt: new Date(Date.now() - 3600000).toISOString(),
-    gpuHours: 1.2,
-    device: 'A100 80GB',
-    queuePosition: 0
-  },
-  {
-    id: 'job-100',
-    name: 'LLama3_Finetune',
-    status: 'Completed',
-    pytorchVersion: '2.1.2',
-    cudaVersion: '11.8',
-    submittedAt: new Date(Date.now() - 86400000).toISOString(),
-    gpuHours: 14.5,
-    device: 'H100 80GB',
-    queuePosition: 0
-  },
-  {
-    id: 'job-102',
-    name: 'Bert_Classification',
-    status: 'Failed',
-    pytorchVersion: '2.2.0',
-    cudaVersion: '11.8',
-    submittedAt: new Date(Date.now() - 7200000).toISOString(),
-    gpuHours: 0.1,
-    device: 'L4 24GB',
-    queuePosition: 0
-  }
-];
-
 const hasError = (body: unknown): body is { error: string } => {
   return body !== null && typeof body === 'object' && 'error' in body;
 };
 
 export const fetchJobs = async (builtOnly = false): Promise<Job[]> => {
-  try {
-    const data = await api.get<{ jobs?: BackendJob[] } | { error: string }>('/jobs/mine');
-    if (hasError(data)) {
-      throw new Error(data.error);
-    }
-    const jobs = data.jobs ?? [];
-    // NOT_RUNNABLE means the image hasn't been built/pushed yet, so it can't
-    // be used as a base for interactive sessions.
-    return (builtOnly ? jobs.filter((j) => j.status !== 'NOT_RUNNABLE') : jobs).map(mapJob);
-  } catch {
-    return [...mockJobs];
+  const data = await api.get<{ jobs?: BackendJob[] } | { error: string }>('/jobs/mine');
+  if (hasError(data)) {
+    throw new Error(data.error);
   }
+  const jobs = data.jobs ?? [];
+  // NOT_RUNNABLE means the image hasn't been built/pushed yet, so it can't
+  // be used as a base for interactive sessions.
+  return (builtOnly ? jobs.filter((j) => j.status !== 'NOT_RUNNABLE') : jobs).map(mapJob);
 };
 
 export const fetchJobById = async (id: string): Promise<Job | undefined> => {
-  try {
-    const data = await api.get<BackendJob | { error: string }>(`/jobs/${id}`);
-    if (hasError(data)) {
-      throw new Error(data.error);
-    }
-    return mapJob(data as BackendJob);
-  } catch {
-    return mockJobs.find(j => j.id === id);
+  const data = await api.get<BackendJob | { error: string }>(`/jobs/${id}`);
+  if (hasError(data)) {
+    throw new Error(data.error);
   }
+  return mapJob(data as BackendJob);
 };
 
 export interface JobConnectInfo {
@@ -399,7 +353,7 @@ export const submitJob = async (
     cudaVersion: jobData.cudaVersion,
     submittedAt: job.created_at ?? new Date().toISOString(),
     gpuHours: 0,
-    device: DUMMY_DEVICES[0],
+    device: 'N/A',
     resumeCommand: jobData.resumeCommand,
     queuePosition: undefined,
   };

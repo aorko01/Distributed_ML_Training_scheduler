@@ -225,7 +225,7 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
 
           <div className="cn-meta-footer">
             <Clock size={13} />
-            <span>Session auto-pauses after 60 min idle · Dummy preview — live wiring coming soon</span>
+            <span>Session auto-pauses after 60 min idle</span>
           </div>
         </div>
       </div>
