@@ -53,6 +53,7 @@ PasswordAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
 AllowUsers sandbox
+AllowTcpForwarding yes
 ForceCommand nsenter -t 1 -m -u -i -n -p -- /bin/bash -l
 SSHD
 

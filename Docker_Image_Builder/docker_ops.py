@@ -313,6 +313,7 @@ PasswordAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
 AllowUsers sandbox
+AllowTcpForwarding yes
 ForceCommand nsenter -t 1 -m -u -i -n -p -- /bin/bash -c 'export HOME=/root; export PATH=/opt/conda/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin; exec /bin/bash -l'
 SSHD
 
