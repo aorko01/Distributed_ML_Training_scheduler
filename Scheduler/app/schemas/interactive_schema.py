@@ -31,7 +31,7 @@ class InteractiveSessionReport(BaseModel):
     """
     session_id: str
     headscale_ip: Optional[str] = None
-    status: str  # "RUNNING" | "FAILED" | "STOPPED"
+    status: str  # "RUNNING" | "FAILED" | "STOPPED" | "INTERACTIVE_STOPPED"
 
 
 class InteractiveSessionOut(BaseModel):

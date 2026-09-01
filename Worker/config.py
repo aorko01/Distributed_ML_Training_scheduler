@@ -91,6 +91,10 @@ INTERACTIVE_SESSION_TIMEOUT = int(os.getenv("INTERACTIVE_SESSION_TIMEOUT", "3600
 # If no SSH connection is established within this many seconds of the session
 # starting, the worker tears it down and reports STOPPED. 0 disables.
 INTERACTIVE_NO_CONNECT_TIMEOUT = int(os.getenv("INTERACTIVE_NO_CONNECT_TIMEOUT", "600"))
+# If the user has connected at least once and then no SSH connection is active
+# for this many seconds, the worker kills the terminal, tears the session down,
+# and reports INTERACTIVE_STOPPED. 0 disables.
+INTERACTIVE_IDLE_TIMEOUT = int(os.getenv("INTERACTIVE_IDLE_TIMEOUT", "1800"))
 
 # File Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

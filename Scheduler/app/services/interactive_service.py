@@ -168,7 +168,7 @@ async def update_session_ip(db: Session, session_id: str, headscale_ip: str | No
         record.status = InteractiveSessionStatus.RUNNING
     elif status == "FAILED":
         record.status = InteractiveSessionStatus.FAILED
-    elif status == "STOPPED":
+    elif status in ("STOPPED", "INTERACTIVE_STOPPED"):
         record.headscale_ip = None
         record.status = InteractiveSessionStatus.STOPPED
         record.stopped_at = datetime.now(timezone.utc)
@@ -182,6 +182,7 @@ async def update_session_ip(db: Session, session_id: str, headscale_ip: str | No
             "RUNNING": JobStatus.INTERACTIVE_RUNNING,
             "FAILED": JobStatus.FAILED,
             "STOPPED": JobStatus.INTERACTIVE_STOPPED,
+            "INTERACTIVE_STOPPED": JobStatus.INTERACTIVE_STOPPED,
         }
         if status in mapping:
             job.status = mapping[status]

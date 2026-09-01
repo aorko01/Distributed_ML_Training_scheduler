@@ -20,6 +20,7 @@ ACCESS_IMAGE = config.INTERACTIVE_ACCESS_IMAGE
 
 SESSION_TIMEOUT = float(config.INTERACTIVE_SESSION_TIMEOUT)
 NO_CONNECT_TIMEOUT = float(config.INTERACTIVE_NO_CONNECT_TIMEOUT)
+IDLE_TIMEOUT = float(config.INTERACTIVE_IDLE_TIMEOUT)
 
 # session_id -> dict of container info (env + access) for monitoring / stop.
 _active_containers: dict[str, dict] = {}
@@ -196,8 +197,37 @@ def _has_active_connection(session_id: str) -> bool:
     return False
 
 
+def _kill_terminal(session_id: str) -> bool:
+    """Terminate active SSH sessions for a session, disconnecting any connected
+    users ('kill the terminal'). Kills sshd session processes in the access
+    container and the shells they spawned (via nsenter) inside the env
+    container. The bracket pattern avoids pkill matching its own cmdline."""
+    import subprocess
+
+    ok = True
+    for name, pattern in (
+        (_container_name(session_id, "access"), "[s]shd: sandbox"),
+        (_container_name(session_id, "env"), "[b]ash -l"),
+    ):
+        try:
+            result = subprocess.run(
+                ["docker", "exec", name, "sh", "-c",
+                 f'pkill -TERM -f "{pattern}" 2>/dev/null; true'],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                ok = False
+        except Exception as e:
+            logger.warning("Failed to kill terminal processes in %s: %s", name, e)
+            ok = False
+    return ok
+
+
 def _monitor_container(api, session_id: str):
-    """Report 'stopped' once either the env or access container exits."""
+    """Report 'stopped' once either container exits or a session timeout
+    (hard cap / no-connect / idle) is reached. On timeout the terminal is
+    killed first (active SSH sessions terminated), then both containers are
+    stopped and the scheduler is told the job is INTERACTIVE_STOPPED."""
     import subprocess
 
     with _lock:
@@ -210,6 +240,7 @@ def _monitor_container(api, session_id: str):
 
     started_at = time.time()
     ever_connected = False
+    last_activity_at = None
     stop_reason = "container_exit"
 
     while True:
@@ -228,6 +259,7 @@ def _monitor_container(api, session_id: str):
             break
         if _has_active_connection(session_id):
             ever_connected = True
+            last_activity_at = time.time()
         elapsed = time.time() - started_at
         if SESSION_TIMEOUT > 0 and elapsed >= SESSION_TIMEOUT:
             stop_reason = "session_timeout"
@@ -235,14 +267,28 @@ def _monitor_container(api, session_id: str):
         if NO_CONNECT_TIMEOUT > 0 and not ever_connected and elapsed >= NO_CONNECT_TIMEOUT:
             stop_reason = "no_connect_timeout"
             break
+        if (
+            IDLE_TIMEOUT > 0
+            and ever_connected
+            and last_activity_at is not None
+            and (time.time() - last_activity_at) >= IDLE_TIMEOUT
+        ):
+            stop_reason = "idle_timeout"
+            break
         time.sleep(5)
 
     with _lock:
         _active_containers.pop(session_id, None)
-    logger.info("Interactive containers for session %s stopped (%s); reporting stopped.", session_id, stop_reason)
+    logger.info("Interactive containers for session %s stopped (%s); reporting stopped.",
+                session_id, stop_reason)
+
+    timeout_reasons = ("session_timeout", "no_connect_timeout", "idle_timeout")
+    if stop_reason in timeout_reasons:
+        _kill_terminal(session_id)
     _stop_container(session_id)
+    status = "INTERACTIVE_STOPPED" if stop_reason in timeout_reasons else "STOPPED"
     try:
-        api.report_interactive_ip(session_id, None, "STOPPED")
+        api.report_interactive_ip(session_id, None, status)
     except Exception as e:
         logger.error("Failed to report stopped state for %s: %s", session_id, e)
 
