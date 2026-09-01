@@ -8,6 +8,7 @@ import requests
 
 import config
 from telemetry import record_event
+from image_cleanup import remove_image
 
 logger = logging.getLogger("interactive_handler")
 
@@ -113,7 +114,7 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
     if access_run.returncode != 0:
         reason = access_run.stderr.strip() or "Access container failed to start"
         logger.error("Interactive %s: %s", session_id, reason)
-        _stop_container(session_id)
+        _stop_container(session_id, env_image_tag=env_image_tag)
         api.report_interactive_ip(session_id, None, "FAILED")
         return ""
 
@@ -125,6 +126,7 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
             "access_id": access_container_id,
             "env_name": env_name,
             "access_name": access_name,
+            "env_image_tag": env_image_tag,
         }
 
     # Prepare env container for VS Code Remote-SSH (create /home/sandbox, tools).
@@ -137,7 +139,7 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
             "Interactive %s: no Tailscale IP within %.0fs; stopping containers.",
             session_id, IP_DETECT_TIMEOUT,
         )
-        _stop_container(session_id)
+        _stop_container(session_id, env_image_tag=env_image_tag)
         api.report_interactive_ip(session_id, None, "FAILED")
         return ""
 
@@ -365,14 +367,14 @@ def _monitor_container(api, session_id: str):
         time.sleep(5)
 
     with _lock:
-        _active_containers.pop(session_id, None)
+        info = _active_containers.pop(session_id, None) or {}
     logger.info("Interactive containers for session %s stopped (%s); reporting stopped.",
                 session_id, stop_reason)
 
     timeout_reasons = ("session_timeout", "no_connect_timeout", "idle_timeout")
     if stop_reason in timeout_reasons:
         _kill_terminal(session_id)
-    _stop_container(session_id)
+    _stop_container(session_id, env_image_tag=info.get("env_image_tag"))
     status = "INTERACTIVE_STOPPED" if stop_reason in timeout_reasons else "STOPPED"
     try:
         api.report_interactive_ip(session_id, None, status)
@@ -380,12 +382,23 @@ def _monitor_container(api, session_id: str):
         logger.error("Failed to report stopped state for %s: %s", session_id, e)
 
 
-def _stop_container(session_id: str) -> bool:
-    """Stop both the env and access containers for a session."""
+def _stop_container(session_id: str, env_image_tag: str | None = None) -> bool:
+    """Stop and force-remove both the env and access containers for a session.
+
+    Falls back to ``docker rm -f`` when ``docker stop`` fails (e.g. the
+    container is paused, unresponsive, or already exited but not auto-removed).
+    After container cleanup, best-effort removes the derived env image.
+    """
     import subprocess
 
     env_name = _container_name(session_id, "env")
     access_name = _container_name(session_id, "access")
+
+    # Read the image tag from tracked state if the caller didn't supply one.
+    if env_image_tag is None:
+        with _lock:
+            info = _active_containers.get(session_id) or {}
+            env_image_tag = info.get("env_image_tag")
 
     success = True
     for name in (env_name, access_name):
@@ -393,13 +406,33 @@ def _stop_container(session_id: str) -> bool:
             ["docker", "stop", "-t", "10", name],
             capture_output=True, text=True,
         )
-        if result.returncode != 0:
-            logger.warning("Failed to stop container %s: %s",
-                           name, result.stderr.strip())
+        stderr = (result.stderr or "").strip()
+        if result.returncode == 0:
+            continue
+        # Container already gone (removed by --rm or never created) — fine.
+        if "No such container" in stderr:
+            continue
+        logger.warning("docker stop failed for %s: %s", name, stderr)
+        # Force-remove as a fallback (covers paused / OOM-killed / dead
+        # containers that ignore SIGTERM).
+        rm_result = subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, text=True,
+        )
+        rm_stderr = (rm_result.stderr or "").strip()
+        if rm_result.returncode == 0 or "No such container" in rm_stderr:
+            logger.info("Force-removed container %s", name)
+        else:
+            logger.error("Failed to force-remove container %s: %s", name, rm_stderr)
             success = False
 
     with _lock:
         _active_containers.pop(session_id, None)
+
+    # Best-effort: remove the derived env image so disk doesn't fill up.
+    if env_image_tag:
+        remove_image(env_image_tag)
+
     return success
 
 
@@ -457,4 +490,6 @@ def commit_and_push_container(session_id: str, image_tag: str, command: str) -> 
 
     logger.info("Committed %s -> %s and pushed to Docker Hub.", env_name, image_tag)
     record_event("info", f"Committed and pushed {image_tag} to Docker Hub")
+    # The image is now on Docker Hub; drop the local copy to free disk.
+    remove_image(image_tag)
     return True, ""

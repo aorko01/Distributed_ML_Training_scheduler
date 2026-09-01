@@ -21,6 +21,7 @@ from telemetry import record_job, record_event
 from job_state import load_running_job, save_running_job, clear_running_job
 from hardware import get_gpu_info
 import runtime_config
+from image_cleanup import remove_image
 
 logger = logging.getLogger("executor")
 
@@ -524,6 +525,11 @@ class JobExecutor:
                     "Could not fully delete output dir for job %s: %s",
                     job_id, job_output_dir,
                 )
+
+            # Remove the derived Docker image (e.g. aorko123/<job_id>:latest)
+            # to free disk.  Base images (pytorch, python, access-sshd) are
+            # protected by remove_image and will not be touched.
+            remove_image(image_name)
 
         threading.Thread(
             target=_background_cleanup, daemon=True,
