@@ -27,6 +27,7 @@ def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
     lines = [
         f"FROM {base_image}", "",
         "ENV PYTHONDONTWRITEBYTECODE=1",
+        "ENV PIP_BREAK_SYSTEM_PACKAGES=1",
         "RUN find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true",
         "",
         "WORKDIR /workspace", "",
@@ -93,6 +94,7 @@ def generate_env_dockerfile(base_image: str, with_project: bool = False) -> str:
         f"FROM {base_image}", "",
         "USER root",
         "ENV PYTHONDONTWRITEBYTECODE=1",
+        "ENV PIP_BREAK_SYSTEM_PACKAGES=1",
         "RUN find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true",
         "# Prepare home directory for VS Code Remote-SSH (sandbox user, UID 1000)",
         "RUN mkdir -p /home/sandbox && chown 1000:1000 /home/sandbox && chmod 755 /home/sandbox",
