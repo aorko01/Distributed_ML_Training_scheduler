@@ -193,6 +193,7 @@ class JobExecutor:
             report_path = os.path.join(report_dir, "report.json")
             cmd = [
                 "docker", "run", "--rm", "--gpus", "all",
+                "--name", f"vram-{uuid.uuid4().hex[:12]}",
                 "-v", f"{_docker_host_path(VRAM_ESTIMATION_SCRIPT)}:/vram_estimation.py:ro",
                 "-v", f"{_docker_host_path(report_dir)}:/report",
                 "--entrypoint", "python", image_name,
