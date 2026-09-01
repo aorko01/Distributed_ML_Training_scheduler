@@ -56,6 +56,23 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
     ? `ssh -p ${connectInfo.gateway_ssh_port} ${connectInfo.ssh_user}@${connectInfo.gateway_host}`
     : '';
 
+  const sshConfig = (connectInfo && connectInfo.gateway_host)
+    ? `Host ml-${job.id.slice(0, 8)}\n    HostName ${connectInfo.gateway_host}\n    Port ${connectInfo.gateway_ssh_port}\n    User ${connectInfo.ssh_user}\n    PubkeyAuthentication no\n    PreferredAuthentications password\n    StrictHostKeyChecking no`
+    : '';
+
+  const [copiedConfig, setCopiedConfig] = useState(false);
+
+  const handleCopyConfig = async () => {
+    if (!sshConfig) return;
+    try {
+      await navigator.clipboard.writeText(sshConfig);
+    } catch {
+      // Clipboard unavailable
+    }
+    setCopiedConfig(true);
+    setTimeout(() => setCopiedConfig(false), 2000);
+  };
+
   const handleCopySsh = async () => {
     try {
       await navigator.clipboard.writeText(sshCommand);
@@ -140,17 +157,40 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
                 <div style={{ marginTop: '1rem', fontSize: '0.85rem', color: 'var(--status-failed)' }}>Session not ready</div>
               ) : (
                 <>
-                  <div className="cn-cmd">
-                    <code>{sshCommand}</code>
-                    <button
-                      className="cn-copy-btn"
-                      onClick={handleCopySsh}
-                      aria-label="Copy SSH command"
-                    >
-                      {copied ? <Check size={14} color="var(--status-success)" /> : <Copy size={14} />}
-                    </button>
-                  </div>
-                  {connectInfo.ssh_password && (
+                   <div className="cn-cmd">
+                     <code>{sshCommand}</code>
+                     <button
+                       className="cn-copy-btn"
+                       onClick={handleCopySsh}
+                       aria-label="Copy SSH command"
+                     >
+                       {copied ? <Check size={14} color="var(--status-success)" /> : <Copy size={14} />}
+                     </button>
+                   </div>
+                   {sshConfig && (
+                     <>
+                       <div style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                         SSH Config (add to ~/.ssh/config)
+                       </div>
+                       <div className="cn-config">
+                         <pre><code>{sshConfig}</code></pre>
+                         <button
+                           className="cn-copy-btn"
+                           onClick={handleCopyConfig}
+                           aria-label="Copy SSH config"
+                         >
+                           {copiedConfig ? <Check size={14} color="var(--status-success)" /> : <Copy size={14} />}
+                         </button>
+                       </div>
+                       <div style={{ marginTop: '0.6rem', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                         <div style={{ fontWeight: 500, marginBottom: '0.2rem' }}>VS Code Remote SSH:</div>
+                         <div>1. Paste the config above into <code>~/.ssh/config</code></div>
+                         <div>2. Run <strong>Remote-SSH: Connect to Host</strong> → pick <code>ml-{job.id.slice(0, 8)}</code></div>
+                         <div>3. When prompted for a password, paste the one-time password below</div>
+                       </div>
+                     </>
+                   )}
+                   {connectInfo.ssh_password && (
                     <>
                       <div style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
                         One-time password
@@ -173,10 +213,10 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
                   <button
                     className="btn btn-secondary"
                     style={{ width: '100%', marginTop: 'auto' }}
-                    onClick={handleCopySsh}
+                    onClick={handleCopyConfig}
                   >
-                    {copied ? <Check size={16} color="var(--status-success)" /> : <Copy size={16} />}
-                    {copied ? 'Copied!' : 'Copy Command'}
+                    {copiedConfig ? <Check size={16} color="var(--status-success)" /> : <Copy size={16} />}
+                    {copiedConfig ? 'Copied!' : 'Copy SSH Config'}
                   </button>
                 </>
               )}

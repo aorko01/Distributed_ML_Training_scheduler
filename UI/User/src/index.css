@@ -1227,6 +1227,31 @@ tr.job-row:hover td:first-child {
   overflow: hidden;
 }
 .cn-cmd code { white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
+.cn-config {
+  position: relative;
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  padding-right: 2.5rem;
+  background-color: var(--terminal-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+.cn-config pre {
+  margin: 0;
+  overflow-x: auto;
+}
+.cn-config code {
+  white-space: pre;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--terminal-text);
+}
+.cn-config .cn-copy-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+}
 .cn-copy-btn {
   background: none;
   border: none;
