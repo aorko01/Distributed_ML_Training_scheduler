@@ -71,6 +71,22 @@ class OutputFileMonitor(threading.Thread):
         self.join()
         self.flush(retries=retries, retry_delay=retry_delay)
 
+    def stop_detached(self, retries: int = 3, retry_delay: float = 0.5):
+        """Stop the monitor and flush remaining uploads in a background thread.
+
+        Unlike ``stop()``, this returns immediately so the caller is not blocked
+        by the final upload pass.  The background thread is a daemon so it will
+        not prevent process shutdown.
+        """
+        self._stop_event.set()
+
+        def _detach():
+            self.join()
+            self.flush(retries=retries, retry_delay=retry_delay)
+
+        t = threading.Thread(target=_detach, daemon=True, name="output-monitor-flush")
+        t.start()
+
     def flush(self, retries: int = 3, retry_delay: float = 0.5):
         """Final scan, retrying until all files are uploaded (or attempts exhausted)."""
         for attempt in range(retries):

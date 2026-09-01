@@ -5,6 +5,7 @@ import shutil
 import logging
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import docker
@@ -457,7 +458,7 @@ class JobExecutor:
 
         self._flush_log_push(job_id, force=True)
         self._append_build_log(job_id, store, self._job_log_buffer, force=True)
-        monitor.stop()
+        monitor.stop_detached()
 
         if not finalize:
             return success, failure_type, failure_reason
@@ -490,20 +491,9 @@ class JobExecutor:
                       monitor: OutputFileMonitor, started_at: float,
                       success: bool, failure_type: str = "system",
                       failure_reason: str = ""):
-        monitor.flush()
-        pending = monitor.pending_uploads()
-        if pending:
-            logger.warning(
-                "Job %s: %d file(s) failed to upload to object store; "
-                "keeping output dir at %s",
-                job_id, len(pending), job_output_dir,
-            )
-        elif self._remove_output_dir(job_output_dir):
-            logger.info("Deleted output directory for job %s.", job_id)
-        else:
-            logger.warning("Could not fully delete output dir for job %s: %s",
-                           job_id, job_output_dir)
-
+        # Mark the job as completed/failed and clear the running-job marker
+        # immediately so the worker can pull new jobs without waiting for the
+        # remaining object-store uploads to finish.
         if success:
             logger.info("Job %s completed successfully.", job_id)
             self.api.mark_job_completed(job_id)
@@ -514,6 +504,30 @@ class JobExecutor:
             self.api.mark_job_failed(job_id, failure_type, failure_reason)
 
         clear_running_job()
+
+        # Flush remaining uploads and clean up the output directory in a
+        # background thread so the worker is not blocked.
+        def _background_cleanup():
+            monitor.flush()
+            pending = monitor.pending_uploads()
+            if pending:
+                logger.warning(
+                    "Job %s: %d file(s) failed to upload to object store; "
+                    "keeping output dir at %s",
+                    job_id, len(pending), job_output_dir,
+                )
+            elif self._remove_output_dir(job_output_dir):
+                logger.info("Deleted output directory for job %s.", job_id)
+            else:
+                logger.warning(
+                    "Could not fully delete output dir for job %s: %s",
+                    job_id, job_output_dir,
+                )
+
+        threading.Thread(
+            target=_background_cleanup, daemon=True,
+            name=f"cleanup-{job_id}",
+        ).start()
 
     def _flush_log_push(self, job_id: str, force: bool = False):
         if not self._log_push_buffer:
