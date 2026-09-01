@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import threading
@@ -25,6 +26,11 @@ IDLE_TIMEOUT = float(config.INTERACTIVE_IDLE_TIMEOUT)
 # session_id -> dict of container info (env + access) for monitoring / stop.
 _active_containers: dict[str, dict] = {}
 _lock = threading.Lock()
+
+# (session_id, image_tag) pairs currently being committed/pushed, to dedupe
+# redelivered heartbeat commands.
+_in_flight_commits: set[tuple[str, str]] = set()
+_commit_lock = threading.Lock()
 
 
 def run_interactive_session(api, session_id: str, env_image_tag: str,
@@ -329,3 +335,45 @@ def stop_session_container(session_id: str) -> bool:
 def get_active_sessions() -> list[str]:
     with _lock:
         return list(_active_containers.keys())
+
+
+def commit_and_push_container(session_id: str, image_tag: str, command: str) -> tuple[bool, str]:
+    """Commit the env container's current state to a new image and push it to
+    Docker Hub. Returns (success, error_message).
+
+    The env image's CMD is ``sleep infinity``, so the training command is baked
+    into the committed image via ``docker commit --change`` — otherwise the
+    batch pipeline's fresh training run would just sleep forever.
+    """
+    import subprocess
+
+    env_name = _container_name(session_id, "env")
+
+    # Bake the training command into the image's CMD so the batch pipeline
+    # executes the right command instead of `sleep infinity`.
+    cmd_change = f"CMD {json.dumps(['sh', '-c', command])}"
+
+    logger.info("Committing %s -> %s (CMD: %s)", env_name, image_tag, command)
+    record_event("info", f"Committing interactive session {session_id} to {image_tag}")
+
+    commit = subprocess.run(
+        ["docker", "commit", "--change", cmd_change, env_name, image_tag],
+        capture_output=True, text=True,
+    )
+    if commit.returncode != 0:
+        reason = commit.stderr.strip() or f"docker commit failed for {env_name}"
+        logger.error("Commit %s -> %s failed: %s", env_name, image_tag, reason)
+        return False, reason
+
+    logger.info("Pushing committed image %s to Docker Hub ...", image_tag)
+    push = subprocess.run(
+        ["docker", "push", image_tag], capture_output=True, text=True,
+    )
+    if push.returncode != 0:
+        reason = push.stderr.strip() or f"docker push failed for {image_tag}"
+        logger.error("Push %s failed: %s", image_tag, reason)
+        return False, reason
+
+    logger.info("Committed %s -> %s and pushed to Docker Hub.", env_name, image_tag)
+    record_event("info", f"Committed and pushed {image_tag} to Docker Hub")
+    return True, ""

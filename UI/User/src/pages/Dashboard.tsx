@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchClusterStats, type ClusterStats } from '../services/stats';
 import { fetchJobs, type Job, type JobStatus } from '../services/jobs';
-import { Activity, Clock, Server, CheckCircle2, Loader2, Zap } from 'lucide-react';
+import { Activity, Clock, Server, CheckCircle2, Loader2, Zap, Package } from 'lucide-react';
 import ConnectOptionsModal from '../components/ConnectOptionsModal';
+import CommitModal from '../components/CommitModal';
 
 type StatusFilter = 'All' | JobStatus;
 type SortKey = 'newest' | 'oldest' | 'name' | 'gpuHours';
@@ -15,21 +16,23 @@ const Dashboard: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
   const [sortBy, setSortBy] = useState<SortKey>('newest');
   const [connectJob, setConnectJob] = useState<Job | null>(null);
+  const [commitJob, setCommitJob] = useState<Job | null>(null);
   const navigate = useNavigate();
 
+  const loadData = async () => {
+    try {
+      const [statsData, jobsData] = await Promise.all([
+        fetchClusterStats(),
+        fetchJobs()
+      ]);
+      setStats(statsData);
+      setJobs(jobsData);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        const [statsData, jobsData] = await Promise.all([
-          fetchClusterStats(),
-          fetchJobs()
-        ]);
-        setStats(statsData);
-        setJobs(jobsData);
-      } finally {
-        setLoading(false);
-      }
-    };
     loadData();
   }, []);
 
@@ -198,17 +201,30 @@ const Dashboard: React.FC = () => {
                  <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
                   <td>
                     {job.status === 'Interactive Running' ? (
-                      <span
-                        className="connect-chip"
-                        title="Connect to this session"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConnectJob(job);
-                        }}
-                      >
-                        <Zap size={12} />
-                        Connect
-                      </span>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <span
+                          className="connect-chip"
+                          title="Connect to this session"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConnectJob(job);
+                          }}
+                        >
+                          <Zap size={12} />
+                          Connect
+                        </span>
+                        <span
+                          className="connect-chip"
+                          title="Commit this session as a training image"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCommitJob(job);
+                          }}
+                        >
+                          <Package size={12} />
+                          Commit
+                        </span>
+                      </div>
                     ) : (
                       <span style={{ fontFamily: 'monospace' }}>
                         {job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}
@@ -225,6 +241,14 @@ const Dashboard: React.FC = () => {
 
       {connectJob && (
         <ConnectOptionsModal job={connectJob} onClose={() => setConnectJob(null)} />
+      )}
+
+      {commitJob && (
+        <CommitModal
+          job={commitJob}
+          onClose={() => setCommitJob(null)}
+          onCommitted={() => { setCommitJob(null); loadData(); }}
+        />
       )}
     </div>
   );

@@ -26,6 +26,19 @@ class JobPriority(enum.Enum):
     HIGH = "HIGH"
 
 
+# Statuses belonging to the batch pipeline. Once a job enters these, interactive
+# session lifecycle reports (update_session_ip, watchdog) must NOT mirror
+# session state onto the job anymore.
+BATCH_JOB_STATUSES = {
+    JobStatus.VRAM_ESTIMATION_PENDING,
+    JobStatus.RUNNABLE,
+    JobStatus.IN_PROGRESS,
+    JobStatus.COMPLETED,
+    JobStatus.FAILED,
+    JobStatus.RETRY_NEEDED,
+}
+
+
 class Job(Base):
     __tablename__ = "jobs"
 

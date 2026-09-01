@@ -9,7 +9,7 @@ from app.db.database import SessionLocal
 from app.services import job_service, log_service, interactive_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest, InteractiveBuildRequest, InteractiveReadyRequest
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest, InteractiveBuildRequest, InteractiveReadyRequest, CommitInteractiveRequest, CommitFailureReport
 from app.schemas.log_schema import LogLinesRequest
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
@@ -238,6 +238,56 @@ def mark_interactive_ready(
         return {"job_id": job.id, "status": job.status.value}
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.post("/{job_id}/commit")
+def commit_interactive_job_route(
+    job_id: str,
+    request: CommitInteractiveRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """User requests to commit a running interactive session as a training image."""
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == current_user.user_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        return job_service.commit_interactive_job(
+            db, job_id, request.command, request.resume_command,
+            request.priority, request.reason_for_priority,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{job_id}/commit_complete")
+def commit_complete_route(job_id: str, db: Session = Depends(get_db)):
+    """Worker callback: the committed image was pushed; move the job into the
+    batch pipeline and tear down the interactive session."""
+    from app.models.interactive_session_model import InteractiveSession, InteractiveSessionStatus
+    try:
+        job = job_service.complete_commit(db, job_id)
+        session = interactive_service.get_session_for_job(db, job_id)
+        if session and session.status == InteractiveSessionStatus.RUNNING:
+            interactive_service.stop_session(db, session.session_id)
+        return {"job_id": job.id, "status": job.status.value}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{job_id}/commit_failed")
+def commit_failed_route(
+    job_id: str,
+    request: CommitFailureReport,
+    db: Session = Depends(get_db),
+):
+    """Worker callback: the commit/push failed; clear the pending flag so the
+    user can retry."""
+    try:
+        job = job_service.fail_commit(db, job_id, request.reason)
+        return {"job_id": job.id, "status": job.status.value}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/unbuilt_jobs")

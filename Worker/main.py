@@ -42,7 +42,8 @@ def _handle_scheduler_commands(api: SchedulerAPI, response: dict):
     The scheduler cannot reach workers directly (no public IP), so stop
     requests for interactive sessions are delivered here. Delivery repeats
     until the worker reports the container stopped via report_ip; stopping is
-    idempotent."""
+    idempotent.  Commit requests are similar: delivered here, redelivered
+    until the worker reports commit_complete or commit_failed."""
 
     for session_id in response.get("stop_sessions", []):
         logger.info("Scheduler requested stop for interactive session %s", session_id)
@@ -55,6 +56,52 @@ def _handle_scheduler_commands(api: SchedulerAPI, response: dict):
                 api.report_interactive_ip(session_id, None, "STOPPED")
             except Exception as e:
                 logger.error("Failed to report stopped state for %s: %s", session_id, e)
+
+    for commit in response.get("commit_sessions", []):
+        session_id = commit.get("session_id")
+        job_id = commit.get("job_id")
+        image_tag = commit.get("image_tag")
+        command = commit.get("command", "")
+        if not session_id or not job_id or not image_tag:
+            continue
+        logger.info("Scheduler requested commit for interactive session %s -> %s",
+                    session_id, image_tag)
+        record_event("info", f"Committing interactive session {session_id} to {image_tag}")
+        threading.Thread(
+            target=_run_commit,
+            args=(api, session_id, job_id, image_tag, command),
+            name=f"commit-{session_id[:8]}",
+            daemon=True,
+        ).start()
+
+
+def _run_commit(api: SchedulerAPI, session_id: str, job_id: str,
+                image_tag: str, command: str):
+    """Commit + push the env container in a background thread (a push can take
+    minutes; it must not block the heartbeat loop), then report the outcome."""
+    key = (session_id, image_tag)
+    with interactive_handler._commit_lock:
+        if key in interactive_handler._in_flight_commits:
+            return
+        interactive_handler._in_flight_commits.add(key)
+    try:
+        success, reason = interactive_handler.commit_and_push_container(
+            session_id, image_tag, command,
+        )
+        if success:
+            api.commit_complete(job_id)
+        else:
+            api.commit_failed(job_id, reason)
+    except Exception as e:
+        logger.error("Commit thread error for session %s: %s", session_id, e)
+        try:
+            api.commit_failed(job_id, f"Commit thread error: {e}")
+        except Exception:
+            pass
+    finally:
+        with interactive_handler._commit_lock:
+            interactive_handler._in_flight_commits.discard(key)
+
 
 def job_loop(executor: JobExecutor, api: SchedulerAPI, stop_event: threading.Event):
     logger.info("Job thread started.")

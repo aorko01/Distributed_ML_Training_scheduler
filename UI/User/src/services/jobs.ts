@@ -191,6 +191,37 @@ export const fetchJobConnectInfo = async (jobId: string): Promise<JobConnectInfo
   return data as JobConnectInfo;
 };
 
+export interface CommitInteractivePayload {
+  command: string;
+  resumeCommand?: string;
+  priority: 'NORMAL' | 'REQUESTED' | 'HIGH';
+  reasonForPriority?: string;
+}
+
+export interface CommitInteractiveResponse {
+  job_id: string;
+  session_id: string;
+  image_tag: string;
+  status: string;
+}
+
+export const commitInteractiveJob = async (
+  jobId: string,
+  payload: CommitInteractivePayload,
+): Promise<CommitInteractiveResponse> => {
+  const data = await api.post<CommitInteractiveResponse | { error: string }>(
+    `/jobs/${jobId}/commit`,
+    {
+      command: payload.command,
+      resume_command: payload.resumeCommand,
+      priority: payload.priority,
+      reason_for_priority: payload.reasonForPriority,
+    },
+  );
+  if (hasError(data)) throw new Error((data as { error: string }).error);
+  return data as CommitInteractiveResponse;
+};
+
 export interface SubmitJobPayload {
   name: string;
   command: string;

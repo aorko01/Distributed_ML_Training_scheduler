@@ -158,3 +158,26 @@ class SchedulerAPI:
                         session_id, status, headscale_ip)
         except Exception as e:
             logger.error("Failed to report interactive IP for %s: %s", session_id, e)
+
+    def commit_complete(self, job_id: str):
+        """Report that the committed image was pushed to Docker Hub."""
+        try:
+            resp = requests.post(_url(f"/jobs/{job_id}/commit_complete"), json={}, timeout=10)
+            resp.raise_for_status()
+            logger.info("Reported commit complete for job %s: %s", job_id, resp.json())
+        except Exception as e:
+            logger.error("Failed to report commit complete for job %s: %s", job_id, e)
+            raise
+
+    def commit_failed(self, job_id: str, reason: str = ""):
+        """Report that the commit/push failed."""
+        try:
+            resp = requests.post(
+                _url(f"/jobs/{job_id}/commit_failed"),
+                json={"reason": reason[:2000]},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            logger.info("Reported commit failure for job %s: %s", job_id, resp.json())
+        except Exception as e:
+            logger.error("Failed to report commit failure for job %s: %s", job_id, e)

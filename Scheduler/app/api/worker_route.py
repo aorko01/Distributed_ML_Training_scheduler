@@ -35,6 +35,9 @@ async def worker_heartbeat(Heartbeat: HeartbeatSchema, db=Depends(get_db)):
         stop_sessions=interactive_service.get_stop_sessions_for_worker(
             db, Heartbeat.worker_id
         ),
+        commit_sessions=interactive_service.get_commit_sessions_for_worker(
+            db, Heartbeat.worker_id
+        ),
     )
 
 

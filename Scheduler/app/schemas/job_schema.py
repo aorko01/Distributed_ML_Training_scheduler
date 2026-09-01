@@ -57,3 +57,14 @@ class InteractiveBuildRequest(BaseModel):
 
 class InteractiveReadyRequest(BaseModel):
     job_id: str
+
+
+class CommitInteractiveRequest(BaseModel):
+    command: str
+    resume_command: Optional[str] = None
+    priority: JobPriority = JobPriority.NORMAL
+    reason_for_priority: Optional[str] = None
+
+
+class CommitFailureReport(BaseModel):
+    reason: Optional[str] = None

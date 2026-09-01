@@ -25,3 +25,6 @@ class HeartbeatResponse(BaseModel):
     # workers are not inbound-reachable). Redelivered until the worker reports
     # the container stopped.
     stop_sessions: list[str] = []
+    # Commit commands for interactive sessions this worker hosts (delivered
+    # out-of-band like stop_sessions; redelivered until commit_complete/failed).
+    commit_sessions: list[dict] = []

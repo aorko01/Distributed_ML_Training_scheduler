@@ -101,6 +101,8 @@ def run_migrations():
         "CREATE INDEX IF NOT EXISTS ix_interactive_sessions_user_id ON interactive_sessions (user_id)",
         "CREATE INDEX IF NOT EXISTS ix_interactive_sessions_session_id ON interactive_sessions (session_id)",
         "ALTER TABLE interactive_sessions ADD COLUMN IF NOT EXISTS last_worker_id VARCHAR",
+        "ALTER TABLE interactive_sessions ADD COLUMN IF NOT EXISTS commit_pending BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE interactive_sessions ADD COLUMN IF NOT EXISTS commit_image_tag VARCHAR",
     ]
     with engine.begin() as conn:
         for statement in statements:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Enum, ForeignKey
+from sqlalchemy import Boolean, Column, String, DateTime, Enum, ForeignKey
 from sqlalchemy.sql import func
 import enum
 import uuid
@@ -41,6 +41,11 @@ class InteractiveSession(Base):
         default=InteractiveSessionStatus.PENDING,
         nullable=False,
     )
+
+    # Pending "commit this session as a training image" request, delivered to
+    # the hosting worker via its heartbeat response.
+    commit_pending = Column(Boolean, default=False, nullable=False)
+    commit_image_tag = Column(String, nullable=True)
 
     # Last worker that hosted this session (for failover: avoid re-dispatching
     # to the same machine that just lost the container).

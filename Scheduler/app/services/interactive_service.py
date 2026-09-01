@@ -12,7 +12,7 @@ from app.models.interactive_session_model import (
     InteractiveSession,
     InteractiveSessionStatus,
 )
-from app.models.job_model import Job, JobStatus
+from app.models.job_model import Job, JobStatus, BATCH_JOB_STATUSES
 from app.services import job_service
 
 logger = logging.getLogger("interactive_service")
@@ -175,9 +175,10 @@ async def update_session_ip(db: Session, session_id: str, headscale_ip: str | No
     else:
         raise InteractiveServiceError(f"Unknown report status '{status}'")
 
-    # Mirror state onto the associated interactive job.
+    # Mirror state onto the associated interactive job (only if the job hasn't
+    # already moved into the batch pipeline via a commit).
     job = db.query(Job).filter(Job.id == record.job_id).first()
-    if job:
+    if job and job.status not in BATCH_JOB_STATUSES:
         mapping = {
             "RUNNING": JobStatus.INTERACTIVE_RUNNING,
             "FAILED": JobStatus.FAILED,
@@ -324,3 +325,39 @@ def _revoke_headscale_key(key: str):
         )
     except Exception as e:
         logger.warning("Failed to revoke headscale key: %s", e)
+
+
+def get_commit_sessions_for_worker(db: Session, worker_id: str) -> list[dict]:
+    """Commit commands to deliver to a worker via its heartbeat response.
+
+    Entries stay queued (commit_pending=True) until the worker reports
+    commit_complete or commit_failed, so redelivery until confirmation is safe.
+    """
+    records = (
+        db.query(InteractiveSession)
+        .filter(
+            InteractiveSession.worker_id == worker_id,
+            InteractiveSession.commit_pending.is_(True),
+        )
+        .all()
+    )
+    result = []
+    for r in records:
+        job = db.query(Job).filter(Job.id == r.job_id).first()
+        result.append({
+            "session_id": r.session_id,
+            "job_id": r.job_id,
+            "image_tag": r.commit_image_tag,
+            "command": job.command if job else "",
+        })
+    return result
+
+
+def get_session_for_job(db: Session, job_id: str) -> InteractiveSession | None:
+    """Return the most recent interactive session for a job."""
+    return (
+        db.query(InteractiveSession)
+        .filter(InteractiveSession.job_id == job_id)
+        .order_by(InteractiveSession.created_at.desc())
+        .first()
+    )

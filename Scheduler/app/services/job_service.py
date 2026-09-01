@@ -680,3 +680,124 @@ def get_user_job_by_id(db: Session, user_id: str, job_id: str):
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }
+
+
+def commit_interactive_job(db: Session, job_id: str, command: str,
+                           resume_command: str | None, priority: JobPriority,
+                           reason_for_priority: str | None) -> dict:
+    """Validate and queue a commit of a running interactive session.
+
+    Stores the training command fields on the job record now (so they survive a
+    slow push) but does NOT move the job out of INTERACTIVE_RUNNING — the
+    VRAM_ESTIMATION_PENDING transition happens only in complete_commit(), after
+    the worker confirms the image was pushed.
+    """
+    from app.models.interactive_session_model import (
+        InteractiveSession,
+        InteractiveSessionStatus,
+    )
+
+    if not command or not command.strip():
+        raise Exception("Run command is required")
+
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise Exception("Job not found")
+    if job.status != JobStatus.INTERACTIVE_RUNNING:
+        raise Exception("Job is not in INTERACTIVE_RUNNING state")
+
+    session = (
+        db.query(InteractiveSession)
+        .filter(
+            InteractiveSession.job_id == job_id,
+            InteractiveSession.status == InteractiveSessionStatus.RUNNING,
+        )
+        .first()
+    )
+    if not session:
+        raise Exception("No running interactive session for this job")
+    if session.commit_pending:
+        raise Exception("A commit is already in progress for this session")
+
+    job.command = command
+    job.resume_command = resume_command
+    job.priority = priority
+    job.reason_for_priority = reason_for_priority
+
+    docker_hub_username = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
+    image_tag = f"{docker_hub_username}/{job_id}:latest"
+    session.commit_pending = True
+    session.commit_image_tag = image_tag
+
+    db.commit()
+    db.refresh(job)
+    db.refresh(session)
+
+    return {
+        "job_id": job.id,
+        "session_id": session.session_id,
+        "image_tag": image_tag,
+        "status": job.status.value,
+    }
+
+
+def complete_commit(db: Session, job_id: str):
+    """Worker confirmed the committed image was pushed: move the job into the
+    batch pipeline. Idempotent — a second call after the transition is a no-op."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise Exception("Job not found")
+
+    session = (
+        db.query(InteractiveSession)
+        .filter(InteractiveSession.job_id == job_id)
+        .order_by(InteractiveSession.created_at.desc())
+        .first()
+    )
+
+    # Already moved to batch pipeline (idempotent).
+    if job.status == JobStatus.VRAM_ESTIMATION_PENDING:
+        if session:
+            session.commit_pending = False
+            session.commit_image_tag = None
+            db.commit()
+        return job
+
+    if not session or not session.commit_pending:
+        raise Exception("No pending commit for this job")
+
+    session.commit_pending = False
+    session.commit_image_tag = None
+    job.status = JobStatus.VRAM_ESTIMATION_PENDING
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def fail_commit(db: Session, job_id: str, reason: str | None = None):
+    """Worker reported the commit/push failed: clear the pending flag and leave
+    the job INTERACTIVE_RUNNING so the user can retry. If the job already moved
+    to the batch pipeline, ignore (the push actually succeeded; the worker's
+    completion report was simply lost)."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise Exception("Job not found")
+
+    # Push actually succeeded; ignore the late failure report.
+    if job.status == JobStatus.VRAM_ESTIMATION_PENDING:
+        return job
+
+    session = (
+        db.query(InteractiveSession)
+        .filter(InteractiveSession.job_id == job_id)
+        .order_by(InteractiveSession.created_at.desc())
+        .first()
+    )
+    if session:
+        session.commit_pending = False
+        session.commit_image_tag = None
+    if reason:
+        job.failure_reason = reason[:2000]
+    db.commit()
+    db.refresh(job)
+    return job

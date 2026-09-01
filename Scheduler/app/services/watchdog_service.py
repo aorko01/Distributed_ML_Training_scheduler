@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from app.core.redis import redis_client
 from app.db.database import SessionLocal
-from app.models.job_model import Job, JobStatus
+from app.models.job_model import Job, JobStatus, BATCH_JOB_STATUSES
 from app.models.interactive_session_model import (
     InteractiveSession,
     InteractiveSessionStatus,
@@ -161,7 +161,7 @@ async def check_stalled_interactive_sessions() -> int:
                 session.status = InteractiveSessionStatus.STOPPED
                 session.stopped_at = datetime.now(timezone.utc)
                 job = db.query(Job).filter(Job.id == session.job_id).first()
-                if job:
+                if job and job.status not in BATCH_JOB_STATUSES:
                     job.status = JobStatus.INTERACTIVE_STOPPED
                 db.commit()
                 handled += 1
@@ -175,7 +175,7 @@ async def check_stalled_interactive_sessions() -> int:
                 session.last_worker_id = old_worker_id
                 session.status = InteractiveSessionStatus.PENDING
                 job = db.query(Job).filter(Job.id == session.job_id).first()
-                if job:
+                if job and job.status not in BATCH_JOB_STATUSES:
                     job.status = JobStatus.INTERACTIVE_READY
                     job.failure_reason = (
                         job.failure_reason
