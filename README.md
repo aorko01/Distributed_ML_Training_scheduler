@@ -167,9 +167,10 @@ Key data model: `Scheduler/app/models/interactive_session_model.py`
    posts it to `POST /interactive/report_ip` → `INTERACTIVE_RUNNING`.
 5. **Connect.** `GET /jobs/{job_id}/connect` (JWT) returns the
    gateway host/port, the user's username, `container_user=sandbox`,
-   and a one-time 5-minute password minted by
-   `Scheduler/app/services/ephemeral_password_service.py` (in-memory,
-   SHA-256 keyed, single-use, one-valid-per-session).
+    and a short-lived password minted by
+    `Scheduler/app/services/ephemeral_password_service.py` (in-memory,
+    SHA-256 keyed, time-windowed with grace extension on first use,
+    one-valid-per-session).
    The gateway's `check_auth_password` calls
    `POST /interactive/sessions/verify-ephemeral` on the Scheduler,
    consumes the password, and is told the `session_id` and
@@ -254,7 +255,7 @@ lives in each service's `config.py`. Key variables (defaults shown):
   `api/docker_route.py`, `api/resource_route.py`, `api/deps.py` — rest of the HTTP surface.
 - `services/job_service.py` — scheduling strategies and state transitions.
 - `services/interactive_service.py` — full interactive-session orchestration.
-- `services/ephemeral_password_service.py` — single-use SSH password store.
+- `services/ephemeral_password_service.py` — time-windowed SSH password store (multi-use within validity window).
 - `services/watchdog_service.py` — stalled jobs, stalled sessions, auto-kill timers.
 - `services/worker_service.py`, `services/log_service.py`,
   `services/scheduler_service.py`, `services/resource_service.py`,

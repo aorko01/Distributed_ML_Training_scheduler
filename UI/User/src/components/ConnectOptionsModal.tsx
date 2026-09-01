@@ -206,7 +206,7 @@ const ConnectOptionsModal: React.FC<ConnectOptionsModalProps> = ({ job, onClose 
                         </button>
                       </div>
                       <div style={{ marginTop: '0.4rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                        Expires in {Math.ceil(connectInfo.ssh_password_ttl_seconds / 60)} min · single use
+                        Expires in {Math.ceil(connectInfo.ssh_password_ttl_seconds / 60)} min · reusable for multiple connections
                       </div>
                     </>
                   )}
