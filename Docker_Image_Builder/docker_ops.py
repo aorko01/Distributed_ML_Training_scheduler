@@ -97,6 +97,16 @@ def generate_env_dockerfile(base_image: str, with_project: bool = False) -> str:
             "",
         ]
 
+    # Login shells (bash -l) do NOT source ~/.bashrc, but conda/virtualenv
+    # activation lives in ~/.bashrc. Create ~/.bash_profile that sources it
+    # so interactive SSH logins (HOME=/root) get the full Python environment.
+    lines += [
+        'RUN if [ ! -f /root/.bash_profile ]; then \\',
+        "      printf '\\n# Source .bashrc for login shells (conda/virtualenv activation)\\n[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\\n' > /root/.bash_profile; \\",
+        '    fi',
+        '',
+    ]
+
     lines += [
         'CMD ["sleep", "infinity"]',
     ]
@@ -207,15 +217,15 @@ chmod 600 /home/sandbox/.ssh/authorized_keys
 # sshd config: force every connection to nsenter into the env container's
 # PID 1 (the env container's `sleep infinity`), entering all its namespaces
 # (mount, UTS, IPC, net, PID) so the user lands inside the training container.
-# nsenter runs as root via the setuid bit (see above) so the unprivileged
-# `sandbox` SSH login can still enter the env container's namespaces.
+# HOME=/root ensures ~/.bash_profile is sourced (conda/virtualenv activation).
+# PATH includes /opt/conda/bin and /usr/local/bin as fallbacks for Python tools.
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/sandbox.conf <<'SSHD'
 PasswordAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
 AllowUsers sandbox
-ForceCommand nsenter -t 1 -m -u -i -n -p -- /bin/bash -l
+ForceCommand nsenter -t 1 -m -u -i -n -p -- /bin/bash -c 'export HOME=/root; export PATH=/opt/conda/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin; exec /bin/bash -l'
 SSHD
 
 echo "Tailscale IP: $(tailscale ip -4 || true)"
