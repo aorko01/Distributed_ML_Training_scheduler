@@ -10,6 +10,7 @@ from config import (
     DOCKER_HUB_USERNAME, DOCKER_HUB_PASSWORD,
     DEBUG_SAVE_LOCAL, DEBUG_LOCAL_DIR, logger,
     OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET, OBJECT_STORE_BUCKET,
+    DOCKER_BUILD_NO_CACHE,
 )
 from database import update_base_image_usage, get_old_base_images, remove_base_image_record
 from api import send_log_lines
@@ -25,6 +26,9 @@ def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
     has_requirements = os.path.exists(os.path.join(project_dir, "requirements.txt"))
     lines = [
         f"FROM {base_image}", "",
+        "ENV PYTHONDONTWRITEBYTECODE=1",
+        "RUN find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true",
+        "",
         "WORKDIR /workspace", "",
         "COPY . /workspace/", ""
     ]
@@ -88,13 +92,8 @@ def generate_env_dockerfile(base_image: str, with_project: bool = False) -> str:
     lines = [
         f"FROM {base_image}", "",
         "USER root",
-        "# Prepare home directory for VS Code Remote-SSH (sandbox user, UID 1000)",
-        "RUN mkdir -p /home/sandbox && chown 1000:1000 /home/sandbox && chmod 755 /home/sandbox",
-        "# Install tools needed by VS Code server installer (skip silently on non-Debian)",
-        "RUN if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates tar gzip && rm -rf /var/lib/apt/lists/*; fi",
-        "",
-    ]
-    lines += [
+        "ENV PYTHONDONTWRITEBYTECODE=1",
+        "RUN find / -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true",
         "# Prepare home directory for VS Code Remote-SSH (sandbox user, UID 1000)",
         "RUN mkdir -p /home/sandbox && chown 1000:1000 /home/sandbox && chmod 755 /home/sandbox",
         "# Install tools needed by VS Code server installer (skip silently on non-Debian)",
@@ -498,7 +497,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
         try:
-            _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True)
+            _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True, nocache=DOCKER_BUILD_NO_CACHE)
             for chunk in build_logs:
                 chunk_lines = []
                 if "error" in chunk:

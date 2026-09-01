@@ -28,6 +28,9 @@ DB_PATH = os.environ.get("DB_PATH", "/data/builder.db")
 DEBUG_SAVE_LOCAL = os.environ.get("DEBUG_SAVE_LOCAL", "false").strip().lower() in ("1", "true", "yes", "on")
 DEBUG_LOCAL_DIR = os.environ.get("DEBUG_LOCAL_DIR", "./debug_jobs")
 
+# Build settings
+DOCKER_BUILD_NO_CACHE = os.environ.get("DOCKER_BUILD_NO_CACHE", "false").strip().lower() in ("1", "true", "yes", "on")
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
