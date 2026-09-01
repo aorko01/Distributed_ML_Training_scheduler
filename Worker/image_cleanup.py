@@ -77,3 +77,64 @@ def remove_image(image_tag: str) -> bool:
     except Exception as exc:
         logger.warning("Exception removing image %s: %s", image_tag, exc)
         return False
+
+
+def cleanup_stale_containers():
+    """Kill and remove leftover containers from aorko123/{job_id}:latest and
+    aorko123/access-sshd:latest images at worker startup.
+
+    This cleans up any containers left running from a previous worker process
+    (e.g. after a crash) so the worker starts from a clean slate. Only containers
+    using images under the configured DOCKER_HUB_USERNAME namespace with the
+    ``latest`` tag — which covers both per-job derived images
+    (``aorko123/{job_id}:latest``) and the shared access image
+    (``aorko123/access-sshd:latest``) — are targeted.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.ID}} {{.Image}}"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        logger.warning("Could not list Docker containers for cleanup: %s", e)
+        return
+
+    if result.returncode != 0:
+        logger.warning("Failed to list containers: %s", (result.stderr or "").strip())
+        return
+
+    prefix = f"{config.DOCKER_HUB_USERNAME}/"
+    access_image = config.INTERACTIVE_ACCESS_IMAGE
+    removed = 0
+
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        container_id, image_name = parts[0], parts[1]
+
+        if image_name == access_image or (
+            image_name.startswith(prefix) and image_name.endswith(":latest")
+        ):
+            rm_result = subprocess.run(
+                ["docker", "rm", "-f", container_id],
+                capture_output=True, text=True, timeout=30,
+            )
+            if rm_result.returncode == 0:
+                logger.info(
+                    "Removed stale container %s (image: %s)",
+                    container_id[:12], image_name,
+                )
+                removed += 1
+            else:
+                logger.warning(
+                    "Failed to remove stale container %s: %s",
+                    container_id[:12],
+                    (rm_result.stderr or "").strip(),
+                )
+
+    if removed:
+        logger.info("Startup cleanup removed %d stale container(s).", removed)

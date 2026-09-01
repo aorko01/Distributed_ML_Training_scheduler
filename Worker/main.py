@@ -2,10 +2,12 @@ import time
 import logging
 import threading
 import os
+import signal
 
 from hardware import get_or_create_worker_id, get_gpu_info, collect_node_info, count_gpus_in_use
 from api import SchedulerAPI
 from executor import JobExecutor
+from image_cleanup import cleanup_stale_containers
 from telemetry import record_heartbeat, record_event, is_paused
 import runtime_config
 import server
@@ -128,6 +130,9 @@ def main():
     logger.info("Worker starting. ID: %s", worker_id)
     record_event("info", f"Worker starting (id {worker_id})")
 
+    cleanup_stale_containers()
+    record_event("info", "Cleaned up stale containers from previous run")
+
     # Initialize components
     api = SchedulerAPI(worker_id)
     executor = JobExecutor(api)
@@ -141,6 +146,15 @@ def main():
     )
 
     stop_event = threading.Event()
+
+    def _shutdown():
+        logger.info("Worker shutting down.")
+        record_event("info", "Worker shutting down")
+        stop_event.set()
+        cleanup_stale_containers()
+        record_event("info", "Cleaned up containers on shutdown")
+
+    signal.signal(signal.SIGTERM, lambda s, f: _shutdown())
 
     heartbeat_thread = threading.Thread(
         target=heartbeat_loop, args=(api, stop_event), name="heartbeat", daemon=True
@@ -170,9 +184,7 @@ def main():
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("Worker shutting down.")
-        record_event("info", "Worker shutting down")
-        stop_event.set()
+        _shutdown()
 
 if __name__ == "__main__":
     main()
