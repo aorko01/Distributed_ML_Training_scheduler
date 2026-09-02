@@ -9,7 +9,7 @@ import docker
 from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL, DOCKER_HUB_USERNAME
 from database import init_db, is_job_processed, mark_job_processed
 from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_interactive_ready, notify_scheduler_job_failed
-from docker_ops import docker_login, build_push_and_clean, build_derived_env_image, prune_old_base_images, resolve_interactive_base_image, ensure_access_image
+from docker_ops import docker_login, build_push_and_clean, prune_old_base_images, resolve_interactive_base_image, ensure_access_image
 
 def find_project_dir(extracted_dir: str) -> str:
     for entry in sorted(os.listdir(extracted_dir)):
@@ -80,16 +80,14 @@ def scan_and_process():
         try:
             if build_type == "interactive":
                 if base_job_id:
-                    # Derived interactive build: layer the env Dockerfile
-                    # (full dev toolset) on top of the base training image
-                    # ({user}/{base_job_id}:latest) and push as
-                    # {user}/{job_id}-env:latest.
-                    base_image_tag = f"{DOCKER_HUB_USERNAME}/{base_job_id}:latest"
-                    logger.info(
-                        "Derived interactive build for %s: base=%s",
-                        job_id, base_image_tag,
-                    )
-                    result = build_derived_env_image(client, job_id, base_image_tag)
+                    # Derived interactive build: reuse the base training image
+                    # ({user}/{base_job_id}:latest) as the env image — no build
+                    # needed. Just ensure the shared access image is available
+                    # and notify the scheduler.
+                    if not ensure_access_image(client):
+                        result = ("system", "Failed to pull access image aorko123/access-sshd:latest")
+                    else:
+                        result = None
                 else:
                     # Direct interactive build: resolve the environment from
                     # the job's config spec and build a standalone env image

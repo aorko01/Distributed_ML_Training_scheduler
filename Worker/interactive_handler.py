@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-import shlex
 import threading
 import time
 
@@ -166,14 +165,11 @@ def _container_name(session_id: str, role: str = "env") -> str:
 
 
 def _prepare_env_container(env_name: str, access_name: str) -> None:
-    """Best-effort preparation of the env container for interactive use.
+    """Best-effort preparation of the env container for VS Code Remote-SSH.
 
-    Installs a full dev toolset (compilers, git, editors, network/proc
-    utilities, Python + pip, sudo) at runtime so the container behaves like
-    a normal Linux dev VM.  Also creates /home/sandbox owned by the sandbox
-    user for VS Code Remote-SSH.
-
-    All failures are logged and swallowed so the session can still proceed.
+    Creates /home/sandbox owned by the sandbox user and installs basic tools
+    (curl, tar, gzip) if available. Never raises — all failures are logged and
+    swallowed so the session can still proceed.
     """
     import subprocess
 
@@ -205,99 +201,29 @@ def _prepare_env_container(env_name: str, access_name: str) -> None:
     except Exception as exc:
         logger.warning("Failed to create /home/sandbox in %s: %s", env_name, exc)
 
-    # 3. Full, idempotent dev-toolset bootstrap.
-    #    This is a no-op if the image already has the toolset (Part A baked
-    #    it in). For older images or environments without Part A, this
-    #    installs the full toolset at runtime. Failures are non-fatal.
-    bootstrap_script = r"""set -eux
-# Detect package manager and install a full dev toolset.
-if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    apt-get install -y --no-install-recommends \
-        build-essential gcc g++ make \
-        git curl wget ca-certificates gnupg \
-        sudo vim nano tmux htop procps \
-        iproute2 net-tools dnsutils \
-        zip unzip bzip2 xz-utils rsync jq file less \
-        openssh-client \
-        python3 python3-pip python3-venv
-    rm -rf /var/lib/apt/lists/*
-elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache \
-        build-base gcc g++ make \
-        git curl wget ca-certificates sudo \
-        vim nano tmux htop procps \
-        busybox-extras iproute2 bind-tools \
-        zip unzip openssh-client \
-        py3-pip
-elif command -v yum >/dev/null 2>&1; then
-    yum install -y --setopt=tsflags=nodocs \
-        gcc gcc-c++ make \
-        git curl wget ca-certificates sudo \
-        vim-enhanced nano tmux htop procps-ng \
-        iproute net-tools bind-utils \
-        zip unzip bzip2 xz rsync jq file less \
-        openssh-clients \
-        python3 python3-pip
-    yum clean all && rm -rf /var/cache/yum
-elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y --setopt=tsflags=nodocs \
-        gcc gcc-c++ make \
-        git curl wget ca-certificates sudo \
-        vim-enhanced nano tmux htop procps-ng \
-        iproute net-tools bind-utils \
-        zip unzip bzip2 xz rsync jq file less \
-        openssh-clients \
-        python3 python3-pip
-    dnf clean all && rm -rf /var/cache/dnf
-fi
-# Ensure passwordless sudo for root and sandbox user (created if missing).
-if [ ! -f /etc/sudoers.d/99-sandbox ]; then
-    printf 'root ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/99-sandbox
-    chmod 0440 /etc/sudoers.d/99-sandbox
-fi
-if id -u sandbox >/dev/null 2>&1; then
-    if ! grep -q 'sandbox' /etc/sudoers.d/99-sandbox 2>/dev/null; then
-        echo 'sandbox ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers.d/99-sandbox
-    fi
-else
-    useradd -m -s /bin/bash sandbox 2>/dev/null || adduser -D -s /bin/sh sandbox
-    echo 'sandbox ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers.d/99-sandbox
-fi
-# Ensure python3/pip are on PATH.
-export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
-"""
-    extra_packages = getattr(config, "INTERACTIVE_EXTRA_PACKAGES", None) or []
-    if extra_packages:
-        quoted = " ".join(shlex.quote(str(pkg)) for pkg in extra_packages)
-        bootstrap_script += f"""
-# User-requested extra packages (INTERACTIVE_EXTRA_PACKAGES).
-if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y --no-install-recommends {quoted}
-elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache {quoted}
-elif command -v yum >/dev/null 2>&1; then
-    yum install -y {quoted}
-elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y {quoted}
-fi
-"""
+    # 3. Best-effort tool install (curl, tar, gzip) — skip on non-Debian images.
     try:
-        logger.info("Running dev-toolset bootstrap in env container %s (timeout %ss)...",
-                     env_name, config.INTERACTIVE_TOOL_TIMEOUT)
-        result = subprocess.run(
-            ["docker", "exec", "-u", "0", env_name, "bash", "-c", bootstrap_script],
-            capture_output=True, text=True, timeout=config.INTERACTIVE_TOOL_TIMEOUT,
+        subprocess.run(
+            ["docker", "exec", "-u", "0", env_name, "bash", "-c",
+             "command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1 && exit 0 || true"],
+            capture_output=True, text=True, timeout=10,
         )
-        if result.returncode == 0:
-            logger.info("Dev-toolset bootstrap succeeded in %s", env_name)
-        else:
-            logger.warning("Dev-toolset bootstrap failed (non-fatal) in %s: %s",
-                           env_name, (result.stderr or result.stdout)[-500:])
-    except subprocess.TimeoutExpired:
-        logger.warning("Dev-toolset bootstrap timed out in %s (non-fatal)", env_name)
+        check = subprocess.run(
+            ["docker", "exec", "-u", "0", env_name, "bash", "-c",
+             "command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if check.returncode != 0:
+            subprocess.run(
+                ["docker", "exec", "-u", "0", env_name, "bash", "-c",
+                 "if command -v apt-get >/dev/null 2>&1; then "
+                 "apt-get update -qq && "
+                 "apt-get install -y --no-install-recommends curl ca-certificates tar gzip && "
+                 "rm -rf /var/lib/apt/lists/*; fi"],
+                capture_output=True, text=True, timeout=300,
+            )
     except Exception as exc:
-        logger.warning("Dev-toolset bootstrap skipped in %s: %s", env_name, exc)
+        logger.warning("Best-effort tool install in %s skipped: %s", env_name, exc)
 
     # 4. Diagnostics.
     try:

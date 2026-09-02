@@ -96,18 +96,6 @@ INTERACTIVE_NO_CONNECT_TIMEOUT = int(os.getenv("INTERACTIVE_NO_CONNECT_TIMEOUT",
 # and reports INTERACTIVE_STOPPED. 0 disables.
 INTERACTIVE_IDLE_TIMEOUT = int(os.getenv("INTERACTIVE_IDLE_TIMEOUT", "1800"))
 
-# Timeout (seconds) for the runtime dev-toolset bootstrap inside the env
-# container.  The bootstrap installs compilers, git, editors, sudo, etc. at
-# deploy time so the interactive session behaves like a full dev VM.
-INTERACTIVE_TOOL_TIMEOUT = int(os.getenv("INTERACTIVE_TOOL_TIMEOUT", "300"))
-
-# Optional extra system packages to install per-session at deploy time on top
-# of the default dev toolset. Comma-separated in the env var. Default is empty.
-_INTERACTIVE_EXTRA_PACKAGES = os.getenv("INTERACTIVE_EXTRA_PACKAGES", "")
-INTERACTIVE_EXTRA_PACKAGES = [
-    p.strip() for p in _INTERACTIVE_EXTRA_PACKAGES.split(",") if p.strip()
-]
-
 # File Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKER_ID_FILE = os.path.join(BASE_DIR, "worker_id.txt")

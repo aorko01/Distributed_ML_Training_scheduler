@@ -149,16 +149,9 @@ Key data model: `Scheduler/app/models/interactive_session_model.py`
    - asks `headscale_mgmt` for a Tailscale pre-auth key
      (`POST /auth-keys`, default 1 h TTL),
    - persists `InteractiveSession` as `PENDING`.
-2. **Build.** `Docker_Image_Builder` builds the env image. Interactive env
-   images are self-sufficient: `generate_env_dockerfile`
-   (`Docker_Image_Builder/docker_ops.py`) layers a full dev toolset
-   (compilers, git, editors, network/proc utilities, Python + pip,
-   passwordless sudo) on top of the base image — for derived sessions this
-   toolset is layered onto the base job's image as `{user}/{job_id}-env`,
-   for direct sessions onto the resolved python base. The builder posts
-   `POST /jobs/mark_interactive_ready` → `INTERACTIVE_READY`. The worker's
-   `_prepare_env_container` re-runs the same bootstrap at deploy time
-   (non-fatal), so stale images also get the VM-like toolset.
+2. **Build.** `Docker_Image_Builder` builds the env image (or reuses
+   the base job's image) and posts
+   `POST /jobs/mark_interactive_ready` → `INTERACTIVE_READY`.
 3. **Dispatch.** First idle worker calling `/jobs/pull_job` claims the
    session (`SELECT … FOR UPDATE`), sets `INTERACTIVE_DEPLOYING`, and
    gets a payload with `env_image_tag`, `access_image_tag=aorko123/access-sshd:latest`,
