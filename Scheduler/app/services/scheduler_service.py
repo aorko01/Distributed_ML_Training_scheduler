@@ -18,7 +18,7 @@ async def get_overview(db: Session) -> dict:
     gpus_allocated = 0
 
     for worker in workers:
-        gpus_total += worker.num_gpus or 0
+        gpus_total += worker.num_gpus or 0  # type: ignore[assignment]
 
     live_workers = await get_all_workers(db)
     for worker in live_workers:
@@ -130,7 +130,7 @@ def get_throughput(db: Session) -> dict:
         .all()
     )
     completed = [
-        (ts, job.id)
+        (ts, str(job.id))
         for job in jobs
         if (ts := _completion_time(job)) is not None
     ]

@@ -32,7 +32,7 @@ def create_interactive_session(
     current_user: User = Depends(get_current_active_user),
 ):
     try:
-        return interactive_service.create_session(db, current_user.user_id, body.base_job_id)
+        return interactive_service.create_session(db, str(current_user.user_id), body.base_job_id)
     except interactive_service.InteractiveServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -61,7 +61,7 @@ def get_active_session(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    session = interactive_service.get_active_session_for_user(db, current_user.user_id)
+    session = interactive_service.get_active_session_for_user(db, str(current_user.user_id))
     if not session:
         raise HTTPException(status_code=404, detail="No active interactive session")
     return {

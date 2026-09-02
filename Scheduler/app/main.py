@@ -2,7 +2,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI as FastAPIApp
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import Base, engine, run_migrations
 
@@ -22,7 +22,7 @@ from app.db.seed import seed_admin_user
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPIApp):
     seed_admin_user()
     watcher = asyncio.create_task(watchdog_service.run_stall_watcher())
     try:
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
             pass
 
 # Create FastAPI app
-app = FastAPI(
+app = FastAPIApp(  # type: ignore[no-redef]
     title="GPU Scheduler",
     description="Scheduler API for registering workers and submitting jobs",
     version="1.0.0",

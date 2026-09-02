@@ -59,13 +59,13 @@ async def read_log_stream(
     )
 
     messages = []
-    for _stream_name, entries in result:
-        for entry_id, data in entries:
+    for stream_name, entries in result:  # type: ignore[misc]
+        for entry_id, data in entries:  # type: ignore[misc]
             messages.append(
                 {
                     "id": entry_id,
-                    "line": data.get("line", ""),
-                    "ts": int(data.get("ts", 0)),
+                    "line": data.get("line", ""),  # type: ignore[union-attr]
+                    "ts": int(data.get("ts", 0)),  # type: ignore[union-attr]
                 }
             )
     return messages

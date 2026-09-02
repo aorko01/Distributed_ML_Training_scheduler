@@ -27,7 +27,7 @@ def get_user_by_id(db: Session, user_id: str) -> User | None:
 
 def authenticate_user(db: Session, username: str, password: str) -> User | None:
     user = get_user_by_username(db, username)
-    if not user or not verify_password(password, user.hashed_password):
+    if not user or not verify_password(password, str(user.hashed_password)):
         return None
     return user
 
@@ -39,12 +39,12 @@ def update_user_profile(db: Session, user_id: str, user_update: UserUpdate) -> U
     if not user:
         return None
     if user_update.name is not None:
-        user.name = user_update.name
+        user.name = user_update.name  # type: ignore[assignment]
     if user_update.email is not None:
         existing = get_user_by_email(db, user_update.email)
         if existing and existing.user_id != user_id:
             return None
-        user.email = user_update.email
+        user.email = user_update.email  # type: ignore[assignment]
     db.commit()
     db.refresh(user)
     return user

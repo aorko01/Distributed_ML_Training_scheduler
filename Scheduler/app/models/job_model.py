@@ -57,13 +57,13 @@ class Job(Base):
         Enum(JobPriority),
         default=JobPriority.NORMAL,
         nullable=False,
-    )
+    )  # type: ignore[assignment]
     reason_for_priority = Column(String, nullable=True)
 
     status = Column(
         Enum(JobStatus),
         default=JobStatus.NOT_RUNNABLE
-    )
+    )  # type: ignore[assignment]
 
     # VRAM estimation
     vram_required = Column(Float, nullable=True)  # in GB

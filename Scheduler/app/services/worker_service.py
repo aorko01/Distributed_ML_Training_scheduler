@@ -42,7 +42,7 @@ def register_or_update_worker_service(db: Session, worker_info):
     metrics = worker_info.model_dump()
     db_worker = db.query(Worker).filter(Worker.worker_id == worker_info.worker_id).first()
     if db_worker:
-        db_worker.last_registered = func.now()
+        db_worker.last_registered = func.now()  # type: ignore[assignment]
         _apply_worker_metrics(db_worker, metrics)
     else:
         db_worker = Worker(
@@ -119,7 +119,7 @@ async def _update_redis_worker(key: str, Heartbeat: HeartbeatSchema):
         mapping["total_disk"] = Heartbeat.total_disk
     if Heartbeat.available_disk is not None:
         mapping["available_disk"] = Heartbeat.available_disk
-    await redis_client.hset(key, mapping=mapping)
+    await redis_client.hset(key, mapping=mapping)  # type: ignore[arg-type]
     await redis_client.expire(key, HEARTBEAT_TTL)
 
     # Persist the last heartbeat timestamp in Redis beyond the 15s connection

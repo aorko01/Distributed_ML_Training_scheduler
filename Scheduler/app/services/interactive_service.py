@@ -164,13 +164,13 @@ async def update_session_ip(db: Session, session_id: str, headscale_ip: str | No
         raise InteractiveServiceError("Interactive session not found")
 
     if status == "RUNNING":
-        record.headscale_ip = headscale_ip
-        record.status = InteractiveSessionStatus.RUNNING
+        record.headscale_ip = headscale_ip  # type: ignore[assignment]
+        record.status = InteractiveSessionStatus.RUNNING  # type: ignore[assignment]
     elif status == "FAILED":
-        record.status = InteractiveSessionStatus.FAILED
+        record.status = InteractiveSessionStatus.FAILED  # type: ignore[assignment]
     elif status in ("STOPPED", "INTERACTIVE_STOPPED"):
         record.headscale_ip = None
-        record.status = InteractiveSessionStatus.STOPPED
+        record.status = InteractiveSessionStatus.STOPPED  # type: ignore[assignment]
         record.stopped_at = datetime.now(timezone.utc)
     else:
         raise InteractiveServiceError(f"Unknown report status '{status}'")
@@ -186,9 +186,9 @@ async def update_session_ip(db: Session, session_id: str, headscale_ip: str | No
             "INTERACTIVE_STOPPED": JobStatus.INTERACTIVE_STOPPED,
         }
         if status in mapping:
-            job.status = mapping[status]
+            job.status = mapping[status]  # type: ignore[assignment]
         if status == "FAILED" and headscale_ip is None:
-            job.failure_reason = "Worker reported interactive deployment failure"
+            job.failure_reason = "Worker reported interactive deployment failure"  # type: ignore[assignment]
 
     db.commit()
     db.refresh(record)
@@ -222,21 +222,21 @@ def stop_session(db: Session, session_id: str) -> dict:
     # heartbeat response (workers have no inbound-reachable endpoint), and the
     # worker confirms via report_ip(STOPPED).
     if record.gateway_session_id:
-        _delete_gateway_key(record.gateway_session_id)
+        _delete_gateway_key(str(record.gateway_session_id))
     if record.headscale_auth_key:
-        _revoke_headscale_key(record.headscale_auth_key)
+        _revoke_headscale_key(str(record.headscale_auth_key))
 
     if record.status == InteractiveSessionStatus.PENDING:
         # Not claimed by any worker yet: cancel outright.
-        record.status = InteractiveSessionStatus.STOPPED
+        record.status = InteractiveSessionStatus.STOPPED  # type: ignore[assignment]
         record.stopped_at = datetime.now(timezone.utc)
         job = db.query(Job).filter(Job.id == record.job_id).first()
         if job:
-            job.status = JobStatus.INTERACTIVE_STOPPED
+            job.status = JobStatus.INTERACTIVE_STOPPED  # type: ignore[assignment]
     else:
         # Claimed/running on a worker: flag STOPPING so the assigned worker
         # receives the stop command in its next heartbeat response.
-        record.status = InteractiveSessionStatus.STOPPING
+        record.status = InteractiveSessionStatus.STOPPING  # type: ignore[assignment]
 
     db.commit()
 
@@ -257,7 +257,7 @@ def get_stop_sessions_for_worker(db: Session, worker_id: str) -> list[str]:
         )
         .all()
     )
-    return [r.session_id for r in records]
+    return [str(r.session_id) for r in records]
 
 
 def get_session(db: Session, session_id: str) -> InteractiveSession | None:

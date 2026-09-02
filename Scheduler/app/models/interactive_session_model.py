@@ -40,7 +40,7 @@ class InteractiveSession(Base):
         Enum(InteractiveSessionStatus),
         default=InteractiveSessionStatus.PENDING,
         nullable=False,
-    )
+    )  # type: ignore[assignment]
 
     # Pending "commit this session as a training image" request, delivered to
     # the hosting worker via its heartbeat response.

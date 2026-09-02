@@ -2,6 +2,8 @@ import asyncio
 import time
 from datetime import datetime, timezone
 
+from sqlalchemy.orm import Session
+
 from app.core.redis import redis_client
 from app.db.database import SessionLocal
 from app.models.job_model import Job, JobStatus, BATCH_JOB_STATUSES
@@ -39,9 +41,9 @@ async def _last_heartbeat_ts(worker_id: str) -> int | None:
         return None
 
 
-def _mark_retry_needed(db: SessionLocal, job: Job) -> None:
+def _mark_retry_needed(db: Session, job: Job) -> None:
     """Requeue the job as RETRY_NEEDED (an infrastructure issue, not a user error)."""
-    job.status = JobStatus.RETRY_NEEDED
+    job.status = JobStatus.RETRY_NEEDED  # type: ignore[assignment]
     job.device = None
 
     if job.started_at is not None:
@@ -51,7 +53,7 @@ def _mark_retry_needed(db: SessionLocal, job: Job) -> None:
         elapsed_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
         job.gpu_hour = max(elapsed_seconds, 0.0) / 3600.0
 
-    job.failure_reason = (
+    job.failure_reason = (  # type: ignore[assignment]
         job.failure_reason
         or f"Worker did not send a heartbeat for {STALL_TIMEOUT_SECONDS} seconds"
     )
@@ -60,7 +62,7 @@ def _mark_retry_needed(db: SessionLocal, job: Job) -> None:
     db.refresh(job)
 
 
-async def _cleanup_stale_job_workers(db: SessionLocal, running_ids: set[str]) -> None:
+async def _cleanup_stale_job_workers(db: Session, running_ids: set[str]) -> None:
     """Drop job->worker mappings for jobs that are no longer running so Redis does
     not accumulate stale keys for completed/failed/requeued jobs."""
     keys = await redis_client.keys(JOB_WORKER_PREFIX + "*")
@@ -85,15 +87,15 @@ async def check_stalled_jobs() -> int:
         marked = 0
 
         for job in running:
-            worker_id = await redis_client.get(JOB_WORKER_PREFIX + job.id)
+            worker_id = await redis_client.get(JOB_WORKER_PREFIX + job.id)  # type: ignore[arg-type]
             if worker_id is None:
                 # Job was pulled before job->worker tracking existed; do not touch it.
                 continue
 
-            last = await _last_heartbeat_ts(worker_id)
+            last = await _last_heartbeat_ts(str(worker_id))
             if last is None or (now - last) >= STALL_TIMEOUT_SECONDS:
                 _mark_retry_needed(db, job)
-                await redis_client.delete(JOB_WORKER_PREFIX + job.id)
+                await redis_client.delete(JOB_WORKER_PREFIX + job.id)  # type: ignore[arg-type]
                 marked += 1
 
         await _cleanup_stale_job_workers(db, running_ids)
@@ -137,12 +139,12 @@ async def check_stalled_interactive_sessions() -> int:
             container_alive = False
 
             if session.worker_id:
-                last_worker = await _last_heartbeat_ts(session.worker_id)
+                last_worker = await _last_heartbeat_ts(str(session.worker_id))
                 if last_worker is not None and (now - last_worker) < INTERACTIVE_STALL_TIMEOUT_SECONDS:
                     worker_alive = True
 
             if session.session_id:
-                raw = await redis_client.get(INTERACTIVE_HEARTBEAT_PREFIX + session.session_id)
+                raw = await redis_client.get(INTERACTIVE_HEARTBEAT_PREFIX + str(session.session_id))
                 if raw is not None:
                     try:
                         last_container = int(raw)
@@ -158,11 +160,11 @@ async def check_stalled_interactive_sessions() -> int:
                 # Finalize: the session was being stopped but the worker/container
                 # went down. Mark it STOPPED and close out the job.
                 session.headscale_ip = None
-                session.status = InteractiveSessionStatus.STOPPED
+                session.status = InteractiveSessionStatus.STOPPED  # type: ignore[assignment]
                 session.stopped_at = datetime.now(timezone.utc)
                 job = db.query(Job).filter(Job.id == session.job_id).first()
                 if job and job.status not in BATCH_JOB_STATUSES:
-                    job.status = JobStatus.INTERACTIVE_STOPPED
+                    job.status = JobStatus.INTERACTIVE_STOPPED  # type: ignore[assignment]
                 db.commit()
                 handled += 1
             else:
@@ -173,11 +175,11 @@ async def check_stalled_interactive_sessions() -> int:
                 session.worker_id = None
                 session.headscale_ip = None
                 session.last_worker_id = old_worker_id
-                session.status = InteractiveSessionStatus.PENDING
+                session.status = InteractiveSessionStatus.PENDING  # type: ignore[assignment]
                 job = db.query(Job).filter(Job.id == session.job_id).first()
                 if job and job.status not in BATCH_JOB_STATUSES:
-                    job.status = JobStatus.INTERACTIVE_READY
-                    job.failure_reason = (
+                    job.status = JobStatus.INTERACTIVE_READY  # type: ignore[assignment]
+                    job.failure_reason = (  # type: ignore[assignment]
                         job.failure_reason
                         or f"Interactive session requeued: worker/container went stale "
                         f"(last worker {old_worker_id})"

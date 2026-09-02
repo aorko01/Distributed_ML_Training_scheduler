@@ -49,7 +49,7 @@ def update_profile(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    updated_user = update_user_profile(db, current_user.user_id, user_update)
+    updated_user = update_user_profile(db, str(current_user.user_id), user_update)
     if not updated_user:
         raise HTTPException(status_code=400, detail="Email already in use")
     return updated_user

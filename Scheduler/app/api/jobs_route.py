@@ -113,11 +113,11 @@ def submit_interactive(
     """
     try:
         result = interactive_service.create_session(
-            db, current_user.user_id, request.base_job_id, request.name
+            db, str(current_user.user_id), request.base_job_id, request.name
         )
         return {
             "id": result["job_id"],
-            "user_id": current_user.user_id,
+            "user_id": str(current_user.user_id),
             "base_job_id": request.base_job_id,
             "status": result["status"],
             "session_id": result["session_id"],
@@ -185,7 +185,7 @@ async def submit_interactive_direct(
     try:
         result_session = interactive_service.create_session(
             db,
-            current_user.user_id,
+            str(current_user.user_id),
             base_job_id=None,
             name=name.strip() or None,
             object_key=result["object_key"],
@@ -196,7 +196,7 @@ async def submit_interactive_direct(
 
     return {
         "id": result_session["job_id"],
-        "user_id": current_user.user_id,
+        "user_id": str(current_user.user_id),
         "base_job_id": None,
         "status": result_session["status"],
         "session_id": result_session["session_id"],
@@ -269,7 +269,7 @@ def commit_complete_route(job_id: str, db: Session = Depends(get_db)):
         job = job_service.complete_commit(db, job_id)
         session = interactive_service.get_session_for_job(db, job_id)
         if session and session.status == InteractiveSessionStatus.RUNNING:
-            interactive_service.stop_session(db, session.session_id)
+            interactive_service.stop_session(db, str(session.session_id))
         return {"job_id": job.id, "status": job.status.value}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -474,7 +474,7 @@ def download_output(request: JobIDRequest, db: Session = Depends(get_db)):
             return {"error": f"No object key found for job_id {job_id}"}
 
         from app.utils.file_utils import download_from_object_store
-        result = download_from_object_store(job_id, job.object_key)
+        result = download_from_object_store(job_id, str(job.object_key))
 
         if "error" in result:
             return result
@@ -560,7 +560,7 @@ def get_my_jobs(
     db: Session = Depends(get_db),
 ):
     try:
-        jobs = job_service.get_user_jobs(db, current_user.user_id)
+        jobs = job_service.get_user_jobs(db, str(current_user.user_id))
         return {"jobs": jobs}
     except Exception as e:
         return {"error": str(e)}
@@ -572,7 +572,7 @@ def get_my_jobs_count(
     db: Session = Depends(get_db),
 ):
     try:
-        count = job_service.get_user_jobs_count(db, current_user.user_id)
+        count = job_service.get_user_jobs_count(db, str(current_user.user_id))
         return {"count": count}
     except Exception as e:
         return {"error": str(e)}
@@ -584,7 +584,7 @@ def get_my_jobs_gpu_hours(
     db: Session = Depends(get_db),
 ):
     try:
-        gpu_hours = job_service.get_user_gpu_hours(db, current_user.user_id)
+        gpu_hours = job_service.get_user_gpu_hours(db, str(current_user.user_id))
         return {"gpu_hours": gpu_hours}
     except Exception as e:
         return {"error": str(e)}
@@ -697,15 +697,15 @@ def get_job_connect_info(
 
     from app.services.ephemeral_password_service import issue_ephemeral_password
     password = issue_ephemeral_password(
-        current_user.username, session.session_id, session.headscale_ip
+        str(current_user.username), str(session.session_id), str(session.headscale_ip)
     )
 
     return {
-        "session_id": session.session_id,
-        "headscale_ip": session.headscale_ip,
+        "session_id": str(session.session_id),
+        "headscale_ip": str(session.headscale_ip),
         "gateway_host": os.getenv("GATEWAY_PUBLIC_HOST", ""),
         "gateway_ssh_port": int(os.getenv("GATEWAY_PUBLIC_SSH_PORT", os.getenv("GATEWAY_SSH_PORT", "443"))),
-        "ssh_user": current_user.username,
+        "ssh_user": str(current_user.username),
         "container_user": "sandbox",
         "ssh_password": password,
         "ssh_password_ttl_seconds": 300,
@@ -719,7 +719,7 @@ def get_job_by_id(
     db: Session = Depends(get_db),
 ):
     try:
-        job = job_service.get_user_job_by_id(db, current_user.user_id, job_id)
+        job = job_service.get_user_job_by_id(db, str(current_user.user_id), job_id)
         if job is None:
             return {"error": "Job not found"}
         return job

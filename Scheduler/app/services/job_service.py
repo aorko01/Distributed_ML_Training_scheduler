@@ -91,7 +91,7 @@ def create_interactive_job(db: Session, job_data: dict):
                 JobStatus.FAILED,
             }
             if existing.status in terminal_states:
-                existing.status = JobStatus.NOT_RUNNABLE
+                existing.status = JobStatus.NOT_RUNNABLE  # type: ignore[assignment]
                 existing.failure_reason = None
                 db.commit()
                 db.refresh(existing)
@@ -133,7 +133,7 @@ def mark_interactive_ready(db: Session, job_id: str):
     if job.status != JobStatus.NOT_RUNNABLE:
         raise Exception("Job is not in NOT_RUNNABLE state")
 
-    job.status = JobStatus.INTERACTIVE_READY
+    job.status = JobStatus.INTERACTIVE_READY  # type: ignore[assignment]
 
     db.commit()
     db.refresh(job)
@@ -150,7 +150,7 @@ def set_job_vram_estimation_pending(db: Session, job_id: str):
     if job.status != JobStatus.NOT_RUNNABLE:
         raise Exception("Job is not in NOT_RUNNABLE state")
 
-    job.status = JobStatus.VRAM_ESTIMATION_PENDING
+    job.status = JobStatus.VRAM_ESTIMATION_PENDING  # type: ignore[assignment]
 
     db.commit()
     db.refresh(job)
@@ -167,7 +167,7 @@ def set_job_runnable(db: Session, job_id: str):
     if job.status != JobStatus.VRAM_ESTIMATION_PENDING:
         raise Exception("Job is not in VRAM_ESTIMATION_PENDING state")
 
-    job.status = JobStatus.RUNNABLE
+    job.status = JobStatus.RUNNABLE  # type: ignore[assignment]
 
     db.commit()
     db.refresh(job)
@@ -181,10 +181,10 @@ def save_vram_estimation(db: Session, job_id: str, vram_required: float, ram_req
     if not job:
         raise Exception("Job not found")
 
-    job.vram_required = vram_required
-    job.ram_required = ram_required
-    job.step_time = step_time
-    job.status = JobStatus.RUNNABLE
+    job.vram_required = vram_required  # type: ignore[assignment]
+    job.ram_required = ram_required  # type: ignore[assignment]
+    job.step_time = step_time  # type: ignore[assignment]
+    job.status = JobStatus.RUNNABLE  # type: ignore[assignment]
 
     db.commit()
     db.refresh(job)
@@ -345,18 +345,18 @@ async def _check_interactive_job_strategy(db: Session, request: WorkerResource) 
     if not session:
         return None
 
-    job.status = JobStatus.INTERACTIVE_DEPLOYING
+    job.status = JobStatus.INTERACTIVE_DEPLOYING  # type: ignore[assignment]
     job.started_at = datetime.now(timezone.utc)
-    job.device = request.gpu_type
+    job.device = request.gpu_type  # type: ignore[assignment]
 
-    session.worker_id = request.worker_id
-    session.last_worker_id = request.worker_id
-    session.status = InteractiveSessionStatus.DEPLOYING
+    session.worker_id = request.worker_id  # type: ignore[assignment]
+    session.last_worker_id = request.worker_id  # type: ignore[assignment]
+    session.status = InteractiveSessionStatus.DEPLOYING  # type: ignore[assignment]
     db.commit()
     db.refresh(job)
     db.refresh(session)
 
-    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)  # type: ignore[arg-type]
 
     docker_hub_username = os.getenv('DOCKER_HUB_USERNAME', 'aorko123')
     if job.base_job_id:
@@ -399,7 +399,7 @@ async def _check_vram_estimation_strategy(db: Session, request: WorkerResource) 
     if not job:
         return None
 
-    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)  # type: ignore[arg-type]
 
     return _format_job_response(job, flag="vram_estimation")
 
@@ -425,13 +425,13 @@ async def _check_training_job_strategy(db: Session, request: WorkerResource) -> 
     if not job:
         return None
 
-    job.status = JobStatus.IN_PROGRESS
+    job.status = JobStatus.IN_PROGRESS  # type: ignore[assignment]
     job.started_at = datetime.now(timezone.utc)
-    job.device = request.gpu_type  # Save the device when worker pulls for running
+    job.device = request.gpu_type  # type: ignore[assignment]  # Save the device when worker pulls for running
     db.commit()
     db.refresh(job)
 
-    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)  # type: ignore[arg-type]
 
     return _format_job_response(job, flag="training")
 
@@ -459,13 +459,13 @@ async def _check_retry_job_strategy(db: Session, request: WorkerResource) -> dic
     if not job:
         return None
 
-    job.status = JobStatus.IN_PROGRESS
+    job.status = JobStatus.IN_PROGRESS  # type: ignore[assignment]
     job.started_at = datetime.now(timezone.utc)
-    job.device = request.gpu_type  # Save the device when worker pulls for running
+    job.device = request.gpu_type  # type: ignore[assignment]  # Save the device when worker pulls for running
     db.commit()
     db.refresh(job)
 
-    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
+    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)  # type: ignore[arg-type]
 
     return _format_job_response(job, flag="retry")
 
@@ -543,9 +543,9 @@ async def get_next_job_for_worker(db: Session, request: WorkerResource):
 
     for strategy in SCHEDULING_STRATEGIES:
         if asyncio.iscoroutinefunction(strategy):
-            job_info = await strategy(db, request)
+            job_info = await strategy(db, request)  # type: ignore[misc]
         else:
-            job_info = strategy(db, request)
+            job_info = strategy(db, request)  # type: ignore[assignment]
 
         if job_info is not None:
             return job_info
@@ -562,7 +562,7 @@ def set_to_completed(db: Session, job_id: str):
     if job.status != JobStatus.IN_PROGRESS:
         raise Exception("Job is not in IN_PROGRESS state")
 
-    job.status = JobStatus.COMPLETED
+    job.status = JobStatus.COMPLETED  # type: ignore[assignment]
 
     if job.started_at is not None:
         started_at = job.started_at
@@ -597,16 +597,16 @@ def mark_job_failed(db: Session, job_id: str, failure_type: str, failure_reason:
         raise Exception(f"Job is already in terminal state {job.status.value}")
 
     was_in_progress = job.status == JobStatus.IN_PROGRESS
-    job.status = JobStatus.FAILED if failure_type == "user" else JobStatus.RETRY_NEEDED
+    job.status = JobStatus.FAILED if failure_type == "user" else JobStatus.RETRY_NEEDED  # type: ignore[assignment]
     if failure_reason:
-        job.failure_reason = failure_reason[:2000]
+        job.failure_reason = failure_reason[:2000]  # type: ignore[assignment]
 
     if was_in_progress and job.started_at is not None:
         started_at = job.started_at
         if started_at.tzinfo is None:
             started_at = started_at.replace(tzinfo=timezone.utc)
         elapsed_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
-        job.gpu_hour = max(elapsed_seconds, 0.0) / 3600.0
+        job.gpu_hour = max(elapsed_seconds, 0.0) / 3600.0  # type: ignore[assignment]
 
     db.commit()
     db.refresh(job)
@@ -733,15 +733,15 @@ def commit_interactive_job(db: Session, job_id: str, command: str,
     if session.commit_pending:
         raise Exception("A commit is already in progress for this session")
 
-    job.command = command
-    job.resume_command = resume_command
-    job.priority = priority
-    job.reason_for_priority = reason_for_priority
+    job.command = command  # type: ignore[assignment]
+    job.resume_command = resume_command  # type: ignore[assignment]
+    job.priority = priority  # type: ignore[assignment]
+    job.reason_for_priority = reason_for_priority  # type: ignore[assignment]
 
     docker_hub_username = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
     image_tag = f"{docker_hub_username}/{job_id}:latest"
-    session.commit_pending = True
-    session.commit_image_tag = image_tag
+    session.commit_pending = True  # type: ignore[assignment]
+    session.commit_image_tag = image_tag  # type: ignore[assignment]
 
     db.commit()
     db.refresh(job)
@@ -772,17 +772,17 @@ def complete_commit(db: Session, job_id: str):
     # Already moved to batch pipeline (idempotent).
     if job.status == JobStatus.VRAM_ESTIMATION_PENDING:
         if session:
-            session.commit_pending = False
-            session.commit_image_tag = None
+            session.commit_pending = False  # type: ignore[assignment]
+            session.commit_image_tag = None  # type: ignore[assignment]
             db.commit()
         return job
 
     if not session or not session.commit_pending:
         raise Exception("No pending commit for this job")
 
-    session.commit_pending = False
-    session.commit_image_tag = None
-    job.status = JobStatus.VRAM_ESTIMATION_PENDING
+    session.commit_pending = False  # type: ignore[assignment]
+    session.commit_image_tag = None  # type: ignore[assignment]
+    job.status = JobStatus.VRAM_ESTIMATION_PENDING  # type: ignore[assignment]
     db.commit()
     db.refresh(job)
     return job
@@ -808,10 +808,10 @@ def fail_commit(db: Session, job_id: str, reason: str | None = None):
         .first()
     )
     if session:
-        session.commit_pending = False
-        session.commit_image_tag = None
+        session.commit_pending = False  # type: ignore[assignment]
+        session.commit_image_tag = None  # type: ignore[assignment]
     if reason:
-        job.failure_reason = reason[:2000]
+        job.failure_reason = reason[:2000]  # type: ignore[assignment]
     db.commit()
     db.refresh(job)
     return job

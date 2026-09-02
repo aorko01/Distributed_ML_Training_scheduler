@@ -36,13 +36,13 @@ def create_resource_request(
 ):
     """Submit a resource request for the current user (enters the queue)."""
     request = resource_service.create_resource_request(
-        db, current_user.user_id, payload
+        db, str(current_user.user_id), payload
     )
     return ResourceRequestResponse(
-        request_id=request.request_id,
-        status=request.status,
+        request_id=str(request.request_id),
+        status=str(request.status),
         message=(
-            f"Resource request {request.request_id[:8]} queued. "
+            f"Resource request {str(request.request_id)[:8]} queued. "
             "You will be notified when a matching machine is reserved for you."
         ),
         queue_open=resource_service.get_open_request_count(db),
