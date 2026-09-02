@@ -501,7 +501,7 @@ def download_job_output_stream(
             raise HTTPException(status_code=404, detail="No output available for this job")
 
         import requests as http_requests
-        from config import OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET
+        from app.utils.file_utils import OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET
 
         presign_response = http_requests.post(
             f"{OBJECT_STORE_URL}/objects/presign_download",

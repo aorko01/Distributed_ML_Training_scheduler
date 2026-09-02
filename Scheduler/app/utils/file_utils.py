@@ -13,6 +13,7 @@ OBJECT_STORE_URL = os.environ.get("OBJECT_STORE_URL", "http://localhost:8010").r
     "/"
 )
 OBJECT_STORE_BUCKET = os.environ.get("OBJECT_STORE_BUCKET", "uploads")
+OBJECT_OUTPUT_BUCKET = os.environ.get("OBJECT_OUTPUT_BUCKET", "outputs")
 
 
 def find_file_in_zip(names: list[str], filename: str) -> str | None:
@@ -88,8 +89,6 @@ def download_from_object_store(job_id: str, object_key: str) -> dict:
     import shutil
 
     try:
-        from config import OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET
-
         response = requests.post(
             f"{OBJECT_STORE_URL}/objects/presign_download",
             data={
