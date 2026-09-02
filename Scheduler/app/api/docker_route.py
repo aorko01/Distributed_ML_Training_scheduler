@@ -20,7 +20,7 @@ def _sort_key(version: str) -> tuple:
 
 
 def _fetch_all_tags() -> list[str]:
-    tags = []
+    tags: list[str] = []
     url = f"{DOCKER_HUB_TAGS_URL}?page_size=100"
     while url:
         response = requests.get(url, timeout=30)

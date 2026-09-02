@@ -102,4 +102,4 @@ jobs:
 
       - name: Run mypy
         run: |
-          mypy app/ --ignore-missing-imports --no-strict-optional
+          mypy app/ --ignore-missing-imports --no-strict-optional --explicit-package-bases
