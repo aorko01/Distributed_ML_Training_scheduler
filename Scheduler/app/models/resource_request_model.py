@@ -2,7 +2,6 @@ from sqlalchemy import Column, String, Float, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.db.database import Base
-from app.models.user_model import User
 import uuid
 
 

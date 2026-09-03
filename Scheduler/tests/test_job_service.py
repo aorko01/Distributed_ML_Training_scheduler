@@ -4,10 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-from datetime import datetime, timezone
-
-from app.services.job_service import _format_job_response
+from app.services.job_service import _format_job_response  # noqa: E402
 
 
 class TestFormatJobResponse:

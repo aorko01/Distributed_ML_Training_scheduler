@@ -4,10 +4,8 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-
-from app.services.resource_service import _int_or_float, _compare, _config_matches
-from app.schemas.resource_schema import ResourceConfig
+from app.services.resource_service import _int_or_float, _compare, _config_matches  # noqa: E402
+from app.schemas.resource_schema import ResourceConfig  # noqa: E402
 
 
 class TestIntOrFloat:

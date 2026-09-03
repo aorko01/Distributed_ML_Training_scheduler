@@ -10,9 +10,9 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 # Ensure the ``app`` package is importable when running from ``Scheduler/``
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-from datetime import datetime, timezone
-from unittest.mock import MagicMock
+import pytest  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ def sample_worker():
             self.available_disk = 1500.0
             self.first_seen = datetime(2024, 1, 1, 8, 0, 0, tzinfo=timezone.utc)
             self.last_registered = datetime(2024, 1, 1, 14, 0, 0, tzinfo=timezone.utc)
-    
+
     return MockWorker()
 
 

@@ -4,10 +4,9 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta  # noqa: E402
 
-from app.services.scheduler_service import (
+from app.services.scheduler_service import (  # noqa: E402
     _completion_time,
     _bucket_daily,
     _bucket_weekly,

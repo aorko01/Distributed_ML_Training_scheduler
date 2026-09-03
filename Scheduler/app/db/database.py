@@ -20,7 +20,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Retry mechanism: wait until the database is ready (useful for Docker setups)
 for i in range(30):  # retry for ~30 seconds
     try:
-        engine = create_engine(DATABASE_URL) # This object knows how to connect to the database
+        engine = create_engine(DATABASE_URL)  # This object knows how to connect to the database
         # Test connection
         conn = engine.connect()
         conn.close()
@@ -41,7 +41,7 @@ else:
 # Example in a web API:
 # db = SessionLocal()  # create session for this request
 # user = db.query(User).filter(User.id == 1).first()
-# db.close()   
+# db.close()
 # -------------------------------------------------
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

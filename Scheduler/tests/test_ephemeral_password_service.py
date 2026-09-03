@@ -7,10 +7,11 @@ import pytest
 
 # Adjust sys.path so the ``app`` package is importable when running from
 # ``Scheduler/`` directory: ``python -m pytest tests/ -v``.
-import sys, os
+import sys  # noqa: E401
+import os  # noqa: E401
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import app.services.ephemeral_password_service as eps
+import app.services.ephemeral_password_service as eps  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

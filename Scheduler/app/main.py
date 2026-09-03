@@ -16,13 +16,13 @@ from app.api.resource_route import router as resources_router
 from app.api.interactive_route import router as interactive_router
 from app.api.admin_route import router as admin_router
 # Ensure the interactive session model is registered with Base metadata
-import app.models.interactive_session_model  # noqa: F401
+from app.models import interactive_session_model  # noqa: F401
 from app.services import watchdog_service
 from app.db.seed import seed_admin_user
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPIApp):
+async def lifespan(_app: FastAPIApp):
     seed_admin_user()
     watcher = asyncio.create_task(watchdog_service.run_stall_watcher())
     try:

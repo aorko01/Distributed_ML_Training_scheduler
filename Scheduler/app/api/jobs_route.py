@@ -9,15 +9,16 @@ from app.db.database import SessionLocal
 from app.services import job_service, log_service, interactive_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest, InteractiveBuildRequest, InteractiveReadyRequest, CommitInteractiveRequest, CommitFailureReport
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest, VramEstimationReport, JobFailureReport, JobResumeRequest, InteractiveBuildRequest, InteractiveReadyRequest, CommitInteractiveRequest, CommitFailureReport
 from app.schemas.log_schema import LogLinesRequest
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
-from app.models.job_model import Job, JobStatus, JobPriority
+from app.models.job_model import Job, JobPriority
 from app.api.deps import get_current_active_user
 
 
 router = APIRouter(tags=["jobs"])
+
 
 def get_db():
     db = SessionLocal()
@@ -41,6 +42,7 @@ def _ws_authenticate(websocket: WebSocket, db: Session) -> User | None:
     except JWTError:
         return None
     return db.query(User).filter(User.user_id == user_id).first()
+
 
 @router.post("/submit_job")
 async def submit_job(
@@ -264,7 +266,7 @@ def commit_interactive_job_route(
 def commit_complete_route(job_id: str, db: Session = Depends(get_db)):
     """Worker callback: the committed image was pushed; move the job into the
     batch pipeline and tear down the interactive session."""
-    from app.models.interactive_session_model import InteractiveSession, InteractiveSessionStatus
+    from app.models.interactive_session_model import InteractiveSessionStatus
     try:
         job = job_service.complete_commit(db, job_id)
         session = interactive_service.get_session_for_job(db, job_id)
@@ -298,6 +300,7 @@ def get_unbuilt_jobs(db: Session = Depends(get_db)):
     except Exception as e:
         return {"error": str(e)}
 
+
 @router.post("/save_vram_estimation")
 def save_vram_estimation(
     request: VramEstimationReport,
@@ -322,6 +325,7 @@ def save_vram_estimation(
 
     except Exception as e:
         return {"error": str(e)}
+
 
 @router.post("/pull_job")
 async def pull_job(request: WorkerResource, db: Session = Depends(get_db)):
@@ -670,8 +674,6 @@ async def job_logs_stream(websocket: WebSocket, job_id: str):
         db.close()
 
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException
-
 @router.get("/{job_id}/connect")
 def get_job_connect_info(
     job_id: str,
@@ -685,10 +687,10 @@ def get_job_connect_info(
         raise HTTPException(status_code=404, detail="Job not found")
 
     session = db.query(InteractiveSession).filter(
-        InteractiveSession.job_id == job_id, 
+        InteractiveSession.job_id == job_id,
         InteractiveSession.status == InteractiveSessionStatus.RUNNING
     ).first()
-    
+
     if not session:
         raise HTTPException(status_code=404, detail="No running interactive session for this job")
 

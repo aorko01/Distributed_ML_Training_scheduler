@@ -158,7 +158,7 @@ def create_session(db: Session, user_id: str, base_job_id: str | None = None,
 
 
 async def update_session_ip(db: Session, session_id: str, headscale_ip: str | None,
-                      status: str = "RUNNING") -> dict:
+                            status: str = "RUNNING") -> dict:
     record = get_session(db, session_id)
     if not record:
         raise InteractiveServiceError("Interactive session not found")
@@ -274,7 +274,6 @@ def get_active_session_for_user(db: Session, user_id: str):
                     InteractiveSession.status == InteractiveSessionStatus.RUNNING)
             .order_by(InteractiveSession.created_at.desc())
             .first())
-
 
 
 async def list_sessions(db: Session) -> list[dict]:

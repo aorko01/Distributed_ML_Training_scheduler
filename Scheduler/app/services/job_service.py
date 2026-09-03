@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import asyncio
 import os
 import uuid
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from app.models.job_model import Job, JobStatus, JobPriority
 from app.schemas.worker_schema import WorkerResource
+from app.core.redis import redis_client
 
 
 def create_job(db: Session, job_data: dict):
@@ -224,9 +226,6 @@ def get_not_runnable_jobs(db: Session):
         for job in jobs
     ]
 
-
-import asyncio
-from app.core.redis import redis_client
 
 # Maps a pulled job to the worker that is executing it (Redis, not psql), so the
 # stall watcher can tell which worker's heartbeat a job depends on.

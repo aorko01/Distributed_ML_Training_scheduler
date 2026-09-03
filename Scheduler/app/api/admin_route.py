@@ -8,12 +8,14 @@ from app.api.deps import get_current_active_user
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
 
 @router.get("/users")
 def list_users(
@@ -49,6 +51,7 @@ def list_users(
         }
         for u in users
     ]
+
 
 @router.get("/jobs")
 def list_all_jobs(

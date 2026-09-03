@@ -4,9 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-
-from app.services.worker_service import _apply_worker_metrics
+from app.services.worker_service import _apply_worker_metrics  # noqa: E402
 
 
 class TestApplyWorkerMetrics:

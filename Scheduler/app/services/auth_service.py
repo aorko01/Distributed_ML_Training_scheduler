@@ -1,7 +1,8 @@
 from sqlalchemy.orm import Session
 from app.models.user_model import User
-from app.schemas.user_schema import UserCreate, UserLogin, UserUpdate
+from app.schemas.user_schema import UserCreate, UserUpdate
 from app.utils.auth import verify_password, get_password_hash, create_access_token
+
 
 def create_user(db: Session, user_data: UserCreate) -> User:
     hashed_password = get_password_hash(user_data.password)
@@ -16,14 +17,18 @@ def create_user(db: Session, user_data: UserCreate) -> User:
     db.refresh(db_user)
     return db_user
 
+
 def get_user_by_username(db: Session, username: str) -> User | None:
     return db.query(User).filter(User.username == username).first()
+
 
 def get_user_by_email(db: Session, email: str) -> User | None:
     return db.query(User).filter(User.email == email).first()
 
+
 def get_user_by_id(db: Session, user_id: str) -> User | None:
     return db.query(User).filter(User.user_id == user_id).first()
+
 
 def authenticate_user(db: Session, username: str, password: str) -> User | None:
     user = get_user_by_username(db, username)
@@ -31,8 +36,10 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
         return None
     return user
 
+
 def create_user_token(user: User) -> str:
     return create_access_token(data={"sub": user.user_id, "username": user.username})
+
 
 def update_user_profile(db: Session, user_id: str, user_update: UserUpdate) -> User | None:
     user = get_user_by_id(db, user_id)

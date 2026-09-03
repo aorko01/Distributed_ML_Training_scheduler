@@ -57,7 +57,6 @@ def save_to_object_store(
         if require_files:
             validate_required_files(extracted_files, require_files)
 
-
     except zipfile.BadZipFile:
         raise zipfile.BadZipFile("Uploaded file is not a valid ZIP archive.")
 
@@ -86,7 +85,6 @@ def save_to_object_store(
 
 
 def download_from_object_store(job_id: str, object_key: str) -> dict:
-    import shutil
 
     try:
         response = requests.post(

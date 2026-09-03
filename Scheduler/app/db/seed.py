@@ -1,8 +1,8 @@
 import os
 from app.db.database import SessionLocal
-from app.models.user_model import User
 from app.services.auth_service import get_user_by_username, create_user
 from app.schemas.user_schema import UserCreate
+
 
 def seed_admin_user():
     """Create a superuser at startup if none exists."""

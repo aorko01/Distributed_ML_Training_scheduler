@@ -4,9 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-
-from app.services.log_service import _stream_key
+from app.services.log_service import _stream_key  # noqa: E402
 
 
 class TestStreamKey:

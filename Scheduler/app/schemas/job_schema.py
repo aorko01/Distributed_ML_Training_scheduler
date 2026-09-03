@@ -13,6 +13,7 @@ class JobCreate(BaseModel):
     priority: JobPriority = JobPriority.NORMAL
     reason_for_priority: Optional[str] = None
 
+
 class JobResponse(BaseModel):
     id: str
     user_id: str
@@ -24,11 +25,14 @@ class JobResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
 class Job_status_to_vram_estimation_pending(BaseModel):
     job_id: str
 
+
 class JobIDRequest(BaseModel):
     job_id: str
+
 
 class JobResumeRequest(BaseModel):
     job_id: str
@@ -37,11 +41,13 @@ class JobResumeRequest(BaseModel):
     # being run on a different device is never resumed by this worker.
     device: Optional[str] = None
 
+
 class VramEstimationReport(BaseModel):
     job_id: str
     vram_required: float
     ram_required: float
     step_time: float
+
 
 class JobFailureReport(BaseModel):
     job_id: str

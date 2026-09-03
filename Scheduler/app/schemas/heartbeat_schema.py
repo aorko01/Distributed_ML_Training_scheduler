@@ -1,8 +1,9 @@
 from pydantic import BaseModel
 
+
 class HeartbeatSchema(BaseModel):
     worker_id: str
-    gpu_type:str
+    gpu_type: str
     available_vram: float
     gpus_in_use: int | None = None
     gpu_load: float | None = None
@@ -17,6 +18,7 @@ class HeartbeatSchema(BaseModel):
     # Session IDs of interactive containers this worker currently has running
     # (piggybacked on the heartbeat so the scheduler can track container liveness).
     interactive_ssessions: list[str] = []
+
 
 class HeartbeatResponse(BaseModel):
     status: str

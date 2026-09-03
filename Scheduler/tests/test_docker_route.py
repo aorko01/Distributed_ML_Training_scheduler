@@ -4,9 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-
-from app.api.docker_route import _sort_key, _parse_runtime_tags
+from app.api.docker_route import _sort_key, _parse_runtime_tags  # noqa: E402
 
 
 class TestSortKey:

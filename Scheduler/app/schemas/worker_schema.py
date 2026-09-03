@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 
+
 class WorkerInfo(BaseModel):
     worker_id: str
     gpu_type: str
@@ -17,15 +18,17 @@ class WorkerInfo(BaseModel):
     total_disk: float | None = None
     available_disk: float | None = None
 
+
 class WorkerResponse(BaseModel):
     message: str
     worker_id: str
-    
+
 
 class WorkerResource(BaseModel):
     worker_id: str
     gpu_type: str
-    free_vram:float
+    free_vram: float
+
 
 class WorkerNodeInfo(BaseModel):
     worker_id: str

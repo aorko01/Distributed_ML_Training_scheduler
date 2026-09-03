@@ -4,10 +4,9 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-from datetime import timedelta, datetime, timezone
+from datetime import timedelta  # noqa: E402
 
-from app.utils.auth import (
+from app.utils.auth import (  # noqa: E402
     verify_password,
     get_password_hash,
     create_access_token,

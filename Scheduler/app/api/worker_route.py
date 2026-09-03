@@ -4,9 +4,10 @@ from app.db.database import SessionLocal
 from app.services import worker_service
 from app.services import interactive_service
 from app.schemas.worker_schema import WorkerInfo, WorkerResponse
-from app.schemas.heartbeat_schema import HeartbeatSchema,HeartbeatResponse
+from app.schemas.heartbeat_schema import HeartbeatSchema, HeartbeatResponse
 
 router = APIRouter(tags=["workers"])
+
 
 # Dependency to get DB session
 def get_db():

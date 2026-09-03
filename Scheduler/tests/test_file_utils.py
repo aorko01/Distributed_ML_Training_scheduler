@@ -4,9 +4,8 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
-
-from app.utils.file_utils import find_file_in_zip, validate_required_files
+import pytest  # noqa: E402
+from app.utils.file_utils import find_file_in_zip, validate_required_files  # noqa: E402
 
 
 class TestFindFileInZip:
