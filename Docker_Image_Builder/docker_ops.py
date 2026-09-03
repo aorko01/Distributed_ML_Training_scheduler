@@ -19,6 +19,7 @@ from api import send_log_lines
 
 _docker_authenticated = False
 
+
 def docker_login(client: docker.DockerClient):
     global _docker_authenticated
     if _docker_authenticated:
@@ -35,6 +36,7 @@ def docker_login(client: docker.DockerClient):
     else:
         logger.info("No Docker Hub password provided, assuming already logged in.")
         _docker_authenticated = True
+
 
 def _split_requirements(build_dir: str, project_dir: str, chunk_size: int) -> list[str]:
     """Split a requirements.txt into chunk files for layered pip installs.
@@ -93,6 +95,7 @@ def _is_containerd_export_error(text: str) -> bool:
         or "mount callback failed" in lowered
         or (("lstat" in lowered) and ("no such file or directory" in lowered or "snapshot" in lowered))
     )
+
 
 def generate_dockerfile(project_dir: str, command: str, base_image: str, requirement_files: list[str] | None = None) -> str:
     has_requirements = os.path.exists(os.path.join(project_dir, "requirements.txt"))
@@ -369,6 +372,7 @@ def ensure_access_image(client: docker.DockerClient) -> bool:
         )
         return False
 
+
 def save_debug_copy(job_id: str, build_dir: str) -> None:
     debug_dir = os.path.join(DEBUG_LOCAL_DIR, job_id)
     try:
@@ -378,8 +382,10 @@ def save_debug_copy(job_id: str, build_dir: str) -> None:
         shutil.copytree(build_dir, debug_dir)
         os.chmod(debug_dir, 0o777)
         for root, dirs, files in os.walk(debug_dir):
-            for d in dirs: os.chmod(os.path.join(root, d), 0o777)
-            for f in files: os.chmod(os.path.join(root, f), 0o666)
+            for d in dirs:
+                os.chmod(os.path.join(root, d), 0o777)
+            for f in files:
+                os.chmod(os.path.join(root, f), 0o666)
     except Exception as e:
         logger.error("Failed to save debug copy for job %s: %s", job_id, e)
 
@@ -721,6 +727,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
 
     delete_local_image(client, job_id, image_tag)
     return None
+
 
 def prune_old_base_images(client: docker.DockerClient):
     old_images = get_old_base_images(days=7)

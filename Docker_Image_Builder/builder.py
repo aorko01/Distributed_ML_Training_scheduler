@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import docker
 
 from config import (
-    logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL, DOCKER_HUB_USERNAME,
+    logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL,
     MAX_CONCURRENT_JOBS, PRUNE_INTERVAL_HOURS,
 )
 from database import init_db, is_job_processed, mark_job_processed

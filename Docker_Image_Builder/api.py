@@ -7,10 +7,12 @@ from config import (
     SCHEDULER_FAILURE_URL, OBJECT_STORE_URL, OBJECT_STORE_BUCKET, logger
 )
 
+
 def fetch_unbuilt_jobs() -> list[dict]:
     response = requests.get(SCHEDULER_QUEUE_URL, timeout=10)
     response.raise_for_status()
     return response.json().get("jobs", [])
+
 
 def download_job_archive(object_key: str) -> str:
     """Download job archive to a temp file and return the file path."""
@@ -30,6 +32,7 @@ def download_job_archive(object_key: str) -> str:
                 object_key, tmp.name, os.path.getsize(tmp.name))
     return tmp.name
 
+
 def send_log_lines(job_id: str, lines: list[str]) -> None:
     """Stream build log lines to the scheduler for realtime UI display."""
     if not lines:
@@ -43,6 +46,7 @@ def send_log_lines(job_id: str, lines: list[str]) -> None:
         response.raise_for_status()
     except Exception as e:
         logger.debug("Failed to stream logs for job %s: %s", job_id, e)
+
 
 def notify_scheduler_job_ready(job_id: str) -> bool:
     payload = {"job_id": job_id}
@@ -60,6 +64,7 @@ def notify_scheduler_job_ready(job_id: str) -> bool:
         logger.error("Failed to contact scheduler for job %s: %s", job_id, e)
     return False
 
+
 def notify_scheduler_interactive_ready(job_id: str) -> bool:
     """Notify the scheduler that an interactive job image has been built and pushed."""
     payload = {"job_id": job_id}
@@ -76,6 +81,7 @@ def notify_scheduler_interactive_ready(job_id: str) -> bool:
     except Exception as e:
         logger.error("Failed to contact scheduler for interactive job %s: %s", job_id, e)
     return False
+
 
 def notify_scheduler_job_failed(job_id: str, failure_type: str, failure_reason: str) -> bool:
     """Report a job failure to the scheduler.

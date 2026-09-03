@@ -1,11 +1,13 @@
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from config import DB_PATH, logger
+from config import DB_PATH
+
 
 def get_connection():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     return sqlite3.connect(DB_PATH, timeout=30.0)
+
 
 def init_db():
     with get_connection() as conn:
@@ -22,10 +24,12 @@ def init_db():
             )
         ''')
 
+
 def is_job_processed(job_id: str) -> bool:
     with get_connection() as conn:
         cursor = conn.execute("SELECT 1 FROM processed_jobs WHERE job_id = ?", (job_id,))
         return cursor.fetchone() is not None
+
 
 def mark_job_processed(job_id: str):
     with get_connection() as conn:
@@ -35,6 +39,7 @@ def mark_job_processed(job_id: str):
             (job_id, now)
         )
 
+
 def update_base_image_usage(image_name: str):
     with get_connection() as conn:
         now = datetime.now(timezone.utc).isoformat()
@@ -42,6 +47,7 @@ def update_base_image_usage(image_name: str):
             "INSERT OR REPLACE INTO base_images (image_name, last_used_at) VALUES (?, ?)",
             (image_name, now)
         )
+
 
 def get_old_base_images(days: int = 7) -> list:
     cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -51,6 +57,7 @@ def get_old_base_images(days: int = 7) -> list:
             (cutoff_date,)
         )
         return [row[0] for row in cursor.fetchall()]
+
 
 def remove_base_image_record(image_name: str):
     with get_connection() as conn:
