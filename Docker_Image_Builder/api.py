@@ -1,3 +1,5 @@
+import os
+import tempfile
 import requests
 from urllib.parse import quote
 from config import (
@@ -10,11 +12,23 @@ def fetch_unbuilt_jobs() -> list[dict]:
     response.raise_for_status()
     return response.json().get("jobs", [])
 
-def download_job_archive(object_key: str) -> bytes:
+def download_job_archive(object_key: str) -> str:
+    """Download job archive to a temp file and return the file path."""
     download_url = f"{OBJECT_STORE_URL}/objects/{OBJECT_STORE_BUCKET}/{quote(object_key, safe='/')}"
-    response = requests.get(download_url, timeout=30)
+    response = requests.get(download_url, stream=True, timeout=60)
     response.raise_for_status()
-    return response.content
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                tmp.write(chunk)
+    finally:
+        tmp.close()
+
+    logger.info("Downloaded archive for object_key=%s to %s (%d bytes)",
+                object_key, tmp.name, os.path.getsize(tmp.name))
+    return tmp.name
 
 def send_log_lines(job_id: str, lines: list[str]) -> None:
     """Stream build log lines to the scheduler for realtime UI display."""

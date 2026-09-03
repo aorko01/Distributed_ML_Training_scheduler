@@ -12,16 +12,29 @@ from config import (
     OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET, OBJECT_STORE_BUCKET,
     DOCKER_BUILD_NO_CACHE,
     DOCKER_BUILD_ATTEMPTS, DOCKER_BUILD_CHUNK_SIZE, DOCKER_BUILD_RETRY_BACKOFF,
+    DOCKER_PUSH_ATTEMPTS, DOCKER_PUSH_RETRY_BACKOFF,
 )
 from database import update_base_image_usage, get_old_base_images, remove_base_image_record
 from api import send_log_lines
 
+_docker_authenticated = False
+
 def docker_login(client: docker.DockerClient):
+    global _docker_authenticated
+    if _docker_authenticated:
+        logger.debug("Already authenticated with Docker Hub, skipping login.")
+        return
     if DOCKER_HUB_PASSWORD:
         logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
-        client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
+        try:
+            client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
+            _docker_authenticated = True
+        except Exception as e:
+            logger.error("Docker Hub login failed: %s", e)
+            # Don't set flag — will retry next cycle
     else:
         logger.info("No Docker Hub password provided, assuming already logged in.")
+        _docker_authenticated = True
 
 def _split_requirements(build_dir: str, project_dir: str, chunk_size: int) -> list[str]:
     """Split a requirements.txt into chunk files for layered pip installs.
@@ -485,15 +498,12 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
     return deduped
 
 
-def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> tuple[str, str] | None:
-    """Build, push and clean up the job image.
+def build_image(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> str | tuple[str, str]:
+    """Build the Docker image for a job.
 
-    For direct interactive builds pass include_project=True so the uploaded
-    project files are copied into the sandbox image.
-
-    Returns None on success, or a (failure_type, reason) tuple on failure where
-    failure_type is "user" (build/code error -> job FAILED) or "system"
-    (infra/daemon/registry error -> job RETRY_NEEDED).
+    Returns the image_tag string on success, or a (failure_type, reason) tuple
+    on failure where failure_type is "user" (build/code error) or "system"
+    (infra/daemon/registry error).
     """
     if build_type == "interactive":
         image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}-env:latest"
@@ -507,12 +517,6 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
 
     try:
         if build_type == "interactive":
-            # Derived interactive builds do not copy project files (the base
-            # image already contains the training code). Direct interactive
-            # builds (include_project=True) copy the uploaded archive and pip
-            # install its requirements.txt before adding the env layers.
-            # The env image is a clean training container (no SSH/Headscale);
-            # access is provided by the shared aorko123/access-sshd image.
             if include_project:
                 for item in os.listdir(project_dir):
                     src = os.path.join(project_dir, item)
@@ -635,29 +639,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         ])
         maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
-        # Push image (capture push status so registry/network issues are debuggable).
-        # Push progress/status is logged locally only; only build-related lines are
-        # streamed to the scheduler UI.
-        logger.info("Pushing image %s ...", image_tag)
-        push_output = client.images.push(repository=image_tag.rsplit(":", 1)[0], tag="latest", stream=True, decode=True)
-        for chunk in push_output:
-            if "error" in chunk:
-                logger.error("Push error for job %s: %s", job_id, chunk["error"])
-                error_line = f"Push error: {chunk['error']}"
-                emit_build_lines(job_id, build_log_buffer, [error_line])
-                maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
-                return "system", error_line
-            status = chunk.get("status", "").strip()
-            progress = chunk.get("progress", "").strip()
-            if status:
-                logger.info("  [push] %s%s", status, f" {progress}" if progress else "")
-        maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
-
-        # For interactive builds, ensure the shared access image is available
-        # on this builder node so it can be pulled by the worker later.
-        if build_type == "interactive":
-            if not ensure_access_image(client):
-                return "system", "Failed to pull access image aorko123/access-sshd:latest"
+        return image_tag
 
     except docker.errors.ImageNotFound as e:
         logger.error("Base image not found for job %s: %s", job_id, e)
@@ -671,16 +653,73 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
 
-    # Clean up the local built image now that it's successfully pushed
+
+def push_image(client: docker.DockerClient, job_id: str, image_tag: str, build_type: str = "training") -> None | tuple[str, str]:
+    """Push the built image to Docker Hub with retry logic.
+
+    Returns None on success, or a (failure_type, reason) tuple on failure.
+    Does NOT delete the local image.
+    """
+    logger.info("Pushing image %s ...", image_tag)
+
+    for attempt in range(1, DOCKER_PUSH_ATTEMPTS + 1):
+        push_error = None
+        try:
+            push_output = client.images.push(repository=image_tag.rsplit(":", 1)[0], tag="latest", stream=True, decode=True)
+            for chunk in push_output:
+                if "error" in chunk:
+                    push_error = f"Push error: {chunk['error']}"
+                    break
+                status = chunk.get("status", "").strip()
+                progress = chunk.get("progress", "").strip()
+                if status:
+                    logger.info("  [push] %s%s", status, f" {progress}" if progress else "")
+            if push_error is None:
+                # Push succeeded
+                # For interactive builds, ensure the shared access image is available
+                if build_type == "interactive":
+                    if not ensure_access_image(client):
+                        return "system", "Failed to pull access image aorko123/access-sshd:latest"
+                return None
+        except Exception as e:
+            push_error = f"Push exception: {e}"
+
+        # Push failed — retry if attempts remain
+        if attempt < DOCKER_PUSH_ATTEMPTS:
+            logger.warning("Push attempt %d/%d failed for job %s: %s — retrying in %ds",
+                           attempt, DOCKER_PUSH_ATTEMPTS, job_id, push_error, DOCKER_PUSH_RETRY_BACKOFF)
+            time.sleep(DOCKER_PUSH_RETRY_BACKOFF)
+        else:
+            logger.error("Push failed for job %s after %d attempts: %s", job_id, DOCKER_PUSH_ATTEMPTS, push_error)
+            return "system", push_error
+
+
+def delete_local_image(client: docker.DockerClient, job_id: str, image_tag: str) -> None:
+    """Remove the locally-built image after successful push."""
     logger.info("Deleting local built image %s ...", image_tag)
     try:
         client.images.remove(image=image_tag, force=True)
     except Exception as e:
         logger.warning("Failed to delete local image %s: %s", image_tag, e)
 
-    logger.info("Image %s pushed to Docker Hub and local copy cleaned up.", image_tag)
-    maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
+def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> tuple[str, str] | None:
+    """Build, push and clean up the job image (backward-compatible wrapper).
+
+    Calls build_image -> push_image -> delete_local_image sequentially.
+    Returns None on success, or a (failure_type, reason) tuple on failure.
+    """
+    # Note: docker-py DockerClient is thread-safe for independent HTTP calls.
+    image_result = build_image(client, job_id, project_dir, command, base_image, build_type, include_project)
+    if isinstance(image_result, tuple):
+        return image_result
+    image_tag = image_result
+
+    push_result = push_image(client, job_id, image_tag, build_type)
+    if push_result is not None:
+        return push_result
+
+    delete_local_image(client, job_id, image_tag)
     return None
 
 def prune_old_base_images(client: docker.DockerClient):

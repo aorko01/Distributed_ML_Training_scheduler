@@ -9,6 +9,10 @@ services:
       - DOCKER_BUILD_ATTEMPTS=${DOCKER_BUILD_ATTEMPTS:-3}
       - DOCKER_BUILD_CHUNK_SIZE=${DOCKER_BUILD_CHUNK_SIZE:-25}
       - DOCKER_BUILD_RETRY_BACKOFF=${DOCKER_BUILD_RETRY_BACKOFF:-10}
+      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-3}
+      - DOCKER_PUSH_ATTEMPTS=${DOCKER_PUSH_ATTEMPTS:-3}
+      - DOCKER_PUSH_RETRY_BACKOFF=${DOCKER_PUSH_RETRY_BACKOFF:-5}
+      - PRUNE_INTERVAL_HOURS=${PRUNE_INTERVAL_HOURS:-24}
     volumes:
       # Mount the Docker socket so we can build images from inside the container
       - /var/run/docker.sock:/var/run/docker.sock

@@ -37,6 +37,12 @@ DOCKER_BUILD_ATTEMPTS = max(1, int(os.environ.get("DOCKER_BUILD_ATTEMPTS", "3"))
 DOCKER_BUILD_CHUNK_SIZE = max(1, int(os.environ.get("DOCKER_BUILD_CHUNK_SIZE", "25")))
 DOCKER_BUILD_RETRY_BACKOFF = max(0, int(os.environ.get("DOCKER_BUILD_RETRY_BACKOFF", "10")))
 
+# Concurrency and push settings
+MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("MAX_CONCURRENT_JOBS", "3")))
+DOCKER_PUSH_ATTEMPTS = max(1, int(os.environ.get("DOCKER_PUSH_ATTEMPTS", "3")))
+DOCKER_PUSH_RETRY_BACKOFF = max(0, int(os.environ.get("DOCKER_PUSH_RETRY_BACKOFF", "5")))
+PRUNE_INTERVAL_HOURS = max(1, int(os.environ.get("PRUNE_INTERVAL_HOURS", "24")))
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,

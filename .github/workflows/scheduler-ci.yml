@@ -5,11 +5,13 @@ on:
     branches: [main, develop]
     paths:
       - 'Scheduler/**'
+      - 'Docker_Image_Builder/**'
       - '.github/workflows/scheduler-ci.yml'
   pull_request:
     branches: [main, develop]
     paths:
       - 'Scheduler/**'
+      - 'Docker_Image_Builder/**'
       - '.github/workflows/scheduler-ci.yml'
 
 jobs:
@@ -103,3 +105,67 @@ jobs:
       - name: Run mypy
         run: |
           mypy app/ --ignore-missing-imports --no-strict-optional --explicit-package-bases
+
+  image-builder-test:
+    name: Image Builder Unit Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Docker_Image_Builder
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: Docker_Image_Builder/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run unit tests
+        run: |
+          python -m pytest tests/ -v --tb=short --junitxml=test-results.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-builder-test-results
+          path: Docker_Image_Builder/test-results.xml
+          retention-days: 30
+
+  image-builder-lint:
+    name: Image Builder Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Docker_Image_Builder
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: Docker_Image_Builder/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Run flake8
+        run: |
+          flake8 *.py tests/ --max-line-length=120 --ignore=E501,W503,E203

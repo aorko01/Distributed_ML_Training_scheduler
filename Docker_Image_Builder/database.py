@@ -5,7 +5,7 @@ from config import DB_PATH, logger
 
 def get_connection():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-    return sqlite3.connect(DB_PATH)
+    return sqlite3.connect(DB_PATH, timeout=30.0)
 
 def init_db():
     with get_connection() as conn:
