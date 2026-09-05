@@ -10,6 +10,10 @@
 #   docker push aorko123/access-sshd:latest
 #
 # The worker pulls aorko123/access-sshd:latest per session.
+#
+# NOTE: this directory is the source of truth. Docker_Image_Builder/
+# docker_ops.py (generate_access_dockerfile / generate_access_entrypoint)
+# carries a reference copy kept in sync for tests; keep them aligned.
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
@@ -38,5 +42,12 @@ RUN mkdir -p /run/sshd /etc/ssh/sshd_config.d /var/run/tailscale /var/lib/tailsc
 
 COPY access-entrypoint.sh /usr/local/bin/access-entrypoint.sh
 RUN chmod +x /usr/local/bin/access-entrypoint.sh
+
+# enter-env.sh is sshd's ForceCommand: it reconstructs the env container's
+# real environment from /proc/1/environ (this container shares the env
+# container's PID namespace) and nsenters into the env container's namespaces,
+# giving the user a shell that behaves like `docker exec -it <env> /bin/bash`.
+COPY enter-env.sh /usr/local/bin/enter-env.sh
+RUN chmod +x /usr/local/bin/enter-env.sh
 
 ENTRYPOINT ["/usr/local/bin/access-entrypoint.sh"]

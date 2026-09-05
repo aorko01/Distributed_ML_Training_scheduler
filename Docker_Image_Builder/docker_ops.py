@@ -208,10 +208,13 @@ def generate_env_dockerfile(base_image: str, with_project: bool = False, require
             ]
 
     lines += [
-        'RUN if [ ! -f /root/.bash_profile ]; then \\',
-        "      printf '\\n# Source .bashrc for login shells (conda/virtualenv activation)\\n[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\\n' > /root/.bash_profile; \\",
-        '    fi',
-        '',
+        "# Root login profile: interactive sessions run as ROOT inside the env",
+        "# container by design (see AccessContainer/enter-env.sh), so no sudo is",
+        "# installed. `bash -l` with HOME=/root sources ~/.bashrc, activating any",
+        "# conda/virtualenv/PATH setup from the base image. Written unconditionally",
+        "# so the baked image always behaves like the runtime-fixed sessions.",
+        "RUN mkdir -p /root && printf '\\n[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\\n' > /root/.bash_profile",
+        "",
         'CMD ["sleep", "infinity"]',
     ]
     return "\n".join(lines)
@@ -222,11 +225,18 @@ def generate_access_dockerfile() -> str:
 
     This is a static, reusable image (``aorko123/access-sshd:latest``) that
     contains sshd + tailscaled. It is launched with ``--pid container:<env>``
-    so its sshd ``ForceCommand`` can nsenter into the env container's
-    namespaces, routing the user's shell into the training container.
+    so its sshd ``ForceCommand`` (``enter-env.sh``) can nsenter into the env
+    container's namespaces, routing the user's shell into the training
+    container with the env container's real environment.
+
+    NOTE: this generator is a reference copy kept in sync with the checked-in
+    source of truth under ``AccessContainer/``. The image is rebuilt/pushed
+    ONCE by the operator from ``AccessContainer/``:
+      docker build -t aorko123/access-sshd:latest ./AccessContainer
+      docker push aorko123/access-sshd:latest
     """
     return r"""# Shared access/SSH image for interactive sessions.
-# Build & push ONCE (manually) to Docker Hub:
+# Build & push ONCE (manually) to Docker Hub (source of truth: AccessContainer/):
 #   docker build -t aorko123/access-sshd:latest ./AccessContainer
 #   docker push aorko123/access-sshd:latest
 # The worker pulls aorko123/access-sshd:latest per session.
@@ -259,6 +269,13 @@ RUN mkdir -p /run/sshd /etc/ssh/sshd_config.d /var/run/tailscale /var/lib/tailsc
 COPY access-entrypoint.sh /usr/local/bin/access-entrypoint.sh
 RUN chmod +x /usr/local/bin/access-entrypoint.sh
 
+# enter-env.sh is sshd's ForceCommand: it reconstructs the env container's
+# real environment from /proc/1/environ (this container shares the env
+# container's PID namespace) and nsenters into the env container's namespaces,
+# giving the user a shell that behaves like `docker exec -it <env> /bin/bash`.
+COPY enter-env.sh /usr/local/bin/enter-env.sh
+RUN chmod +x /usr/local/bin/enter-env.sh
+
 ENTRYPOINT ["/usr/local/bin/access-entrypoint.sh"]
 """
 
@@ -270,9 +287,15 @@ def generate_access_entrypoint() -> str:
     HEADSCALE_AUTHKEY, SESSION_ID, SSH_PUBLIC_KEY), starts tailscaled, waits
     for its control socket, connects to Headscale via ``tailscale up``,
     configures authorized_keys for the sandbox user, writes an sshd_config.d
-    snippet with a ``ForceCommand`` that nsenters into the env container's
-    PID 1 namespaces, and finally runs ``sshd -D`` as the foreground process.
-    Prints ``Tailscale IP: 100.x.x.x`` so the worker can detect the tailnet IP.
+    snippet whose ``ForceCommand`` is ``/usr/local/bin/enter-env.sh``
+    (reconstructed env container environment + nsenter), and finally runs
+    ``sshd -D`` as the foreground process. Prints ``Tailscale IP: 100.x.x.x``
+    so the worker can detect the tailnet IP.
+
+    NOTE: this generator is a reference copy kept in sync with the checked-in
+    source of truth under ``AccessContainer/access-entrypoint.sh`` (which,
+    together with ``AccessContainer/enter-env.sh``, is what actually gets
+    built and pushed).
     """
     return r"""#!/bin/bash
 set -e
@@ -318,18 +341,22 @@ chown -R sandbox:sandbox /home/sandbox/.ssh
 chmod 700 /home/sandbox/.ssh
 chmod 600 /home/sandbox/.ssh/authorized_keys
 
-# sshd config: force every connection to nsenter into the env container's
-# PID 1 (the env container's `sleep infinity`), entering all its namespaces
-# (mount, UTS, IPC, net, PID) so the user lands inside the training container.
-# HOME=/root ensures ~/.bash_profile is sourced (conda/virtualenv activation).
-# PATH includes /opt/conda/bin and /usr/local/bin as fallbacks for Python tools.
+# sshd config: force every connection through /usr/local/bin/enter-env.sh,
+# which reconstructs the env container's real environment (from
+# /proc/1/environ — this container shares the env container's PID namespace)
+# and then nsenters into the env container's PID 1 (`sleep infinity`), entering
+# all its namespaces (mount, UTS, IPC, net, PID) so the user lands inside the
+# training container with the env image's PATH/HOME/conda environment.
+# nsenter runs as root via the setuid bit (see above) so the unprivileged
+# `sandbox` SSH login can still enter the env container's namespaces. The SSH
+# login user stays `sandbox`; only the forced command escalates to root.
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/sandbox.conf <<'SSHD'
 PasswordAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
 AllowUsers sandbox
-ForceCommand nsenter -t 1 -m -u -i -n -p -- /bin/bash -c 'export HOME=/root; export PATH=/opt/conda/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin; exec /bin/bash -l'
+ForceCommand /usr/local/bin/enter-env.sh
 SSHD
 
 echo "Tailscale IP: $(tailscale ip -4 || true)"

@@ -13,6 +13,8 @@ from docker_ops import (  # noqa: E402
     generate_dockerfile,
     resolve_interactive_base_image,
     generate_env_dockerfile,
+    generate_access_dockerfile,
+    generate_access_entrypoint,
     should_upload_build_line,
     maybe_upload_build_logs,
     emit_build_lines,
@@ -187,6 +189,42 @@ class TestGenerateEnvDockerfile:
     def test_direct_with_project_and_requirements(self, tmp_project_dir_with_requirements):
         result = generate_env_dockerfile("python:3.11", with_project=True)
         assert "pip install" in result
+
+    def test_root_bash_profile_sources_bashrc_unconditionally(self):
+        result = generate_env_dockerfile("python:3.11", with_project=False)
+        assert ". \"$HOME/.bashrc\"" in result
+        # The profile is baked unconditionally (not gated on `[ ! -f ... ]`).
+        assert "RUN mkdir -p /root && printf" in result
+        assert "if [ ! -f /root/.bash_profile ]" not in result
+
+    def test_no_sudo_documented(self):
+        result = generate_env_dockerfile("python:3.11", with_project=False)
+        assert "no sudo is" in result
+
+
+# ---------------------------------------------------------------------------
+# generate_access_dockerfile / generate_access_entrypoint
+# ---------------------------------------------------------------------------
+class TestGenerateAccessArtifacts:
+    def test_dockerfile_copies_enter_env_script(self):
+        dockerfile = generate_access_dockerfile()
+        assert "COPY enter-env.sh /usr/local/bin/enter-env.sh" in dockerfile
+        assert "chmod +x /usr/local/bin/enter-env.sh" in dockerfile
+
+    def test_dockerfile_notes_operator_build(self):
+        dockerfile = generate_access_dockerfile()
+        assert "AccessContainer" in dockerfile
+
+    def test_entrypoint_forcecommand_uses_enter_env_wrapper(self):
+        entrypoint = generate_access_entrypoint()
+        assert "ForceCommand /usr/local/bin/enter-env.sh" in entrypoint
+        # The old static bash -c ForceCommand must be gone.
+        assert "ForceCommand nsenter -t 1 -m -u -i -n -p -- /bin/bash -c" not in entrypoint
+
+    def test_entrypoint_reconstructs_env_container_environment(self):
+        entrypoint = generate_access_entrypoint()
+        assert "/proc/1/environ" in entrypoint
+        assert "setuid" in entrypoint or "setuid" in entrypoint.lower()
 
 
 # ---------------------------------------------------------------------------

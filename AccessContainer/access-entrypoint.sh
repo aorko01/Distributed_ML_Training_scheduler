@@ -42,18 +42,22 @@ chown -R sandbox:sandbox /home/sandbox/.ssh
 chmod 700 /home/sandbox/.ssh
 chmod 600 /home/sandbox/.ssh/authorized_keys
 
-# sshd config: force every connection to nsenter into the env container's
-# PID 1 (the env container's `sleep infinity`), entering all its namespaces
-# (mount, UTS, IPC, net, PID) so the user lands inside the training container.
+# sshd config: force every connection through /usr/local/bin/enter-env.sh,
+# which reconstructs the env container's real environment (from
+# /proc/1/environ — this container shares the env container's PID namespace)
+# and then nsenters into the env container's PID 1 (`sleep infinity`), entering
+# all its namespaces (mount, UTS, IPC, net, PID) so the user lands inside the
+# training container with the env image's PATH/HOME/conda environment.
 # nsenter runs as root via the setuid bit (see above) so the unprivileged
-# `sandbox` SSH login can still enter the env container's namespaces.
+# `sandbox` SSH login can still enter the env container's namespaces. The SSH
+# login user stays `sandbox`; only the forced command escalates to root.
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/sandbox.conf <<'SSHD'
 PasswordAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
 AllowUsers sandbox
-ForceCommand nsenter -t 1 -m -u -i -n -p -- /bin/bash -l
+ForceCommand /usr/local/bin/enter-env.sh
 SSHD
 
 echo "Tailscale IP: $(tailscale ip -4 || true)"
