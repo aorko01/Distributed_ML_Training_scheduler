@@ -56,6 +56,9 @@ async def report_ip(
         )
     except interactive_service.InteractiveServiceError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("report_ip failed: session_id=%s: %s", body.session_id, e)
+        raise HTTPException(status_code=500, detail="Internal error reporting IP")
 
 
 @router.get("/sessions")

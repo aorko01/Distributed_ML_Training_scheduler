@@ -139,6 +139,11 @@ async def check_stalled_interactive_sessions() -> int:
         handled = 0
 
         for session in sessions:
+            # A non-null headscale_ip means the worker already reported the
+            # IP successfully; the session is healthy.
+            if session.headscale_ip is not None:
+                continue
+
             worker_alive = False
             container_alive = False
 
@@ -157,7 +162,12 @@ async def check_stalled_interactive_sessions() -> int:
                     except (TypeError, ValueError):
                         pass
 
-            if worker_alive and container_alive:
+            if session.status == InteractiveSessionStatus.DEPLOYING:
+                # Containers haven't started yet; only the worker heartbeat
+                # matters. Fall through to requeue when the worker is stale.
+                if worker_alive:
+                    continue
+            elif worker_alive and container_alive:
                 continue
 
             if session.status == InteractiveSessionStatus.STOPPING:
