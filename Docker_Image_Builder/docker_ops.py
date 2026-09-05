@@ -15,7 +15,7 @@ from config import (
     DOCKER_BUILD_ATTEMPTS, DOCKER_BUILD_CHUNK_SIZE, DOCKER_BUILD_RETRY_BACKOFF,
     DOCKER_PUSH_ATTEMPTS, DOCKER_PUSH_RETRY_BACKOFF,
 )
-from database import update_base_image_usage, get_old_base_images, remove_base_image_record
+from database import update_base_image_usage, get_old_base_images, remove_base_image_record, is_job_processed
 from api import send_log_lines
 
 _docker_authenticated = False
@@ -136,6 +136,76 @@ def _is_containerd_export_error(text: str) -> bool:
         or ("snapshot" in lowered and "not found" in lowered)
         or (("lstat" in lowered) and ("no such file or directory" in lowered or "snapshot" in lowered))
     )
+
+
+# Substrings that indicate a clearly transient infrastructure failure
+# (network / registry / daemon). Used to classify interactive build errors:
+# only these map to "system" (retry); everything else defaults to "user"
+# (deterministic -> FAILED once) so a bad Dockerfile/requirements.txt does not
+# loop forever through NOT_RUNNABLE -> PENDING -> NOT_RUNNABLE.
+_TRANSIENT_BUILD_ERROR_SUBSTRINGS = (
+    # Network / DNS.
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "timed out",
+    "timeout",
+    "temporary failure",
+    "name resolution",
+    "no such host",
+    "network is unreachable",
+    "network unreachable",
+    "eai_again",
+    "etimedout",
+    "econnreset",
+    "econnrefused",
+    "econnaborted",
+    "broken pipe",
+    "i/o timeout",
+    "tls handshake",
+    "socket hang up",
+    "max retries exceeded",
+    "failed to fetch",
+    "could not resolve",
+    # Registry throttling / 5xx.
+    "toomanyrequests",
+    "too many requests",
+    "rate limit",
+    "unexpected status: 429",
+    "unexpected status: 50",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway timeout",
+    "service unavailable",
+    "registry unavailable",
+    # Daemon / disk / snapshotter.
+    "cannot connect to the docker daemon",
+    "docker daemon",
+    "daemon is not running",
+    "no space left on device",
+    "device or resource busy",
+    "context deadline exceeded",
+    "deadline exceeded",
+    "failed to export layer",
+    "creatediff",
+    "mount callback failed",
+    "parent snapshot",
+    "snapshot does not exist",
+    "snapshot not found",
+    "grpc error",
+    "internal server error",
+)
+
+
+def _is_transient_build_error(text: str) -> bool:
+    """Return True only for clearly transient infra errors.
+
+    Conservative by design: unknown/deterministic errors (bad Dockerfile,
+    bad requirements, syntax errors, missing files, pip resolution
+    conflicts, etc.) return False so the caller classifies them as "user".
+    """
+    lowered = (text or "").lower()
+    return any(s in lowered for s in _TRANSIENT_BUILD_ERROR_SUBSTRINGS)
 
 
 def generate_dockerfile(project_dir: str, command: str, base_image: str, requirement_files: list[str] | None = None) -> str:
@@ -591,6 +661,13 @@ def build_image(client: docker.DockerClient, job_id: str, project_dir: str, comm
     a duplicate claim cannot corrupt the daemon (duplicate headers/steps and
     "parent snapshot ... does not exist"). The scheduler's atomic mark_pending
     is the primary cross-process dedup; this is the in-process safety net.
+
+    Mitigation for slipped-through duplicates: after acquiring the tag lock
+    (especially when this caller waited for another build of the same tag),
+    re-check is_job_processed() and short-circuit with the existing tag
+    instead of rebuilding unconditionally. As a second net, when we waited
+    and the target image already exists locally (winner built it but has not
+    pushed/marked it processed yet), reuse it instead of rebuilding.
     """
     if build_type == "interactive":
         _tag = f"{DOCKER_HUB_USERNAME}/{job_id}-env:latest"
@@ -607,8 +684,31 @@ def build_image(client: docker.DockerClient, job_id: str, project_dir: str, comm
         _lock.acquire(blocking=True)
         _waited = True
     try:
+        # Another thread may have finished while we were queued on the lock.
+        # Short-circuit instead of rebuilding from scratch.
+        try:
+            if is_job_processed(job_id):
+                logger.info(
+                    "Job %s already processed — skipping duplicate build for %s, reusing tag.",
+                    job_id, _tag,
+                )
+                return _tag
+        except Exception as e:
+            logger.debug("is_job_processed check failed for job %s: %s", job_id, e)
         if _waited:
-            logger.info("Proceeding with serialized build for %s (job %s).", _tag, job_id)
+            logger.info("Serialized build for %s (job %s) acquired lock after waiting.", _tag, job_id)
+            try:
+                client.images.get(_tag)
+                logger.info(
+                    "Job %s image %s already built by the in-progress build — reusing tag, skipping rebuild.",
+                    job_id, _tag,
+                )
+                return _tag
+            except docker.errors.ImageNotFound:
+                logger.info("Proceeding with serialized build for %s (job %s).", _tag, job_id)
+            except Exception as e:
+                logger.debug("Local image check failed for %s: %s", _tag, e)
+                logger.info("Proceeding with serialized build for %s (job %s).", _tag, job_id)
         return _build_image_uncached(client, job_id, project_dir, command, base_image, build_type, include_project)
     finally:
         _lock.release()
@@ -745,10 +845,17 @@ def _build_image_uncached(client: docker.DockerClient, job_id: str, project_dir:
             ])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
             if build_type == "interactive":
-                joined = "\n".join(error_lines).lower()
-                if "pip" in joined or "requirements" in joined:
-                    return "user", reason
-                return "system", reason
+                # Deterministic build errors (bad Dockerfile, bad
+                # requirements, pip resolution conflicts, missing files,
+                # etc.) must fail once as "user" -> FAILED. Only clearly
+                # transient infra errors (network/registry/daemon) map to
+                # "system" -> NOT_RUNNABLE retry. Defaulting unknown errors
+                # to "system" loops forever (scheduler resets PENDING jobs
+                # to NOT_RUNNABLE on system failures).
+                joined = "\n".join(error_lines + [str(build_error)]).lower()
+                if _is_transient_build_error(joined):
+                    return "system", reason
+                return "user", reason
             return "user", reason
 
         emit_build_lines(job_id, build_log_buffer, [
@@ -760,12 +867,20 @@ def _build_image_uncached(client: docker.DockerClient, job_id: str, project_dir:
 
     except docker.errors.ImageNotFound as e:
         logger.error("Base image not found for job %s: %s", job_id, e)
+        if build_type == "interactive" and not _is_transient_build_error(str(e)):
+            # Bad base_image override / unknown tag is a deterministic user
+            # error -> FAILED once, not an infinite NOT_RUNNABLE loop.
+            return "user", f"Base image unavailable: {e}"
         return "system", f"Base image unavailable: {e}"
     except docker.errors.APIError as e:
         logger.error("Docker API error for job %s: %s", job_id, e)
+        if build_type == "interactive" and not _is_transient_build_error(str(e)):
+            return "user", f"Docker API error: {e}"
         return "system", f"Docker API error: {e}"
     except Exception as e:
         logger.error("Unexpected error for job %s: %s", job_id, e)
+        if build_type == "interactive" and not _is_transient_build_error(str(e)):
+            return "user", f"Unexpected error: {e}"
         return "system", f"Unexpected error: {e}"
     finally:
         with _in_flight_lock:

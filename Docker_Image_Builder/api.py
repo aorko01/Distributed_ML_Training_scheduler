@@ -49,14 +49,46 @@ def send_log_lines(job_id: str, lines: list[str]) -> None:
 
 
 def notify_scheduler_job_pending(job_id: str) -> bool:
-    """Notify the scheduler that the builder has started working on a job."""
+    """Notify the scheduler that the builder has started working on a job.
+
+    Returns True only when this builder now owns the job (scheduler claimed
+    the atomic NOT_RUNNABLE -> PENDING transition for us). Returns False when
+    the job was already claimed by someone else, not found, or unreachable —
+    the caller must back off and NOT build.
+
+    Distinguishable already-claimed handling: the scheduler answers the loser
+    of the atomic-claim race with 409 (or a body carrying ``claimed: False`` /
+    ``already_claimed: True`` / ``error``). Any of those mean "someone else
+    owns it" — never treat them as success, otherwise two builders/replicas
+    polling the same queue would both ``docker build`` the same tag.
+    """
     payload = {"job_id": job_id}
     try:
         response = requests.post(SCHEDULER_PENDING_URL, json=payload, timeout=10)
+        if response.status_code in (409, 423):
+            # Already claimed by another builder/replica — back off.
+            logger.warning(
+                "Job %s already claimed by another builder (scheduler %s), backing off.",
+                job_id, response.status_code,
+            )
+            return False
         if response.status_code == 200:
-            body = response.json()
+            try:
+                body = response.json()
+            except Exception:
+                logger.error("Scheduler pending response for job %s was not JSON: %s", job_id, response.text)
+                return False
+            if not isinstance(body, dict):
+                logger.error("Scheduler pending response for job %s was unexpected: %r", job_id, body)
+                return False
             if "error" in body:
-                logger.error("Scheduler returned error for pending job %s: %s", job_id, body["error"])
+                logger.warning("Scheduler did not grant pending for job %s (already claimed?): %s",
+                               job_id, body["error"])
+                return False
+            # Explicit claim flags (new scheduler protocol). Only the claim
+            # winner gets claimed=True; the loser must back off even on 200.
+            if body.get("already_claimed") is True or body.get("claimed") is False:
+                logger.warning("Job %s already claimed by another builder, backing off.", job_id)
                 return False
             logger.info("Scheduler notified of pending status for job %s", job_id)
             return True

@@ -2,7 +2,7 @@ import os
 import uuid
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from app.db.database import SessionLocal
@@ -232,12 +232,47 @@ def update_job_to_vram_estimation_pending(
 
 @router.post("/mark_pending")
 def mark_job_pending(request: JobIDRequest, db: Session = Depends(get_db)):
-    """Notify the scheduler that the builder has started working on a job."""
+    """Atomically claim a NOT_RUNNABLE job for building (NOT_RUNNABLE -> PENDING).
+
+    The claim in job_service.set_job_pending is a single conditional
+    UPDATE ... WHERE status='NOT_RUNNABLE' (no read-then-write), so concurrent
+    builders/replicas polling the same unbuilt_jobs queue cannot both win.
+
+    Protocol (so builders can distinguish "I own it" from "someone else does"):
+      - Winner: 200 {"job_id": ..., "status": "PENDING", "claimed": True}
+      - Already claimed: 409 {"error": ..., "job_id": ..., "status": <current>,
+        "claimed": False, "already_claimed": True} -> caller must back off.
+      - Not found: 404 {"error": "Job not found", ...}.
+    The legacy shape (200 + {"error": ...}) is never returned for the
+    already-claimed case anymore; builders still treat it as "back off" for
+    backward compatibility.
+    """
     try:
         job = job_service.set_job_pending(db, request.job_id)
-        return {"job_id": job.id, "status": job.status.value}
+        return {"job_id": job.id, "status": job.status.value, "claimed": True}
     except Exception as e:
-        return {"error": str(e)}
+        msg = str(e)
+        if msg == "Job not found":
+            return JSONResponse(
+                status_code=404,
+                content={"error": msg, "job_id": request.job_id, "claimed": False},
+            )
+        current_status = None
+        try:
+            existing = db.query(Job).filter(Job.id == request.job_id).first()
+            if existing is not None:
+                current_status = existing.status.value
+        except Exception:
+            pass
+        body: dict = {
+            "error": msg,
+            "job_id": request.job_id,
+            "claimed": False,
+            "already_claimed": True,
+        }
+        if current_status is not None:
+            body["status"] = current_status
+        return JSONResponse(status_code=409, content=body)
 
 
 @router.post("/mark_interactive_ready")

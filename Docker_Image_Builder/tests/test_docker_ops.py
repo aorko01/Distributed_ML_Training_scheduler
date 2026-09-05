@@ -469,6 +469,7 @@ class TestPerTagBuildSerialization:
         The second waits for the first instead of interleaving layers."""
         import threading
         import time
+        import docker.errors
         import docker_ops
         from docker_ops import build_image, _tag_lock
 
@@ -484,7 +485,11 @@ class TestPerTagBuildSerialization:
                 time.sleep(0.2)
             return "testuser/dup-job-env:latest"
 
-        with patch.object(docker_ops, "_build_image_uncached", side_effect=slow_uncached):
+        # No short-circuit applies here: job not processed and no local image
+        # yet, so both callers proceed (serialized) to the underlying build.
+        mock_docker_client.images.get.side_effect = docker.errors.ImageNotFound("no image yet")
+        with patch.object(docker_ops, "_build_image_uncached", side_effect=slow_uncached), \
+             patch.object(docker_ops, "is_job_processed", return_value=False):
             t1 = threading.Thread(
                 target=lambda: build_image(
                     mock_docker_client, "dup-job", "/tmp", "", "python:3.11",
