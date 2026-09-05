@@ -55,6 +55,15 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
     """
     import subprocess
 
+    with _lock:
+        existing = _active_containers.get(session_id)
+        if existing:
+            logger.warning(
+                "Interactive %s: session already tracked, skipping duplicate deployment.",
+                session_id,
+            )
+            return existing.get("access_id", "")
+
     record_event("info", f"Interactive session {session_id} deployment started")
 
     # 1. Pull images
@@ -72,53 +81,69 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
     access_name = _container_name(session_id, "access")
 
     # 2. Start env container (clean training image, stays alive via sleep infinity)
-    env_cmd = [
-        "docker", "run", "-d", "--rm",
-        "--gpus", "all",
-        "--userns=host",
-        "--name", env_name,
-        env_image_tag,
-        "sleep", "infinity",
-    ]
-    logger.info("Running env container: %s", " ".join(env_cmd))
-    env_run = subprocess.run(env_cmd, capture_output=True, text=True)
-    if env_run.returncode != 0:
-        reason = env_run.stderr.strip() or "Env container failed to start"
-        logger.error("Interactive %s: %s", session_id, reason)
-        api.report_interactive_ip(session_id, None, "FAILED")
-        return ""
+    if _container_running(env_name):
+        logger.warning(
+            "Interactive %s: env container %s already running, skipping creation.",
+            session_id, env_name,
+        )
+        env_container_id = _container_id(env_name) or env_name
+    else:
+        _remove_container_if_exists(env_name)
+        env_cmd = [
+            "docker", "run", "-d", "--rm",
+            "--gpus", "all",
+            "--userns=host",
+            "--name", env_name,
+            env_image_tag,
+            "sleep", "infinity",
+        ]
+        logger.info("Running env container: %s", " ".join(env_cmd))
+        env_run = subprocess.run(env_cmd, capture_output=True, text=True)
+        if env_run.returncode != 0:
+            reason = env_run.stderr.strip() or "Env container failed to start"
+            logger.error("Interactive %s: %s", session_id, reason)
+            api.report_interactive_ip(session_id, None, "FAILED")
+            return ""
 
-    env_container_id = env_run.stdout.strip()
+        env_container_id = env_run.stdout.strip()
 
     # 3. Start access container (shared PID namespace with env container)
-    access_cmd = [
-        "docker", "run", "-d", "--rm",
-        "--pid", f"container:{env_name}",
-        # Run in the host user namespace with all capabilities so nsenter (run as
-        # root via setuid) can enter the env container's namespaces. --userns=host
-        # is required even when the daemon has userns-remap enabled (--privileged
-        # alone does NOT disable userns-remap). --cap-add ALL covers SYS_ADMIN,
-        # SYS_PTRACE, NET_ADMIN, NET_RAW.
-        "--userns=host",
-        "--cap-add", "ALL",
-        "--device", "/dev/net/tun",
-        "-e", f"HEADSCALE_URL={headscale_url}",
-        "-e", f"HEADSCALE_AUTHKEY={headscale_auth_key}",
-        "-e", f"SESSION_ID={session_id}",
-        "-e", f"SSH_PUBLIC_KEY={ssh_public_key}",
-        "--name", access_name,
-        access_image_tag,
-    ]
-    logger.info("Running access container: %s", " ".join(access_cmd))
-    access_run = subprocess.run(access_cmd, capture_output=True, text=True)
-    if access_run.returncode != 0:
-        reason = access_run.stderr.strip() or "Access container failed to start"
-        logger.error("Interactive %s: %s", session_id, reason)
-        _stop_container(session_id, env_image_tag=env_image_tag)
-        api.report_interactive_ip(session_id, None, "FAILED")
-        return ""
+    if _container_running(access_name):
+        logger.warning(
+            "Interactive %s: access container %s already running, skipping creation.",
+            session_id, access_name,
+        )
+        access_container_id = _container_id(access_name) or access_name
+    else:
+        _remove_container_if_exists(access_name)
+        access_cmd = [
+            "docker", "run", "-d", "--rm",
+            "--pid", f"container:{env_name}",
+            # Run in the host user namespace with all capabilities so nsenter (run as
+            # root via setuid) can enter the env container's namespaces. --userns=host
+            # is required even when the daemon has userns-remap enabled (--privileged
+            # alone does NOT disable userns-remap). --cap-add ALL covers SYS_ADMIN,
+            # SYS_PTRACE, NET_ADMIN, NET_RAW.
+            "--userns=host",
+            "--cap-add", "ALL",
+            "--device", "/dev/net/tun",
+            "-e", f"HEADSCALE_URL={headscale_url}",
+            "-e", f"HEADSCALE_AUTHKEY={headscale_auth_key}",
+            "-e", f"SESSION_ID={session_id}",
+            "-e", f"SSH_PUBLIC_KEY={ssh_public_key}",
+            "--name", access_name,
+            access_image_tag,
+        ]
+        logger.info("Running access container: %s", " ".join(access_cmd))
+        access_run = subprocess.run(access_cmd, capture_output=True, text=True)
+        if access_run.returncode != 0:
+            reason = access_run.stderr.strip() or "Access container failed to start"
+            logger.error("Interactive %s: %s", session_id, reason)
+            _stop_container(session_id, env_image_tag=env_image_tag)
+            api.report_interactive_ip(session_id, None, "FAILED")
+            return ""
 
-    access_container_id = access_run.stdout.strip()
+        access_container_id = access_run.stdout.strip()
 
     with _lock:
         _active_containers[session_id] = {
@@ -162,6 +187,49 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
 def _container_name(session_id: str, role: str = "env") -> str:
     """Generate a deterministic container name for a session's env or access container."""
     return f"interactive-{session_id[:24]}-{role}"
+
+
+def _container_running(name: str) -> bool:
+    """Return True if a container with the given name exists and is running."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", name],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
+    except Exception:
+        return False
+
+
+def _container_id(name: str) -> str:
+    """Best-effort lookup of a container's ID by name; returns "" if unknown."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.Id}}", name],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _remove_container_if_exists(name: str) -> None:
+    """Remove a stale (non-running) container by name; no-op if it doesn't exist."""
+    import subprocess
+
+    try:
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, text=True,
+        )
+    except Exception:
+        pass
 
 
 def _prepare_env_container(env_name: str, access_name: str) -> None:
