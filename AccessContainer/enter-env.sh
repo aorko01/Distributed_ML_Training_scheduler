@@ -121,4 +121,12 @@ script="${script}else exec sh; fi"
 
 # Enter all the env container's namespaces (mount, UTS, IPC, net, PID) as root
 # via the setuid nsenter and run the reconstructed login shell.
-exec nsenter -t 1 -m -u -i -n -p -- /bin/sh -c "$script"
+# --setuid 0 --setgid 0 is REQUIRED (not just the setuid bit): /bin/sh, bash
+# and dash silently drop euid!=ruid at startup for security, so a setuid-only
+# nsenter (ruid=1000/sandbox, euid=0) would still land the user as UID 1000
+# inside the env container. That UID has no entry in the env image's
+# /etc/passwd|group ("I have no name!", "cannot find name for group ID 1000")
+# and cannot traverse HOME=/root ("bash: /root/.bash_profile: Permission
+# denied", "PermissionError: '/root/.cache/huggingface/token'"). Switching the
+# real+effective UID/GID to 0 gives the intended `docker exec -u 0` root shell.
+exec nsenter -t 1 -m -u -i -n -p --setuid 0 --setgid 0 -- /bin/sh -c "$script"
