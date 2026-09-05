@@ -68,20 +68,29 @@ class TestFormatJobResponse:
 # ---------------------------------------------------------------------------
 class TestSetJobPending:
     def _make_db_with_job(self, status: JobStatus):
-        """Create a mock DB session with a job in the given status."""
+        """Create a mock DB session with a job in the given status.
+
+        Mocks the atomic UPDATE ... WHERE status=NOT_RUNNABLE: rowcount is 1
+        only when the job is NOT_RUNNABLE, otherwise 0 (already claimed).
+        """
         job = MagicMock()
         job.id = "test-job-001"
         job.status = status
 
         db = MagicMock()
-        db.query.return_value.filter.return_value.first.return_value = job
+        chain = db.query.return_value.filter.return_value
+        chain.first.return_value = job
+        # Atomic claim succeeds only from NOT_RUNNABLE.
+        chain.update.return_value = 1 if status == JobStatus.NOT_RUNNABLE else 0
         return db, job
 
     def test_happy_path(self):
         db, job = self._make_db_with_job(JobStatus.NOT_RUNNABLE)
         result = set_job_pending(db, "test-job-001")
-        assert job.status == JobStatus.PENDING
-        db.commit.assert_called_once()
+        # Atomic UPDATE claimed exactly one row.
+        chain = db.query.return_value.filter.return_value
+        assert chain.update.called
+        db.commit.assert_called()
         db.refresh.assert_called_once_with(job)
         assert result == job
 
@@ -92,9 +101,24 @@ class TestSetJobPending:
 
     def test_error_job_not_found(self):
         db = MagicMock()
-        db.query.return_value.filter.return_value.first.return_value = None
+        chain = db.query.return_value.filter.return_value
+        chain.first.return_value = None
+        chain.update.return_value = 0
         with pytest.raises(Exception, match="Job not found"):
             set_job_pending(db, "nonexistent-id")
+
+    def test_atomic_claim_uses_conditional_update(self):
+        """The claim must be a single conditional UPDATE so concurrent
+        builders cannot both succeed (TOCTOU race causing duplicate builds)."""
+        from app.models.job_model import Job
+        db, job = self._make_db_with_job(JobStatus.NOT_RUNNABLE)
+        set_job_pending(db, "test-job-001")
+        chain = db.query.return_value.filter.return_value
+        # update() must have been called (atomic claim), not read-check-write.
+        chain.update.assert_called_once()
+        args, kwargs = chain.update.call_args
+        # The SET clause moves the job to PENDING.
+        assert args[0] == {Job.status: JobStatus.PENDING}
 
 
 # ---------------------------------------------------------------------------

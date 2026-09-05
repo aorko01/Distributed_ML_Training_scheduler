@@ -132,21 +132,39 @@ def create_interactive_job(db: Session, job_data: dict):
 
 def set_job_pending(db: Session, job_id: str):
     """Transition a NOT_RUNNABLE job to PENDING, indicating the builder has
-    started working on it. The job must currently be NOT_RUNNABLE."""
-    job = db.query(Job).filter(Job.id == job_id).first()
+    started working on it. The job must currently be NOT_RUNNABLE.
 
+    Uses a single atomic UPDATE ... WHERE status='NOT_RUNNABLE' so that two
+    concurrent builders racing to claim the same job cannot both succeed.
+    Without this, the old read-check-write sequence allowed a TOCTOU race:
+    both builders read NOT_RUNNABLE, both set PENDING, and both went on to
+    `docker build` the same tag concurrently on the same daemon — producing
+    the duplicated "building interactive env image" headers and eventually
+    corrupting the containerd snapshotter ("parent snapshot ... does not
+    exist"). Only the winner (rowcount == 1) proceeds; the loser gets the
+    same "not in NOT_RUNNABLE" error as a sequential double-claim.
+    """
+    rows = (
+        db.query(Job)
+        .filter(Job.id == job_id, Job.status == JobStatus.NOT_RUNNABLE)
+        .update({Job.status: JobStatus.PENDING}, synchronize_session=False)
+    )
+    if rows == 1:
+        db.commit()
+        job = db.query(Job).filter(Job.id == job_id).first()
+        db.refresh(job)
+        return job
+
+    # rows == 0: either the job doesn't exist or it is no longer NOT_RUNNABLE
+    # (already claimed by another builder). Distinguish for a clear error.
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise Exception("Job not found")
-
-    if job.status != JobStatus.NOT_RUNNABLE:
-        raise Exception("Job is not in NOT_RUNNABLE state")
-
-    job.status = JobStatus.PENDING  # type: ignore[assignment]
-
-    db.commit()
-    db.refresh(job)
-
-    return job
+    raise Exception("Job is not in NOT_RUNNABLE state")
 
 
 def mark_interactive_ready(db: Session, job_id: str):

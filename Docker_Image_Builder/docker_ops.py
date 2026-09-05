@@ -30,6 +30,32 @@ _access_image_lock = threading.Lock()
 _in_flight_base_images: set[str] = set()
 _in_flight_lock = threading.Lock()
 
+# Serialize concurrent `docker build -t <tag>` calls for the SAME target tag.
+# Two threads building aorko123/<job>-env:latest at the same time on the same
+# daemon interleave layers, duplicate every log header/step ("building
+# interactive env image" x N, "Step 1/13" x N) and corrupt the containerd
+# snapshotter — the loser fails with "parent snapshot ... does not exist"
+# when the winner pushes/deletes the tag mid-export. The scheduler's atomic
+# mark_pending is the primary cross-process dedup; this per-tag lock is the
+# in-process safety net so a slipped-through duplicate waits instead of
+# corrupting the daemon (it then rebuilds from cache, which is cheap).
+_build_tag_locks: dict[str, threading.Lock] = {}
+_build_tag_locks_guard = threading.Lock()
+
+# Tags with a build currently holding the per-tag lock (for duplicate warning).
+_in_flight_targets: set[str] = set()
+_in_flight_targets_lock = threading.Lock()
+
+
+def _tag_lock(tag: str) -> threading.Lock:
+    """Return the canonical lock object for a target image tag."""
+    with _build_tag_locks_guard:
+        lock = _build_tag_locks.get(tag)
+        if lock is None:
+            lock = threading.Lock()
+            _build_tag_locks[tag] = lock
+        return lock
+
 
 def docker_login(client: docker.DockerClient):
     global _docker_authenticated
@@ -105,6 +131,9 @@ def _is_containerd_export_error(text: str) -> bool:
         "failed to export layer" in lowered
         or "creatediff" in lowered
         or "mount callback failed" in lowered
+        or "parent snapshot" in lowered
+        or ("snapshot" in lowered and "does not exist" in lowered)
+        or ("snapshot" in lowered and "not found" in lowered)
         or (("lstat" in lowered) and ("no such file or directory" in lowered or "snapshot" in lowered))
     )
 
@@ -556,6 +585,36 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
 
 
 def build_image(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> str | tuple[str, str]:
+    """Build the Docker image for a job (per-tag serialized).
+
+    Serializes concurrent builds of the SAME target tag via a per-tag lock so
+    a duplicate claim cannot corrupt the daemon (duplicate headers/steps and
+    "parent snapshot ... does not exist"). The scheduler's atomic mark_pending
+    is the primary cross-process dedup; this is the in-process safety net.
+    """
+    if build_type == "interactive":
+        _tag = f"{DOCKER_HUB_USERNAME}/{job_id}-env:latest"
+    else:
+        _tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+    _lock = _tag_lock(_tag)
+    _waited = False
+    if not _lock.acquire(blocking=False):
+        logger.warning(
+            "Duplicate concurrent build detected for %s (job %s) — "
+            "waiting for the in-progress build instead of building in parallel.",
+            _tag, job_id,
+        )
+        _lock.acquire(blocking=True)
+        _waited = True
+    try:
+        if _waited:
+            logger.info("Proceeding with serialized build for %s (job %s).", _tag, job_id)
+        return _build_image_uncached(client, job_id, project_dir, command, base_image, build_type, include_project)
+    finally:
+        _lock.release()
+
+
+def _build_image_uncached(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> str | tuple[str, str]:
     """Build the Docker image for a job.
 
     Returns the image_tag string on success, or a (failure_type, reason) tuple
@@ -755,12 +814,27 @@ def push_image(client: docker.DockerClient, job_id: str, image_tag: str, build_t
 
 
 def delete_local_image(client: docker.DockerClient, job_id: str, image_tag: str) -> None:
-    """Remove the locally-built image after successful push."""
-    logger.info("Deleting local built image %s ...", image_tag)
+    """Remove the locally-built image after successful push.
+
+    Skips the delete if another thread is currently building the same tag —
+    deleting a tag mid-build is what produces "parent snapshot ... does not
+    exist" export failures. Skipping is safe (only costs local disk).
+    """
+    _lock = _tag_lock(image_tag)
+    if not _lock.acquire(blocking=False):
+        logger.warning(
+            "Skipping delete of %s (job %s): another build is in progress for this tag.",
+            image_tag, job_id,
+        )
+        return
     try:
-        client.images.remove(image=image_tag, force=True)
-    except Exception as e:
-        logger.warning("Failed to delete local image %s: %s", image_tag, e)
+        logger.info("Deleting local built image %s ...", image_tag)
+        try:
+            client.images.remove(image=image_tag, force=True)
+        except Exception as e:
+            logger.warning("Failed to delete local image %s: %s", image_tag, e)
+    finally:
+        _lock.release()
 
 
 def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> tuple[str, str] | None:
