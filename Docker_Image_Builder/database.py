@@ -1,28 +1,37 @@
 import os
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from config import DB_PATH
+
+# Serialize all write operations to avoid SQLite "database is locked" errors
+# when multiple builder threads write concurrently.
+_write_lock = threading.Lock()
 
 
 def get_connection():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-    return sqlite3.connect(DB_PATH, timeout=30.0)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
 
 def init_db():
-    with get_connection() as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS processed_jobs (
-                job_id TEXT PRIMARY KEY,
-                processed_at TIMESTAMP
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS base_images (
-                image_name TEXT PRIMARY KEY,
-                last_used_at TIMESTAMP
-            )
-        ''')
+    with _write_lock:
+        with get_connection() as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS processed_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    processed_at TIMESTAMP
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS base_images (
+                    image_name TEXT PRIMARY KEY,
+                    last_used_at TIMESTAMP
+                )
+            ''')
 
 
 def is_job_processed(job_id: str) -> bool:
@@ -32,21 +41,23 @@ def is_job_processed(job_id: str) -> bool:
 
 
 def mark_job_processed(job_id: str):
-    with get_connection() as conn:
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT OR REPLACE INTO processed_jobs (job_id, processed_at) VALUES (?, ?)",
-            (job_id, now)
-        )
+    with _write_lock:
+        with get_connection() as conn:
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "INSERT OR REPLACE INTO processed_jobs (job_id, processed_at) VALUES (?, ?)",
+                (job_id, now)
+            )
 
 
 def update_base_image_usage(image_name: str):
-    with get_connection() as conn:
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT OR REPLACE INTO base_images (image_name, last_used_at) VALUES (?, ?)",
-            (image_name, now)
-        )
+    with _write_lock:
+        with get_connection() as conn:
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "INSERT OR REPLACE INTO base_images (image_name, last_used_at) VALUES (?, ?)",
+                (image_name, now)
+            )
 
 
 def get_old_base_images(days: int = 7) -> list:
@@ -60,5 +71,6 @@ def get_old_base_images(days: int = 7) -> list:
 
 
 def remove_base_image_record(image_name: str):
-    with get_connection() as conn:
-        conn.execute("DELETE FROM base_images WHERE image_name = ?", (image_name,))
+    with _write_lock:
+        with get_connection() as conn:
+            conn.execute("DELETE FROM base_images WHERE image_name = ?", (image_name,))

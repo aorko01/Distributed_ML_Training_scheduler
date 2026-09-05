@@ -16,6 +16,10 @@ from app.models.interactive_session_model import (
 # heartbeat for this long.
 STALL_TIMEOUT_SECONDS = 3 * 60
 
+# A job in PENDING state (builder started but hasn't finished) is reset to
+# NOT_RUNNABLE if it stays stuck for longer than this.
+PENDING_STALL_TIMEOUT_SECONDS = 30 * 60
+
 # How often the watcher scans for stalled jobs.
 SCAN_INTERVAL_SECONDS = 30
 
@@ -192,6 +196,43 @@ async def check_stalled_interactive_sessions() -> int:
         db.close()
 
 
+async def check_stalled_pending_jobs() -> int:
+    """Reset PENDING jobs that have been stuck for longer than
+    PENDING_STALL_TIMEOUT_SECONDS back to NOT_RUNNABLE so they can be
+    retried. This handles cases where the builder crashed or lost track of
+    a job without notifying the scheduler."""
+    db = SessionLocal()
+    try:
+        pending_jobs = (
+            db.query(Job)
+            .filter(Job.status == JobStatus.PENDING)
+            .all()
+        )
+        now = int(time.time())
+        reset = 0
+
+        for job in pending_jobs:
+            # Fall back to created_at when updated_at was never set (e.g. the
+            # builder crashed before touching the row).
+            reference_ts = job.updated_at or job.created_at
+            if reference_ts is None:
+                continue
+            updated_ts = reference_ts.timestamp()
+            if (now - updated_ts) >= PENDING_STALL_TIMEOUT_SECONDS:
+                job.status = JobStatus.NOT_RUNNABLE  # type: ignore[assignment]
+                job.failure_reason = (  # type: ignore[assignment]
+                    job.failure_reason
+                    or f"PENDING job stalled for more than {PENDING_STALL_TIMEOUT_SECONDS} seconds"
+                )
+                db.commit()
+                db.refresh(job)
+                reset += 1
+
+        return reset
+    finally:
+        db.close()
+
+
 async def run_stall_watcher():
     """Background loop that periodically scans for stalled jobs and
     interactive sessions."""
@@ -200,6 +241,9 @@ async def run_stall_watcher():
             marked = await check_stalled_jobs()
             if marked:
                 print(f"[watchdog] marked {marked} stalled job(s) as RETRY_NEEDED")
+            pending_reset = await check_stalled_pending_jobs()
+            if pending_reset:
+                print(f"[watchdog] reset {pending_reset} stalled PENDING job(s) to NOT_RUNNABLE")
             interactive_marked = await check_stalled_interactive_sessions()
             if interactive_marked:
                 print(f"[watchdog] requeued/finalized {interactive_marked} stalled interactive session(s)")

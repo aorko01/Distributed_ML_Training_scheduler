@@ -103,6 +103,12 @@ def run_migrations():
         "ALTER TABLE interactive_sessions ADD COLUMN IF NOT EXISTS last_worker_id VARCHAR",
         "ALTER TABLE interactive_sessions ADD COLUMN IF NOT EXISTS commit_pending BOOLEAN DEFAULT FALSE",
         "ALTER TABLE interactive_sessions ADD COLUMN IF NOT EXISTS commit_image_tag VARCHAR",
+        # Ensure PENDING enum value exists for job status column (safe no-op if
+        # the database already knows about the value, e.g. from a prior run).
+        # PostgreSQL: add enum value if it doesn't exist.
+        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'PENDING' "
+        "AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'jobstatus')) "
+        "THEN ALTER TYPE jobstatus ADD VALUE 'PENDING'; END IF; END $$",
     ]
     with engine.begin() as conn:
         for statement in statements:

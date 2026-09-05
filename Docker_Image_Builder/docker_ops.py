@@ -3,6 +3,7 @@ import re
 import shutil
 import tempfile
 import time
+import threading
 import docker
 import requests
 
@@ -18,24 +19,35 @@ from database import update_base_image_usage, get_old_base_images, remove_base_i
 from api import send_log_lines
 
 _docker_authenticated = False
+_login_lock = threading.Lock()
+
+# Thread-safety for pulling the shared access image (concurrent builds may all
+# see "image not found" at the same time and race to pull it).
+_access_image_lock = threading.Lock()
+
+# Track base images currently being built so prune_old_base_images avoids
+# deleting one mid-build (which would break the Docker build context).
+_in_flight_base_images: set[str] = set()
+_in_flight_lock = threading.Lock()
 
 
 def docker_login(client: docker.DockerClient):
     global _docker_authenticated
-    if _docker_authenticated:
-        logger.debug("Already authenticated with Docker Hub, skipping login.")
-        return
-    if DOCKER_HUB_PASSWORD:
-        logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
-        try:
-            client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
+    with _login_lock:
+        if _docker_authenticated:
+            logger.debug("Already authenticated with Docker Hub, skipping login.")
+            return
+        if DOCKER_HUB_PASSWORD:
+            logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
+            try:
+                client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
+                _docker_authenticated = True
+            except Exception as e:
+                logger.error("Docker Hub login failed: %s", e)
+                # Don't set flag — will retry next cycle
+        else:
+            logger.info("No Docker Hub password provided, assuming already logged in.")
             _docker_authenticated = True
-        except Exception as e:
-            logger.error("Docker Hub login failed: %s", e)
-            # Don't set flag — will retry next cycle
-    else:
-        logger.info("No Docker Hub password provided, assuming already logged in.")
-        _docker_authenticated = True
 
 
 def _split_requirements(build_dir: str, project_dir: str, chunk_size: int) -> list[str]:
@@ -384,20 +396,32 @@ def ensure_access_image(client: docker.DockerClient) -> bool:
     except Exception as e:
         logger.warning("Could not check for access image %s: %s", access_image, e)
 
-    logger.info("Pulling access image %s ...", access_image)
-    try:
-        client.images.pull(access_image)
-        logger.info("Successfully pulled access image %s.", access_image)
-        return True
-    except Exception as e:
-        logger.error(
-            "Failed to pull access image %s: %s. "
-            "The operator must build and push it first: "
-            "docker build -t aorko123/access-sshd:latest ./AccessContainer && "
-            "docker push aorko123/access-sshd:latest",
-            access_image, e,
-        )
-        return False
+    with _access_image_lock:
+        # Double-check after acquiring the lock — another thread may have
+        # pulled it while we were waiting.
+        try:
+            client.images.get(access_image)
+            logger.info("Access image %s now present (pulled by another thread).", access_image)
+            return True
+        except docker.errors.ImageNotFound:
+            pass
+        except Exception as e:
+            logger.warning("Could not check for access image %s: %s", access_image, e)
+
+        logger.info("Pulling access image %s ...", access_image)
+        try:
+            client.images.pull(access_image)
+            logger.info("Successfully pulled access image %s.", access_image)
+            return True
+        except Exception as e:
+            logger.error(
+                "Failed to pull access image %s: %s. "
+                "The operator must build and push it first: "
+                "docker build -t aorko123/access-sshd:latest ./AccessContainer && "
+                "docker push aorko123/access-sshd:latest",
+                access_image, e,
+            )
+            return False
 
 
 def save_debug_copy(job_id: str, build_dir: str) -> None:
@@ -548,6 +572,11 @@ def build_image(client: docker.DockerClient, job_id: str, project_dir: str, comm
     # Track base image usage
     update_base_image_usage(base_image)
 
+    # Track this base image as in-flight so prune_old_base_images won't
+    # delete it while we're building on top of it.
+    with _in_flight_lock:
+        _in_flight_base_images.add(base_image)
+
     try:
         if build_type == "interactive":
             if include_project:
@@ -640,10 +669,6 @@ def build_image(client: docker.DockerClient, job_id: str, project_dir: str, comm
                         f"Containerd layer export error (attempt {attempt}/{max_attempts}): retrying ..."
                     ] + _extract_build_log_lines(e)[-3:])
                     last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
-                    try:
-                        client.images.prune(filters={"dangling": True})
-                    except Exception:
-                        pass
                     time.sleep(DOCKER_BUILD_RETRY_BACKOFF)
                     continue
                 build_error = e
@@ -684,6 +709,8 @@ def build_image(client: docker.DockerClient, job_id: str, project_dir: str, comm
         logger.error("Unexpected error for job %s: %s", job_id, e)
         return "system", f"Unexpected error: {e}"
     finally:
+        with _in_flight_lock:
+            _in_flight_base_images.discard(base_image)
         shutil.rmtree(build_dir, ignore_errors=True)
 
 
@@ -759,6 +786,11 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
 def prune_old_base_images(client: docker.DockerClient):
     old_images = get_old_base_images(days=7)
     for image_name in old_images:
+        # Skip images currently being built by a concurrent job
+        with _in_flight_lock:
+            if image_name in _in_flight_base_images:
+                logger.debug("Skipping prune of in-flight base image: %s", image_name)
+                continue
         logger.info("Attempting to prune old base image: %s", image_name)
         try:
             client.images.remove(image=image_name, force=True)

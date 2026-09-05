@@ -17,12 +17,33 @@ from database import init_db, is_job_processed, mark_job_processed
 from api import (
     fetch_unbuilt_jobs, download_job_archive,
     notify_scheduler_job_ready, notify_scheduler_interactive_ready,
-    notify_scheduler_job_failed,
+    notify_scheduler_job_failed, notify_scheduler_job_pending,
 )
 from docker_ops import (
     docker_login, build_image, push_image, delete_local_image,
     prune_old_base_images, resolve_interactive_base_image, ensure_access_image,
 )
+
+# ── Active job tracking ──────────────────────────────────────────────────────
+# Prevents the same job_id from being picked up by two concurrent build cycles.
+_active_jobs: set[str] = set()
+_active_jobs_lock = threading.Lock()
+
+
+def _claim_job(job_id: str) -> bool:
+    """Atomically claim a job for processing. Returns True if this caller
+    successfully claimed the job, False if another thread already did."""
+    with _active_jobs_lock:
+        if job_id in _active_jobs:
+            return False
+        _active_jobs.add(job_id)
+        return True
+
+
+def _release_job(job_id: str) -> None:
+    """Release a previously claimed job."""
+    with _active_jobs_lock:
+        _active_jobs.discard(job_id)
 
 
 def find_project_dir(extracted_dir: str) -> str:
@@ -57,11 +78,13 @@ def process_job(job, client, push_executor, delete_executor):
 
     if not job_id or (build_type != "interactive" and (not object_key or not base_image)):
         logger.warning("Skipping malformed job payload: %s", job)
+        _release_job(job_id)
         return
 
     if build_type == "interactive":
         if not base_job_id and not object_key:
             logger.warning("Skipping malformed interactive job payload: %s", job)
+            _release_job(job_id)
             return
 
     if is_job_processed(job_id):
@@ -70,104 +93,108 @@ def process_job(job, client, push_executor, delete_executor):
             notify_scheduler_interactive_ready(job_id)
         else:
             notify_scheduler_job_ready(job_id)
+        _release_job(job_id)
         return
 
     logger.info("=" * 50)
     logger.info("Processing job: %s", job_id)
 
     extract_dir = None
-    build_result = None
     archive_path = None
+    push_submitted = False
 
     try:
-        if build_type == "interactive":
-            if base_job_id:
-                if not ensure_access_image(client):
-                    build_result = ("system", "Failed to pull access image")
+        try:
+            # ... existing build logic (build_image calls, interactive handling, etc.)
+            if build_type == "interactive":
+                if base_job_id:
+                    if not ensure_access_image(client):
+                        image_tag = ("system", "Failed to pull access image")
+                    else:
+                        # No build needed for derived interactive — just notify
+                        notified = notify_scheduler_interactive_ready(job_id)
+                        if notified:
+                            mark_job_processed(job_id)
+                            logger.info("Job %s completed (derived interactive).", job_id)
+                        else:
+                            logger.error("Job %s derived interactive ready notification failed.", job_id)
+                            notify_scheduler_job_failed(job_id, "system", "Scheduler notification failed after build")
+                        _release_job(job_id)
+                        return
                 else:
-                    # No build needed for derived interactive — just notify
-                    notified = notify_scheduler_interactive_ready(job_id)
-                    if notified:
-                        mark_job_processed(job_id)
-                        logger.info("Job %s completed (derived interactive).", job_id)
-                    return
+                    env_config = job.get("config") or {}
+                    base_image_tag = resolve_interactive_base_image(env_config)
+                    archive_path = download_job_archive(object_key)
+                    extract_dir = extract_job_archive(archive_path, job_id)
+                    project_dir = find_project_dir(extract_dir)
+                    image_tag = build_image(
+                        client, job_id, project_dir, command="",
+                        base_image=base_image_tag, build_type="interactive",
+                        include_project=True,
+                    )
             else:
-                env_config = job.get("config") or {}
-                base_image_tag = resolve_interactive_base_image(env_config)
                 archive_path = download_job_archive(object_key)
                 extract_dir = extract_job_archive(archive_path, job_id)
                 project_dir = find_project_dir(extract_dir)
-                image_tag = build_image(
-                    client, job_id, project_dir, command="",
-                    base_image=base_image_tag, build_type="interactive",
-                    include_project=True,
-                )
-        else:
-            archive_path = download_job_archive(object_key)
-            extract_dir = extract_job_archive(archive_path, job_id)
-            project_dir = find_project_dir(extract_dir)
-            image_tag = build_image(client, job_id, project_dir, command, base_image)
-    except Exception as e:
-        logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
-        build_result = ("system", f"Unexpected error while processing job: {e}")
+                image_tag = build_image(client, job_id, project_dir, command, base_image)
+        except Exception as e:
+            logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
+            notified = notify_scheduler_job_failed(job_id, "system", f"Unexpected error while processing job: {e}")
+            if notified:
+                logger.error("Job %s failed (system), reported.", job_id)
+            else:
+                logger.warning("Job %s failed (system) but scheduler was not notified", job_id)
+            return
+
+        # Handle build_image returning a tuple (failure_type, reason)
+        if 'image_tag' in locals() and isinstance(image_tag, tuple):
+            failure_type, failure_reason = image_tag
+            notified = notify_scheduler_job_failed(job_id, failure_type, failure_reason)
+            if notified:
+                logger.error("Job %s failed (%s), reported.", job_id, failure_type)
+            else:
+                logger.warning("Job %s failed (%s) but scheduler was not notified: %s",
+                               job_id, failure_type, failure_reason)
+            return
+
+        image_tag_str = image_tag
+
+        def _push_and_notify():
+            try:
+                push_start = time.monotonic()
+                push_result = push_image(client, job_id, image_tag_str, build_type)
+                push_elapsed = time.monotonic() - push_start
+                logger.info("Push job %s took %.2fs", job_id, push_elapsed)
+
+                if push_result is not None:
+                    _, push_fail_reason = push_result
+                    logger.error("Push failed for job %s: %s", job_id, push_fail_reason)
+                    notify_scheduler_job_failed(job_id, "system", push_fail_reason)
+                    return
+
+                if build_type == "interactive":
+                    notified = notify_scheduler_interactive_ready(job_id)
+                else:
+                    notified = notify_scheduler_job_ready(job_id)
+                if notified:
+                    mark_job_processed(job_id)
+                    logger.info("Job %s completed.", job_id)
+                    delete_executor.submit(delete_local_image, client, job_id, image_tag_str)
+                else:
+                    logger.error("Job %s built but scheduler notification failed, will retry.", job_id)
+                    notify_scheduler_job_failed(job_id, "system", "Scheduler notification failed after build")
+            finally:
+                _release_job(job_id)
+
+        push_executor.submit(_push_and_notify)
+        push_submitted = True
     finally:
         if extract_dir:
             shutil.rmtree(extract_dir, ignore_errors=True)
         if archive_path and os.path.exists(archive_path):
             os.remove(archive_path)
-
-    # Handle build failure
-    if build_result is not None:
-        failure_type, failure_reason = build_result
-        if failure_type == "user":
-            notified = notify_scheduler_job_failed(job_id, failure_type, failure_reason)
-            if notified:
-                logger.error("Job %s failed (user code), reported.", job_id)
-        else:
-            logger.warning("Job %s failed (system), keeping pending for retry: %s", job_id, failure_reason)
-        return
-
-    # image_tag could be a tuple (failure_type, reason) from build_image
-    if 'image_tag' in locals() and isinstance(image_tag, tuple):
-        failure_type, failure_reason = image_tag
-        if failure_type == "user":
-            notified = notify_scheduler_job_failed(job_id, failure_type, failure_reason)
-            if notified:
-                logger.error("Job %s failed (user code), reported.", job_id)
-        else:
-            logger.warning("Job %s failed (system), keeping pending for retry: %s", job_id, failure_reason)
-        return
-
-    # Build succeeded — push in background thread
-    image_tag_str = image_tag  # It's a string at this point
-
-    def _push_and_notify():
-        """Push image, then notify scheduler and submit deletion."""
-        push_start = time.monotonic()
-        push_result = push_image(client, job_id, image_tag_str, build_type)
-        push_elapsed = time.monotonic() - push_start
-        logger.info("Push job %s took %.2fs", job_id, push_elapsed)
-
-        if push_result is not None:
-            _, push_fail_reason = push_result
-            logger.error("Push failed for job %s: %s", job_id, push_fail_reason)
-            return  # Keep pending for retry
-
-        # Push succeeded — submit image deletion in background
-        delete_executor.submit(delete_local_image, client, job_id, image_tag_str)
-
-        # Notify scheduler
-        if build_type == "interactive":
-            notified = notify_scheduler_interactive_ready(job_id)
-        else:
-            notified = notify_scheduler_job_ready(job_id)
-        if notified:
-            mark_job_processed(job_id)
-            logger.info("Job %s completed.", job_id)
-        else:
-            logger.error("Job %s built but scheduler notification failed, will retry.", job_id)
-
-    push_executor.submit(_push_and_notify)
+        if not push_submitted:
+            _release_job(job_id)
 
 
 def scan_and_process(client, job_executor, push_executor, delete_executor):
@@ -180,7 +207,27 @@ def scan_and_process(client, job_executor, push_executor, delete_executor):
 
     submitted = 0
     for job in jobs:
-        job_executor.submit(process_job, job, client, push_executor, delete_executor)
+        job_id = job.get("id")
+        if not job_id:
+            continue
+
+        # Skip jobs already claimed by another thread/cycle
+        if not _claim_job(job_id):
+            logger.debug("Job %s already active, skipping", job_id)
+            continue
+
+        # Notify scheduler that the builder is starting work on this job
+        if not notify_scheduler_job_pending(job_id):
+            logger.warning("Failed to notify scheduler of pending status for job %s, skipping", job_id)
+            _release_job(job_id)
+            continue
+
+        try:
+            job_executor.submit(process_job, job, client, push_executor, delete_executor)
+        except Exception as e:
+            logger.error("Failed to submit job %s for processing: %s", job_id, e)
+            _release_job(job_id)
+            continue
         submitted += 1
 
     cycle_elapsed = time.monotonic() - cycle_start

@@ -128,3 +128,16 @@ class TestBaseImageTracking:
             "SELECT COUNT(*) FROM base_images WHERE image_name LIKE 'myimage%'"
         ).fetchone()[0]
         assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# get_connection — WAL mode
+# ---------------------------------------------------------------------------
+class TestGetConnection:
+    def test_returns_wal_mode(self):
+        conn = get_connection()
+        try:
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            assert journal_mode == "wal"
+        finally:
+            conn.close()

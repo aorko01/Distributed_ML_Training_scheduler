@@ -7,6 +7,7 @@ import enum
 
 class JobStatus(enum.Enum):
     NOT_RUNNABLE = "NOT_RUNNABLE"
+    PENDING = "PENDING"
     VRAM_ESTIMATION_PENDING = "VRAM_ESTIMATION_PENDING"
     RUNNABLE = "RUNNABLE"
     IN_PROGRESS = "IN_PROGRESS"
@@ -30,6 +31,7 @@ class JobPriority(enum.Enum):
 # session lifecycle reports (update_session_ip, watchdog) must NOT mirror
 # session state onto the job anymore.
 BATCH_JOB_STATUSES = {
+    JobStatus.PENDING,
     JobStatus.VRAM_ESTIMATION_PENDING,
     JobStatus.RUNNABLE,
     JobStatus.IN_PROGRESS,

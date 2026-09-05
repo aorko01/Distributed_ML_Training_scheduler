@@ -8,6 +8,7 @@ load_dotenv()
 SCHEDULER_BASE_URL = os.environ.get("SCHEDULER_API_URL", "http://localhost:8000")
 SCHEDULER_UPDATE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_vram_estimation_pending"
 SCHEDULER_INTERACTIVE_UPDATE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/mark_interactive_ready"
+SCHEDULER_PENDING_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/mark_pending"
 SCHEDULER_FAILURE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/mark_failed"
 SCHEDULER_QUEUE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/unbuilt_jobs"
 SCHEDULER_LOG_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/logs"

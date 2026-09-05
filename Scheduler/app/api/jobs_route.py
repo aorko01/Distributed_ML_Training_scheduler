@@ -230,6 +230,16 @@ def update_job_to_vram_estimation_pending(
         return {"error": str(e)}
 
 
+@router.post("/mark_pending")
+def mark_job_pending(request: JobIDRequest, db: Session = Depends(get_db)):
+    """Notify the scheduler that the builder has started working on a job."""
+    try:
+        job = job_service.set_job_pending(db, request.job_id)
+        return {"job_id": job.id, "status": job.status.value}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.post("/mark_interactive_ready")
 def mark_interactive_ready(
     request: InteractiveReadyRequest, db: Session = Depends(get_db)

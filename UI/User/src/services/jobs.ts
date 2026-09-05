@@ -53,6 +53,7 @@ const mapStatus = (status: string): JobStatus => {
   const normalized = (status ?? '').toUpperCase();
   switch (normalized) {
     case 'NOT_RUNNABLE': return 'Pending';
+    case 'PENDING': return 'Building';
     case 'VRAM_ESTIMATION_PENDING': return 'Building';
     case 'RUNNABLE': return 'Provisioning';
     case 'IN_PROGRESS': return 'Running';
@@ -115,9 +116,9 @@ export const fetchJobs = async (builtOnly = false): Promise<Job[]> => {
     throw new Error(data.error);
   }
   const jobs = data.jobs ?? [];
-  // NOT_RUNNABLE means the image hasn't been built/pushed yet, so it can't
-  // be used as a base for interactive sessions.
-  return (builtOnly ? jobs.filter((j) => j.status !== 'NOT_RUNNABLE') : jobs).map(mapJob);
+  // NOT_RUNNABLE and PENDING mean the image hasn't been built/pushed yet, so
+  // it can't be used as a base for interactive sessions.
+  return (builtOnly ? jobs.filter((j) => !['NOT_RUNNABLE', 'PENDING'].includes(j.status)) : jobs).map(mapJob);
 };
 
 export const fetchJobById = async (id: string): Promise<Job | undefined> => {

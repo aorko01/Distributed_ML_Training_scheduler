@@ -14,6 +14,11 @@ from app.models.job_model import Job, JobStatus, JobPriority
 from app.schemas.worker_schema import WorkerResource
 from app.core.redis import redis_client
 
+# Statuses that indicate a job's build is in progress (started by the builder
+# but not yet built/pushed). Used as the guard for transitioning into
+# VRAM_ESTIMATION_PENDING or INTERACTIVE_READY.
+BUILD_IN_PROGRESS_STATUSES = {JobStatus.NOT_RUNNABLE, JobStatus.PENDING}
+
 
 def create_job(db: Session, job_data: dict):
     db_job = Job(
@@ -125,6 +130,25 @@ def create_interactive_job(db: Session, job_data: dict):
     return db_job
 
 
+def set_job_pending(db: Session, job_id: str):
+    """Transition a NOT_RUNNABLE job to PENDING, indicating the builder has
+    started working on it. The job must currently be NOT_RUNNABLE."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+
+    if not job:
+        raise Exception("Job not found")
+
+    if job.status != JobStatus.NOT_RUNNABLE:
+        raise Exception("Job is not in NOT_RUNNABLE state")
+
+    job.status = JobStatus.PENDING  # type: ignore[assignment]
+
+    db.commit()
+    db.refresh(job)
+
+    return job
+
+
 def mark_interactive_ready(db: Session, job_id: str):
     """Mark an interactive job as INTERACTIVE_READY after the builder finishes."""
     job = db.query(Job).filter(Job.id == job_id).first()
@@ -132,7 +156,7 @@ def mark_interactive_ready(db: Session, job_id: str):
     if not job:
         raise Exception("Job not found")
 
-    if job.status != JobStatus.NOT_RUNNABLE:
+    if job.status not in BUILD_IN_PROGRESS_STATUSES:
         raise Exception("Job is not in NOT_RUNNABLE state")
 
     job.status = JobStatus.INTERACTIVE_READY  # type: ignore[assignment]
@@ -149,7 +173,7 @@ def set_job_vram_estimation_pending(db: Session, job_id: str):
     if not job:
         raise Exception("Job not found")
 
-    if job.status != JobStatus.NOT_RUNNABLE:
+    if job.status not in BUILD_IN_PROGRESS_STATUSES:
         raise Exception("Job is not in NOT_RUNNABLE state")
 
     job.status = JobStatus.VRAM_ESTIMATION_PENDING  # type: ignore[assignment]
@@ -596,7 +620,14 @@ def mark_job_failed(db: Session, job_id: str, failure_type: str, failure_reason:
         raise Exception(f"Job is already in terminal state {job.status.value}")
 
     was_in_progress = job.status == JobStatus.IN_PROGRESS
-    job.status = JobStatus.FAILED if failure_type == "user" else JobStatus.RETRY_NEEDED  # type: ignore[assignment]
+    if failure_type == "user":
+        job.status = JobStatus.FAILED  # type: ignore[assignment]
+    elif job.status in BUILD_IN_PROGRESS_STATUSES:
+        # Unbuilt job (PENDING/NOT_RUNNABLE): reset for the Image Builder
+        # instead of handing it to a worker for resume.
+        job.status = JobStatus.NOT_RUNNABLE  # type: ignore[assignment]
+    else:
+        job.status = JobStatus.RETRY_NEEDED  # type: ignore[assignment]
     if failure_reason:
         job.failure_reason = failure_reason[:2000]  # type: ignore[assignment]
 

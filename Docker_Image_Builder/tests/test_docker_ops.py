@@ -22,6 +22,7 @@ from docker_ops import (  # noqa: E402
     docker_login,
     delete_local_image,
     prune_old_base_images,
+    _in_flight_base_images,
 )
 
 
@@ -433,3 +434,16 @@ class TestPruneOldBaseImages:
         prune_old_base_images(mock_docker_client)
         mock_docker_client.images.remove.assert_not_called()
         mock_remove.assert_not_called()
+
+    @patch("docker_ops.remove_base_image_record")
+    @patch("docker_ops.get_old_base_images", return_value=["old-image:latest", "inflight-image:latest"])
+    def test_prune_skips_in_flight_images(self, mock_get_old, mock_remove, mock_docker_client):
+        """Prune should skip images currently being built (in-flight)."""
+        _in_flight_base_images.add("inflight-image:latest")
+        try:
+            prune_old_base_images(mock_docker_client)
+            # Only the non-in-flight image should have been removed
+            mock_docker_client.images.remove.assert_called_once_with(image="old-image:latest", force=True)
+            mock_remove.assert_called_once_with("old-image:latest")
+        finally:
+            _in_flight_base_images.discard("inflight-image:latest")
