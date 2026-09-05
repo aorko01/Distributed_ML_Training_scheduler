@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Body
+import logging
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,8 @@ from app.services import interactive_service
 from app.services.ephemeral_password_service import verify_ephemeral_password
 
 router = APIRouter()
+
+logger = logging.getLogger("interactive_route")
 
 
 class EphemeralPasswordVerifyRequest(BaseModel):
@@ -43,6 +46,10 @@ async def report_ip(
     db: Session = Depends(get_db),
 ):
     """Worker callback: reports the container's tailnet IP (or stopped/failed)."""
+    logger.info(
+        "report_ip received: session_id=%s headscale_ip=%s status=%s",
+        body.session_id, body.headscale_ip, body.status,
+    )
     try:
         return await interactive_service.update_session_ip(
             db, body.session_id, body.headscale_ip, body.status

@@ -159,6 +159,10 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
 
     # 4. Poll access container logs for the tailnet IP.
     headscale_ip = _wait_for_tailscale_ip(session_id)
+    if headscale_ip:
+        logger.info("Interactive %s: found Tailscale IP %s", session_id, headscale_ip)
+    else:
+        logger.warning("Interactive %s: no Tailscale IP found", session_id)
     if not headscale_ip:
         logger.error(
             "Interactive %s: no Tailscale IP within %.0fs; stopping containers.",
@@ -169,7 +173,15 @@ def run_interactive_session(api, session_id: str, env_image_tag: str,
         return ""
 
     # 5. Report to scheduler.
+    logger.info(
+        "Interactive %s: reporting IP %s to scheduler...",
+        session_id, headscale_ip,
+    )
     api.report_interactive_ip(session_id, headscale_ip, "RUNNING")
+    logger.info(
+        "Interactive %s: report_interactive_ip call completed for IP %s",
+        session_id, headscale_ip,
+    )
     record_event("info", f"Interactive session {session_id} running at {headscale_ip}")
 
     # 6. Monitor both containers in background.
@@ -356,7 +368,12 @@ def _wait_for_tailscale_ip(session_id: str) -> str | None:
             ["docker", "logs", access_name],
             capture_output=True, text=True,
         )
-        match = IP_LOG_RE.search(logs.stdout + logs.stderr)
+        raw_output = logs.stdout + logs.stderr
+        logger.debug(
+            "Interactive %s: polling access logs (raw output: %r)",
+            session_id, raw_output,
+        )
+        match = IP_LOG_RE.search(raw_output)
         if match:
             return match.group(1)
 

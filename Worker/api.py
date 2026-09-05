@@ -1,5 +1,6 @@
 import requests
 import logging
+import time
 import config
 
 logger = logging.getLogger("api")
@@ -151,13 +152,19 @@ class SchedulerAPI:
             "headscale_ip": headscale_ip,
             "status": status,
         }
-        try:
-            resp = requests.post(_url("/interactive/report_ip"), json=payload, timeout=10)
-            resp.raise_for_status()
-            logger.info("Reported interactive session %s (%s): %s",
-                        session_id, status, headscale_ip)
-        except Exception as e:
-            logger.error("Failed to report interactive IP for %s: %s", session_id, e)
+        backoffs = (1, 2, 4)
+        for attempt in range(4):
+            try:
+                resp = requests.post(_url("/interactive/report_ip"), json=payload, timeout=10)
+                resp.raise_for_status()
+                logger.info("Reported interactive session %s (%s): %s",
+                            session_id, status, headscale_ip)
+                return
+            except Exception as e:
+                if attempt < len(backoffs):
+                    time.sleep(backoffs[attempt])
+                else:
+                    logger.error("Failed to report interactive IP for %s: %s", session_id, e)
 
     def commit_complete(self, job_id: str):
         """Report that the committed image was pushed to Docker Hub."""

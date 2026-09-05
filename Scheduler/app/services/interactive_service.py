@@ -159,6 +159,10 @@ def create_session(db: Session, user_id: str, base_job_id: str | None = None,
 
 async def update_session_ip(db: Session, session_id: str, headscale_ip: str | None,
                             status: str = "RUNNING") -> dict:
+    logger.info(
+        "update_session_ip received: session_id=%s headscale_ip=%s status=%s",
+        session_id, headscale_ip, status,
+    )
     record = get_session(db, session_id)
     if not record:
         raise InteractiveServiceError("Interactive session not found")
@@ -192,6 +196,12 @@ async def update_session_ip(db: Session, session_id: str, headscale_ip: str | No
 
     db.commit()
     db.refresh(record)
+
+    logger.info(
+        "update_session_ip completed: session_id=%s session_status=%s job_status=%s",
+        record.session_id, record.status.value if record.status else None,
+        job.status.value if job and job.status else None,
+    )
 
     # Record interactive container liveness so the watchdog can detect a
     # container that stops heartbeating even if the worker is still alive.
