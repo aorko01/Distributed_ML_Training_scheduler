@@ -8,7 +8,6 @@ load_dotenv()
 SCHEDULER_BASE_URL = os.environ.get("SCHEDULER_API_URL", "http://localhost:8000")
 SCHEDULER_UPDATE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_vram_estimation_pending"
 SCHEDULER_INTERACTIVE_UPDATE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/mark_interactive_ready"
-SCHEDULER_PENDING_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/mark_pending"
 SCHEDULER_FAILURE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/mark_failed"
 SCHEDULER_QUEUE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/unbuilt_jobs"
 SCHEDULER_LOG_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/logs"
@@ -37,12 +36,6 @@ DOCKER_BUILD_NO_CACHE = os.environ.get("DOCKER_BUILD_NO_CACHE", "false").strip()
 DOCKER_BUILD_ATTEMPTS = max(1, int(os.environ.get("DOCKER_BUILD_ATTEMPTS", "3")))
 DOCKER_BUILD_CHUNK_SIZE = max(1, int(os.environ.get("DOCKER_BUILD_CHUNK_SIZE", "25")))
 DOCKER_BUILD_RETRY_BACKOFF = max(0, int(os.environ.get("DOCKER_BUILD_RETRY_BACKOFF", "10")))
-
-# Concurrency and push settings
-MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("MAX_CONCURRENT_JOBS", "3")))
-DOCKER_PUSH_ATTEMPTS = max(1, int(os.environ.get("DOCKER_PUSH_ATTEMPTS", "3")))
-DOCKER_PUSH_RETRY_BACKOFF = max(0, int(os.environ.get("DOCKER_PUSH_RETRY_BACKOFF", "5")))
-PRUNE_INTERVAL_HOURS = max(1, int(os.environ.get("PRUNE_INTERVAL_HOURS", "24")))
 
 # Logging setup
 logging.basicConfig(

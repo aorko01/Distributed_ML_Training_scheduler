@@ -20,9 +20,7 @@ from docker_ops import (  # noqa: E402
     emit_build_lines,
     _extract_build_log_lines,
     docker_login,
-    delete_local_image,
     prune_old_base_images,
-    _in_flight_base_images,
 )
 
 
@@ -373,50 +371,16 @@ class TestExtractBuildLogLines:
 # docker_login
 # ---------------------------------------------------------------------------
 class TestDockerLogin:
-    def setup_method(self):
-        import docker_ops
-        docker_ops._docker_authenticated = False
-
     @patch("docker_ops.DOCKER_HUB_PASSWORD", "testpass")
     @patch("docker_ops.DOCKER_HUB_USERNAME", "testuser")
     def test_login_success(self, mock_docker_client):
         docker_login(mock_docker_client)
         mock_docker_client.login.assert_called_once_with(username="testuser", password="testpass")
 
-    @patch("docker_ops.DOCKER_HUB_PASSWORD", "testpass")
-    @patch("docker_ops.DOCKER_HUB_USERNAME", "testuser")
-    def test_login_skipped_when_already_authenticated(self, mock_docker_client):
-        import docker_ops
-        docker_ops._docker_authenticated = True
-        docker_login(mock_docker_client)
-        mock_docker_client.login.assert_not_called()
-
     @patch("docker_ops.DOCKER_HUB_PASSWORD", "")
     def test_login_no_password_assumes_logged_in(self, mock_docker_client):
         docker_login(mock_docker_client)
         mock_docker_client.login.assert_not_called()
-
-    @patch("docker_ops.DOCKER_HUB_PASSWORD", "testpass")
-    @patch("docker_ops.DOCKER_HUB_USERNAME", "testuser")
-    def test_login_failure_does_not_set_flag(self, mock_docker_client):
-        mock_docker_client.login.side_effect = Exception("auth failed")
-        docker_login(mock_docker_client)
-        import docker_ops
-        assert docker_ops._docker_authenticated is False
-
-
-# ---------------------------------------------------------------------------
-# delete_local_image
-# ---------------------------------------------------------------------------
-class TestDeleteLocalImage:
-    def test_successful_delete(self, mock_docker_client):
-        delete_local_image(mock_docker_client, "job1", "user/job1:latest")
-        mock_docker_client.images.remove.assert_called_once_with(image="user/job1:latest", force=True)
-
-    def test_delete_failure_logs_warning(self, mock_docker_client):
-        mock_docker_client.images.remove.side_effect = Exception("not found")
-        # Should not raise
-        delete_local_image(mock_docker_client, "job1", "user/job1:latest")
 
 
 # ---------------------------------------------------------------------------
@@ -444,100 +408,3 @@ class TestPruneOldBaseImages:
         prune_old_base_images(mock_docker_client)
         mock_docker_client.images.remove.assert_not_called()
         mock_remove.assert_not_called()
-
-    @patch("docker_ops.remove_base_image_record")
-    @patch("docker_ops.get_old_base_images", return_value=["old-image:latest", "inflight-image:latest"])
-    def test_prune_skips_in_flight_images(self, mock_get_old, mock_remove, mock_docker_client):
-        """Prune should skip images currently being built (in-flight)."""
-        _in_flight_base_images.add("inflight-image:latest")
-        try:
-            prune_old_base_images(mock_docker_client)
-            # Only the non-in-flight image should have been removed
-            mock_docker_client.images.remove.assert_called_once_with(image="old-image:latest", force=True)
-            mock_remove.assert_called_once_with("old-image:latest")
-        finally:
-            _in_flight_base_images.discard("inflight-image:latest")
-
-
-# ---------------------------------------------------------------------------
-# Per-tag build serialization (duplicate-build guard)
-# ---------------------------------------------------------------------------
-class TestPerTagBuildSerialization:
-    def test_same_tag_builds_serialize(self, mock_docker_client):
-        """Two concurrent build_image calls for the same job tag must not run
-        the underlying docker build concurrently (which corrupts the daemon).
-        The second waits for the first instead of interleaving layers."""
-        import threading
-        import time
-        import docker.errors
-        import docker_ops
-        from docker_ops import build_image, _tag_lock
-
-        entered = []
-        release_first = threading.Event()
-
-        real_uncached = docker_ops._build_image_uncached
-
-        def slow_uncached(*args, **kwargs):
-            entered.append(time.monotonic())
-            if len(entered) == 1:
-                # First build holds the lock; let the second start and block.
-                time.sleep(0.2)
-            return "testuser/dup-job-env:latest"
-
-        # No short-circuit applies here: job not processed and no local image
-        # yet, so both callers proceed (serialized) to the underlying build.
-        mock_docker_client.images.get.side_effect = docker.errors.ImageNotFound("no image yet")
-        with patch.object(docker_ops, "_build_image_uncached", side_effect=slow_uncached), \
-             patch.object(docker_ops, "is_job_processed", return_value=False):
-            t1 = threading.Thread(
-                target=lambda: build_image(
-                    mock_docker_client, "dup-job", "/tmp", "", "python:3.11",
-                    build_type="interactive", include_project=False,
-                )
-            )
-            t2 = threading.Thread(
-                target=lambda: build_image(
-                    mock_docker_client, "dup-job", "/tmp", "", "python:3.11",
-                    build_type="interactive", include_project=False,
-                )
-            )
-            t1.start()
-            time.sleep(0.05)  # Ensure t1 acquires the tag lock first.
-            t2.start()
-            t1.join(timeout=5)
-            t2.join(timeout=5)
-            assert not t1.is_alive()
-            assert not t2.is_alive()
-
-        assert len(entered) == 2
-        # Serialized: second entry happens after first had time to hold lock.
-        assert entered[1] - entered[0] >= 0.1
-
-    def test_different_tags_build_concurrently(self):
-        """Different job tags use different locks and must not block each other."""
-        from docker_ops import _tag_lock
-        assert _tag_lock("testuser/a-env:latest") is not _tag_lock("testuser/b-env:latest")
-        assert _tag_lock("testuser/a-env:latest") is _tag_lock("testuser/a-env:latest")
-
-    def test_delete_skipped_while_build_in_progress(self, mock_docker_client):
-        """delete_local_image must skip when the same tag is being built —
-        deleting mid-build causes 'parent snapshot does not exist'."""
-        from docker_ops import _tag_lock, delete_local_image
-
-        tag = "testuser/dup-job-env:latest"
-        lock = _tag_lock(tag)
-        lock.acquire()  # Simulate an in-progress build holding the lock.
-        try:
-            delete_local_image(mock_docker_client, "dup-job", tag)
-            mock_docker_client.images.remove.assert_not_called()
-        finally:
-            lock.release()
-
-    def test_delete_proceeds_when_no_build_in_progress(self, mock_docker_client):
-        """Normal path: delete removes the image when no build holds the lock."""
-        from docker_ops import delete_local_image
-        delete_local_image(mock_docker_client, "job1", "testuser/job1:latest")
-        mock_docker_client.images.remove.assert_called_once_with(
-            image="testuser/job1:latest", force=True
-        )

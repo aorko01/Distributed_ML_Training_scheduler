@@ -3,7 +3,6 @@ import re
 import shutil
 import tempfile
 import time
-import threading
 import docker
 import requests
 
@@ -13,67 +12,17 @@ from config import (
     OBJECT_STORE_URL, OBJECT_OUTPUT_BUCKET, OBJECT_STORE_BUCKET,
     DOCKER_BUILD_NO_CACHE,
     DOCKER_BUILD_ATTEMPTS, DOCKER_BUILD_CHUNK_SIZE, DOCKER_BUILD_RETRY_BACKOFF,
-    DOCKER_PUSH_ATTEMPTS, DOCKER_PUSH_RETRY_BACKOFF,
 )
-from database import update_base_image_usage, get_old_base_images, remove_base_image_record, is_job_processed
+from database import update_base_image_usage, get_old_base_images, remove_base_image_record
 from api import send_log_lines
-
-_docker_authenticated = False
-_login_lock = threading.Lock()
-
-# Thread-safety for pulling the shared access image (concurrent builds may all
-# see "image not found" at the same time and race to pull it).
-_access_image_lock = threading.Lock()
-
-# Track base images currently being built so prune_old_base_images avoids
-# deleting one mid-build (which would break the Docker build context).
-_in_flight_base_images: set[str] = set()
-_in_flight_lock = threading.Lock()
-
-# Serialize concurrent `docker build -t <tag>` calls for the SAME target tag.
-# Two threads building aorko123/<job>-env:latest at the same time on the same
-# daemon interleave layers, duplicate every log header/step ("building
-# interactive env image" x N, "Step 1/13" x N) and corrupt the containerd
-# snapshotter — the loser fails with "parent snapshot ... does not exist"
-# when the winner pushes/deletes the tag mid-export. The scheduler's atomic
-# mark_pending is the primary cross-process dedup; this per-tag lock is the
-# in-process safety net so a slipped-through duplicate waits instead of
-# corrupting the daemon (it then rebuilds from cache, which is cheap).
-_build_tag_locks: dict[str, threading.Lock] = {}
-_build_tag_locks_guard = threading.Lock()
-
-# Tags with a build currently holding the per-tag lock (for duplicate warning).
-_in_flight_targets: set[str] = set()
-_in_flight_targets_lock = threading.Lock()
-
-
-def _tag_lock(tag: str) -> threading.Lock:
-    """Return the canonical lock object for a target image tag."""
-    with _build_tag_locks_guard:
-        lock = _build_tag_locks.get(tag)
-        if lock is None:
-            lock = threading.Lock()
-            _build_tag_locks[tag] = lock
-        return lock
 
 
 def docker_login(client: docker.DockerClient):
-    global _docker_authenticated
-    with _login_lock:
-        if _docker_authenticated:
-            logger.debug("Already authenticated with Docker Hub, skipping login.")
-            return
-        if DOCKER_HUB_PASSWORD:
-            logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
-            try:
-                client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
-                _docker_authenticated = True
-            except Exception as e:
-                logger.error("Docker Hub login failed: %s", e)
-                # Don't set flag — will retry next cycle
-        else:
-            logger.info("No Docker Hub password provided, assuming already logged in.")
-            _docker_authenticated = True
+    if DOCKER_HUB_PASSWORD:
+        logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
+        client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
+    else:
+        logger.info("No Docker Hub password provided, assuming already logged in.")
 
 
 def _split_requirements(build_dir: str, project_dir: str, chunk_size: int) -> list[str]:
@@ -478,13 +427,6 @@ exec /usr/sbin/sshd -D -e
 
 
 def ensure_access_image(client: docker.DockerClient) -> bool:
-    """Ensure the shared access image (``aorko123/access-sshd:latest``) is available.
-
-    The access image is built and pushed to Docker Hub ONCE by the operator
-    (see ``AccessContainer/Dockerfile``). This function simply pulls it if it
-    is not already present locally. Returns True if the image is available,
-    False otherwise.
-    """
     access_image = "aorko123/access-sshd:latest"
     try:
         client.images.get(access_image)
@@ -495,32 +437,20 @@ def ensure_access_image(client: docker.DockerClient) -> bool:
     except Exception as e:
         logger.warning("Could not check for access image %s: %s", access_image, e)
 
-    with _access_image_lock:
-        # Double-check after acquiring the lock — another thread may have
-        # pulled it while we were waiting.
-        try:
-            client.images.get(access_image)
-            logger.info("Access image %s now present (pulled by another thread).", access_image)
-            return True
-        except docker.errors.ImageNotFound:
-            pass
-        except Exception as e:
-            logger.warning("Could not check for access image %s: %s", access_image, e)
-
-        logger.info("Pulling access image %s ...", access_image)
-        try:
-            client.images.pull(access_image)
-            logger.info("Successfully pulled access image %s.", access_image)
-            return True
-        except Exception as e:
-            logger.error(
-                "Failed to pull access image %s: %s. "
-                "The operator must build and push it first: "
-                "docker build -t aorko123/access-sshd:latest ./AccessContainer && "
-                "docker push aorko123/access-sshd:latest",
-                access_image, e,
-            )
-            return False
+    logger.info("Pulling access image %s ...", access_image)
+    try:
+        client.images.pull(access_image)
+        logger.info("Successfully pulled access image %s.", access_image)
+        return True
+    except Exception as e:
+        logger.error(
+            "Failed to pull access image %s: %s. "
+            "The operator must build and push it first: "
+            "docker build -t aorko123/access-sshd:latest ./AccessContainer && "
+            "docker push aorko123/access-sshd:latest",
+            access_image, e,
+        )
+        return False
 
 
 def save_debug_copy(job_id: str, build_dir: str) -> None:
@@ -654,73 +584,8 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
     return deduped
 
 
-def build_image(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> str | tuple[str, str]:
-    """Build the Docker image for a job (per-tag serialized).
-
-    Serializes concurrent builds of the SAME target tag via a per-tag lock so
-    a duplicate claim cannot corrupt the daemon (duplicate headers/steps and
-    "parent snapshot ... does not exist"). The scheduler's atomic mark_pending
-    is the primary cross-process dedup; this is the in-process safety net.
-
-    Mitigation for slipped-through duplicates: after acquiring the tag lock
-    (especially when this caller waited for another build of the same tag),
-    re-check is_job_processed() and short-circuit with the existing tag
-    instead of rebuilding unconditionally. As a second net, when we waited
-    and the target image already exists locally (winner built it but has not
-    pushed/marked it processed yet), reuse it instead of rebuilding.
-    """
-    if build_type == "interactive":
-        _tag = f"{DOCKER_HUB_USERNAME}/{job_id}-env:latest"
-    else:
-        _tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
-    _lock = _tag_lock(_tag)
-    _waited = False
-    if not _lock.acquire(blocking=False):
-        logger.warning(
-            "Duplicate concurrent build detected for %s (job %s) — "
-            "waiting for the in-progress build instead of building in parallel.",
-            _tag, job_id,
-        )
-        _lock.acquire(blocking=True)
-        _waited = True
-    try:
-        # Another thread may have finished while we were queued on the lock.
-        # Short-circuit instead of rebuilding from scratch.
-        try:
-            if is_job_processed(job_id):
-                logger.info(
-                    "Job %s already processed — skipping duplicate build for %s, reusing tag.",
-                    job_id, _tag,
-                )
-                return _tag
-        except Exception as e:
-            logger.debug("is_job_processed check failed for job %s: %s", job_id, e)
-        if _waited:
-            logger.info("Serialized build for %s (job %s) acquired lock after waiting.", _tag, job_id)
-            try:
-                client.images.get(_tag)
-                logger.info(
-                    "Job %s image %s already built by the in-progress build — reusing tag, skipping rebuild.",
-                    job_id, _tag,
-                )
-                return _tag
-            except docker.errors.ImageNotFound:
-                logger.info("Proceeding with serialized build for %s (job %s).", _tag, job_id)
-            except Exception as e:
-                logger.debug("Local image check failed for %s: %s", _tag, e)
-                logger.info("Proceeding with serialized build for %s (job %s).", _tag, job_id)
-        return _build_image_uncached(client, job_id, project_dir, command, base_image, build_type, include_project)
-    finally:
-        _lock.release()
-
-
-def _build_image_uncached(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> str | tuple[str, str]:
-    """Build the Docker image for a job.
-
-    Returns the image_tag string on success, or a (failure_type, reason) tuple
-    on failure where failure_type is "user" (build/code error) or "system"
-    (infra/daemon/registry error).
-    """
+def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> tuple[str, str] | None:
+    """Build, push and clean up the job image."""
     if build_type == "interactive":
         image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}-env:latest"
     else:
@@ -730,11 +595,6 @@ def _build_image_uncached(client: docker.DockerClient, job_id: str, project_dir:
 
     # Track base image usage
     update_base_image_usage(base_image)
-
-    # Track this base image as in-flight so prune_old_base_images won't
-    # delete it while we're building on top of it.
-    with _in_flight_lock:
-        _in_flight_base_images.add(base_image)
 
     try:
         if build_type == "interactive":
@@ -863,7 +723,26 @@ def _build_image_uncached(client: docker.DockerClient, job_id: str, project_dir:
         ])
         maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
-        return image_tag
+        # Push image (single attempt, no retry — matching original behavior)
+        logger.info("Pushing image %s ...", image_tag)
+        push_output = client.images.push(repository=image_tag.rsplit(":", 1)[0], tag="latest", stream=True, decode=True)
+        for chunk in push_output:
+            if "error" in chunk:
+                logger.error("Push error for job %s: %s", job_id, chunk["error"])
+                error_line = f"Push error: {chunk['error']}"
+                emit_build_lines(job_id, build_log_buffer, [error_line])
+                maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+                return "system", error_line
+            status = chunk.get("status", "").strip()
+            progress = chunk.get("progress", "").strip()
+            if status:
+                logger.info("  [push] %s%s", status, f" {progress}" if progress else "")
+        maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+
+        # For interactive builds, ensure the shared access image is available
+        if build_type == "interactive":
+            if not ensure_access_image(client):
+                return "system", "Failed to pull access image aorko123/access-sshd:latest"
 
     except docker.errors.ImageNotFound as e:
         logger.error("Base image not found for job %s: %s", job_id, e)
@@ -883,103 +762,23 @@ def _build_image_uncached(client: docker.DockerClient, job_id: str, project_dir:
             return "user", f"Unexpected error: {e}"
         return "system", f"Unexpected error: {e}"
     finally:
-        with _in_flight_lock:
-            _in_flight_base_images.discard(base_image)
         shutil.rmtree(build_dir, ignore_errors=True)
 
-
-def push_image(client: docker.DockerClient, job_id: str, image_tag: str, build_type: str = "training") -> None | tuple[str, str]:
-    """Push the built image to Docker Hub with retry logic.
-
-    Returns None on success, or a (failure_type, reason) tuple on failure.
-    Does NOT delete the local image.
-    """
-    logger.info("Pushing image %s ...", image_tag)
-
-    for attempt in range(1, DOCKER_PUSH_ATTEMPTS + 1):
-        push_error = None
-        try:
-            push_output = client.images.push(repository=image_tag.rsplit(":", 1)[0], tag="latest", stream=True, decode=True)
-            for chunk in push_output:
-                if "error" in chunk:
-                    push_error = f"Push error: {chunk['error']}"
-                    break
-                status = chunk.get("status", "").strip()
-                progress = chunk.get("progress", "").strip()
-                if status:
-                    logger.info("  [push] %s%s", status, f" {progress}" if progress else "")
-            if push_error is None:
-                # Push succeeded
-                # For interactive builds, ensure the shared access image is available
-                if build_type == "interactive":
-                    if not ensure_access_image(client):
-                        return "system", "Failed to pull access image aorko123/access-sshd:latest"
-                return None
-        except Exception as e:
-            push_error = f"Push exception: {e}"
-
-        # Push failed — retry if attempts remain
-        if attempt < DOCKER_PUSH_ATTEMPTS:
-            logger.warning("Push attempt %d/%d failed for job %s: %s — retrying in %ds",
-                           attempt, DOCKER_PUSH_ATTEMPTS, job_id, push_error, DOCKER_PUSH_RETRY_BACKOFF)
-            time.sleep(DOCKER_PUSH_RETRY_BACKOFF)
-        else:
-            logger.error("Push failed for job %s after %d attempts: %s", job_id, DOCKER_PUSH_ATTEMPTS, push_error)
-            return "system", push_error
-
-
-def delete_local_image(client: docker.DockerClient, job_id: str, image_tag: str) -> None:
-    """Remove the locally-built image after successful push.
-
-    Skips the delete if another thread is currently building the same tag —
-    deleting a tag mid-build is what produces "parent snapshot ... does not
-    exist" export failures. Skipping is safe (only costs local disk).
-    """
-    _lock = _tag_lock(image_tag)
-    if not _lock.acquire(blocking=False):
-        logger.warning(
-            "Skipping delete of %s (job %s): another build is in progress for this tag.",
-            image_tag, job_id,
-        )
-        return
+    # Clean up the local built image now that it's successfully pushed
+    logger.info("Deleting local built image %s ...", image_tag)
     try:
-        logger.info("Deleting local built image %s ...", image_tag)
-        try:
-            client.images.remove(image=image_tag, force=True)
-        except Exception as e:
-            logger.warning("Failed to delete local image %s: %s", image_tag, e)
-    finally:
-        _lock.release()
+        client.images.remove(image=image_tag, force=True)
+    except Exception as e:
+        logger.warning("Failed to delete local image %s: %s", image_tag, e)
 
-
-def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training", include_project: bool = False) -> tuple[str, str] | None:
-    """Build, push and clean up the job image (backward-compatible wrapper).
-
-    Calls build_image -> push_image -> delete_local_image sequentially.
-    Returns None on success, or a (failure_type, reason) tuple on failure.
-    """
-    # Note: docker-py DockerClient is thread-safe for independent HTTP calls.
-    image_result = build_image(client, job_id, project_dir, command, base_image, build_type, include_project)
-    if isinstance(image_result, tuple):
-        return image_result
-    image_tag = image_result
-
-    push_result = push_image(client, job_id, image_tag, build_type)
-    if push_result is not None:
-        return push_result
-
-    delete_local_image(client, job_id, image_tag)
+    logger.info("Image %s pushed to Docker Hub and local copy cleaned up.", image_tag)
+    maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
     return None
 
 
 def prune_old_base_images(client: docker.DockerClient):
     old_images = get_old_base_images(days=7)
     for image_name in old_images:
-        # Skip images currently being built by a concurrent job
-        with _in_flight_lock:
-            if image_name in _in_flight_base_images:
-                logger.debug("Skipping prune of in-flight base image: %s", image_name)
-                continue
         logger.info("Attempting to prune old base image: %s", image_name)
         try:
             client.images.remove(image=image_name, force=True)
