@@ -27,39 +27,40 @@ class TestSchedulerUrl:
 
 class TestPersistEnv:
     @pytest.fixture()
-    def backup_env_file(self):
-        path = os.path.join(os.path.dirname(os.path.abspath(config.__file__)), ".env")
-        existed = os.path.exists(path)
-        content = open(path).read() if existed else None
-        yield path
-        if content is not None:
-            with open(path, "w") as f:
-                f.write(content)
-        elif os.path.exists(path) and not existed:
-            os.remove(path)
+    def env_file(self, tmp_path, monkeypatch):
+        """Redirect persist_env() at an isolated tmp .env.
 
-    def test_adds_new_key(self, backup_env_file, restore_scheduler_url):
+        persist_env() derives its path from config.__file__, so pointing
+        that at a tmp dir keeps the real Worker/.env untouched (it may not
+        even exist, e.g. on CI where .env is gitignored).
+        """
+        fake_module = tmp_path / "config.py"
+        fake_module.touch()
+        monkeypatch.setattr(config, "__file__", str(fake_module))
+        return os.path.join(str(tmp_path), ".env")
+
+    def test_adds_new_key(self, env_file):
         config.persist_env({"WORKER_TEST_KEY": "abc123"})
-        with open(backup_env_file) as f:
+        with open(env_file) as f:
             assert "WORKER_TEST_KEY=abc123" in f.read()
 
-    def test_overwrites_existing_key_once(self, backup_env_file):
+    def test_overwrites_existing_key_once(self, env_file):
         config.persist_env({"WORKER_TEST_KEY": "one"})
         config.persist_env({"WORKER_TEST_KEY": "two"})
-        with open(backup_env_file) as f:
+        with open(env_file) as f:
             content = f.read()
         assert content.count("WORKER_TEST_KEY=") == 1
         assert "WORKER_TEST_KEY=two" in content
 
-    def test_keeps_unrelated_keys(self, backup_env_file):
-        with open(backup_env_file) as f:
-            before = f.read()
+    def test_keeps_unrelated_keys(self, env_file):
+        with open(env_file, "w") as f:
+            f.write("UNRELATED_KEY=keepme\nSCHEDULER_URL=http://x\n")
         config.persist_env({"WORKER_TEST_KEY": "x"})
-        with open(backup_env_file) as f:
+        with open(env_file) as f:
             after = f.read()
-        for line in before.strip().splitlines():
-            if line and not line.startswith("WORKER_TEST_KEY="):
-                assert line in after
+        assert "UNRELATED_KEY=keepme" in after
+        assert "SCHEDULER_URL=http://x" in after
+        assert "WORKER_TEST_KEY=x" in after
 
 
 class TestConstants:
