@@ -9,7 +9,6 @@ import types
 
 import torch
 
-# Configuration from environment
 PATIENCE = int(os.environ.get("VRAM_PROBE_PATIENCE", "2"))
 MIN_STEPS = int(os.environ.get("VRAM_PROBE_MIN_STEPS", "2"))
 MAX_STEPS = int(os.environ.get("VRAM_PROBE_MAX_STEPS", "20"))

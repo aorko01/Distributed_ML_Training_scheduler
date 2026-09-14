@@ -39,6 +39,9 @@ def _docker_host_path(path: str) -> str:
 class JobExecutor:
     def __init__(self, api: SchedulerAPI):
         self.api = api
+        # Always define the attribute so later accesses fail with a clear
+        # Docker error (caught → False/None) instead of AttributeError.
+        self.docker_client = None
         try:
             self.docker_client = docker.from_env()
         except Exception as e:
@@ -83,9 +86,9 @@ class JobExecutor:
 
     def _resolve_mount_target(self, image_name: str) -> str | None:
         """Container path to mount the job output dir at (the image's WORKDIR),
-        or None when it can't be used (WORKDIR is empty or root fs)."""
+        or None when it can't be used (WORKDIR is root fs)."""
         workdir = self._image_workdir(image_name) or "/workspace"
-        if workdir in ("", "/"):
+        if workdir == "/":
             logger.warning(
                 "Refusing to mount output dir over root fs; "
                 "falling back to %s", CONTAINER_OUTPUT_MOUNT,
@@ -237,6 +240,14 @@ class JobExecutor:
             started_at, round(report.get("peak_reserved_memory", 0.0), 2),
         )
 
+    def _reset_log_state(self):
+        """Clear per-run log buffers/throttle markers before a container run."""
+        self._build_log_base = None
+        self._last_log_upload = None
+        self._log_push_buffer = []
+        self._last_log_push = None
+        self._job_log_buffer: list[str] = []
+
     def handle_training(self, job_id: str, image_name: str):
         started_at = time.time()
         logger.info("Training job received for job %s.", job_id)
@@ -254,11 +265,7 @@ class JobExecutor:
         monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
         monitor.start()
 
-        self._build_log_base = None
-        self._last_log_upload = None
-        self._log_push_buffer = []
-        self._last_log_push = None
-        self._job_log_buffer: list[str] = []
+        self._reset_log_state()
 
         self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
@@ -358,11 +365,7 @@ class JobExecutor:
         monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
         monitor.start()
 
-        self._build_log_base = None
-        self._last_log_upload = None
-        self._log_push_buffer = []
-        self._last_log_push = None
-        self._job_log_buffer: list[str] = []
+        self._reset_log_state()
 
         success, failure_type, failure_reason = self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
@@ -471,14 +474,18 @@ class JobExecutor:
         if not os.path.exists(job_output_dir):
             return True
         try:
+            # Delete the *contents* of the bind mount, not the mountpoint
+            # itself: `rm -rf /cleanup` tries to unlink the mounted dir
+            # (often EBUSY) and reports failure even after deleting everything.
             subprocess.run(
                 [
                     "docker", "run", "--rm",
                     "-v", f"{_docker_host_path(job_output_dir)}:/cleanup",
-                    "alpine", "rm", "-rf", "/cleanup",
+                    "alpine", "sh", "-c", "rm -rf /cleanup/* /cleanup/.[!.]* /cleanup/..?* 2>/dev/null; true",
                 ],
                 check=True, capture_output=True, text=True, timeout=180,
             )
+            shutil.rmtree(job_output_dir, ignore_errors=True)
             return not os.path.exists(job_output_dir)
         except Exception as e:
             logger.warning("Docker-assisted cleanup failed for %s: %s",
@@ -514,15 +521,22 @@ class JobExecutor:
 
         clear_running_job()
 
+    @staticmethod
+    def _throttled(last: float | None, interval: float, force: bool) -> bool:
+        """True when a periodic action should be skipped due to throttling."""
+        return (
+            not force
+            and last is not None
+            and (time.monotonic() - last) < interval
+        )
+
     def _flush_log_push(self, job_id: str, force: bool = False):
         if not self._log_push_buffer:
             return
 
         now = time.monotonic()
-        if (
-            not force
-            and self._last_log_push is not None
-            and (now - self._last_log_push) < runtime_config.get("log_push_interval")
+        if self._throttled(
+            self._last_log_push, runtime_config.get("log_push_interval"), force
         ):
             return
 
@@ -538,10 +552,8 @@ class JobExecutor:
             return
 
         now = time.monotonic()
-        if (
-            not force
-            and self._last_log_upload is not None
-            and (now - self._last_log_upload) < runtime_config.get("log_upload_interval")
+        if self._throttled(
+            self._last_log_upload, runtime_config.get("log_upload_interval"), force
         ):
             return
 
@@ -564,6 +576,18 @@ class JobExecutor:
     def process_job(self, job: dict):
         job_id = job.get("job_id") or job.get("id")
         flag = job.get("flag", "training")
+        if not job_id:
+            logger.error("Received job without job_id/id: %s", job)
+            return
+        # Guard path traversal: job_id is used in OUTPUT_DIR joins, image tags
+        # and object-store keys. Reject separators to keep it inside its dir.
+        if "/" in str(job_id) or "\\" in str(job_id) or ".." in str(job_id):
+            logger.error("Rejecting job with unsafe job_id %r", job_id)
+            try:
+                self.api.mark_job_failed(job_id, "user", f"Invalid job_id: {job_id!r}")
+            except Exception:
+                pass
+            return
         image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
 
         if not self.pull_docker_image(image_name):
@@ -583,7 +607,13 @@ class JobExecutor:
             self.handle_retry(job_id, image_name, job.get("resume_command"),
                               job.get("command"))
         else:
+            # Unknown flags previously only warned, leaving the scheduler job
+            # stuck IN_PROGRESS forever. Fail it so the watchdog can requeue.
             logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)
+            try:
+                self.api.mark_job_failed(job_id, "system", f"Unknown job flag: {flag}")
+            except Exception:
+                pass
 
     def resume_persisted_job_if_any(self) -> bool:
         """Pick up a job this worker was running before it died, if the scheduler

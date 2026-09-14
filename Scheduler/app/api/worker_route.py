@@ -7,7 +7,6 @@ from app.schemas.heartbeat_schema import HeartbeatSchema,HeartbeatResponse
 
 router = APIRouter(tags=["workers"])
 
-# Dependency to get DB session
 def get_db():
     db = SessionLocal()
     try:

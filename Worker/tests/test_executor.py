@@ -22,9 +22,11 @@ class TestDockerHostPath:
 
 class TestInit:
     def test_docker_failure_leaves_no_client(self, mock_api):
+        # Fixed: docker_client is always defined (None on failure) so later
+        # accesses fail with a clear Docker error instead of AttributeError.
         with patch.object(executor_module.docker, "from_env", side_effect=Exception("no daemon")):
             ex = JobExecutor(mock_api)
-        assert not hasattr(ex, "docker_client")
+        assert ex.docker_client is None
 
 
 class TestRecordJob:

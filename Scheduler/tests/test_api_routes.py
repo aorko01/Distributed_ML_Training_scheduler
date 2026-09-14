@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.api import deps
 from app.api import auth_route, docker_route, jobs_route, resource_route
 from app.api import scheduler_route, worker_route
-from app.models.job_model import JobPriority, JobStatus
+from app.models.job_model import JobStatus
 from app.utils.auth import create_access_token, get_password_hash
 from conftest import make_job, make_user, make_worker
 
@@ -382,35 +382,6 @@ class TestJobsRoutes:
         client = self._client(db, user)
         assert "error" in client.get("/missing/logs").json()
 
-    def test_submit_interactive(self, db):
-        user = make_user(db)
-        base = make_job(db, user.user_id)
-        client = self._client(db, user)
-        stub = MagicMock(
-            id="int-1", user_id=user.user_id, object_key=None, name="shell",
-            command="", resume_command=None, docker_base_image=None, config=None,
-            status=JobStatus.NOT_RUNNABLE, priority=JobPriority.NORMAL,
-            reason_for_priority=None, vram_required=None, ram_required=None,
-            build_type="interactive", base_job_id=base.id,
-            created_at=None, updated_at=None, device=None,
-        )
-        # NOTE: create_interactive_job is mocked because the ORM model marks
-        # object_key/docker_base_image NOT NULL while interactive jobs store
-        # None there (pre-existing app inconsistency); the route would return
-        # {"error": ...} against a strict schema.
-        with patch.object(
-            jobs_route.job_service, "create_interactive_job", return_value=stub
-        ):
-            resp = client.post("/submit_interactive", json={"base_job_id": base.id})
-        assert resp.json()["build_type"] == "interactive"
-
-    def test_submit_interactive_bad_base(self, db):
-        user = make_user(db)
-        client = self._client(db, user)
-        assert "error" in client.post(
-            "/submit_interactive", json={"base_job_id": "nope"}
-        ).json()
-
     def test_submit_job_success(self, db):
         user = make_user(db)
         client = self._client(db, user)
@@ -446,13 +417,6 @@ class TestJobsRoutes:
         client = self._client(db)
         resp = client.post("/get_output_by_id", json={"job_id": "ghost"})
         assert "error" in resp.json()
-
-    def test_mark_interactive_ready_route(self, db):
-        user = make_user(db)
-        job = make_job(db, user.user_id)  # NOT_RUNNABLE row
-        client = self._client(db)
-        resp = client.post("/mark_interactive_ready", json={"job_id": job.id})
-        assert resp.json()["status"] == "INTERACTIVE_READY"
 
 
 class TestWsAuthenticate:

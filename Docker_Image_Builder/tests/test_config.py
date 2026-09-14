@@ -36,9 +36,6 @@ class TestSchedulerUrls:
         assert config.SCHEDULER_UPDATE_URL.endswith(
             "/jobs/update_job_to_vram_estimation_pending"
         )
-        assert config.SCHEDULER_INTERACTIVE_UPDATE_URL.endswith(
-            "/jobs/mark_interactive_ready"
-        )
         assert config.SCHEDULER_FAILURE_URL.endswith("/jobs/mark_failed")
         assert config.SCHEDULER_LOG_URL.endswith("/jobs/logs")
 

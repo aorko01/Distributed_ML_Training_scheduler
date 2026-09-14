@@ -57,11 +57,9 @@ def main():
     logger.info("Worker starting. ID: %s", worker_id)
     record_event("info", f"Worker starting (id {worker_id})")
 
-    # Initialize components
     api = SchedulerAPI(worker_id)
     executor = JobExecutor(api)
 
-    # Register node
     gpu_type, total_vram, free_vram, num_gpus, gpu_load = get_gpu_info()
     node_info = collect_node_info()
     api.register_worker(

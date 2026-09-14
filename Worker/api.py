@@ -1,5 +1,6 @@
 import requests
 import logging
+from urllib.parse import quote
 import config
 
 logger = logging.getLogger("api")
@@ -112,8 +113,9 @@ class SchedulerAPI:
         if not lines:
             return
         try:
+            safe_job_id = quote(str(job_id), safe="")
             resp = requests.post(
-                f"{_url('/jobs/logs')}/{job_id}",
+                f"{_url('/jobs/logs')}/{safe_job_id}",
                 json={"lines": lines},
                 timeout=5,
             )
@@ -122,11 +124,20 @@ class SchedulerAPI:
             logger.debug("Failed to stream logs for job %s: %s", job_id, e)
 
     def save_vram_estimation(self, job_id: str, report: dict):
+        try:
+            vram_required = report["peak_reserved_memory"]
+            ram_required = report["peak_ram_memory"]
+            step_time = report["step_wall_time"]
+        except (KeyError, TypeError) as e:
+            logger.error("Invalid VRAM report for job %s (missing %s): %s", job_id, e, report)
+            raise ValueError(f"Invalid VRAM estimation report (missing {e}): {report}") from e
+        if step_time is None:
+            raise ValueError(f"Invalid VRAM estimation report (step_wall_time is None): {report}")
         payload = {
             "job_id": job_id,
-            "vram_required": report["peak_reserved_memory"],
-            "ram_required": report["peak_ram_memory"],
-            "step_time": report["step_wall_time"],
+            "vram_required": vram_required,
+            "ram_required": ram_required,
+            "step_time": step_time,
         }
         try:
             response = requests.post(_url("/jobs/save_vram_estimation"), json=payload, timeout=10)

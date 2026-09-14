@@ -10,12 +10,24 @@ from config import WORKER_ID_FILE, OUTPUT_DIR
 def get_or_create_worker_id() -> str:
     """Retrieve existing worker ID or generate a new persistent one."""
     if os.path.exists(WORKER_ID_FILE):
-        with open(WORKER_ID_FILE, "r") as f:
-            return f.read().strip()
+        try:
+            with open(WORKER_ID_FILE, "r") as f:
+                existing = f.read().strip()
+            # An empty file (crash during write, manual truncate) must not
+            # become worker id "" — that would register as an empty worker
+            # and collide with every other empty-id worker.
+            if existing:
+                return existing
+        except OSError:
+            pass
     
     new_id = str(uuid.uuid4())
-    with open(WORKER_ID_FILE, "w") as f:
-        f.write(new_id)
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(WORKER_ID_FILE)) or ".", exist_ok=True)
+        with open(WORKER_ID_FILE, "w") as f:
+            f.write(new_id)
+    except OSError:
+        pass
     return new_id
 
 def get_hostname() -> str:
@@ -79,7 +91,10 @@ def get_mem_usage() -> float:
 
 def get_gpu_info():
     """Retrieve primary GPU specs, VRAM availability, and average GPU load."""
-    gpus = GPUtil.getGPUs()
+    try:
+        gpus = GPUtil.getGPUs()
+    except Exception:
+        return "Unknown", 0.0, 0.0, 0, 0.0
     if not gpus:
         return "Unknown", 0.0, 0.0, 0, 0.0
     

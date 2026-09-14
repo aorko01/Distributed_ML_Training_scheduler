@@ -22,7 +22,11 @@ def docker_login(client: docker.DockerClient):
         logger.info("No Docker Hub password provided, assuming already logged in.")
 
 def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
-    has_requirements = os.path.exists(os.path.join(project_dir, "requirements.txt"))
+    if "\n" in base_image or "\r" in base_image or not base_image.strip():
+        raise ValueError(f"Invalid base_image: {base_image!r}")
+    if command and ("\n" in command or "\r" in command):
+        raise ValueError("Invalid command: must be a single line")
+    has_requirements = os.path.isfile(os.path.join(project_dir, "requirements.txt"))
     lines = [
         f"FROM {base_image}", "",
         "WORKDIR /workspace", "",
@@ -39,99 +43,22 @@ def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
     return "\n".join(lines)
 
 
-def generate_interactive_dockerfile(base_image: str) -> str:
-    """Generate a Dockerfile for an interactive sandbox image.
-
-    The image is derived from the training job's base image (which already
-    contains the training code) but overrides the entrypoint/CMD so the
-    training job does NOT run. Instead it launches an SSH + Tailscale
-    sandbox for interactive access.
-    """
-    lines = [
-        f"FROM {base_image}",
-        "",
-        "USER root",
-        "RUN apt-get update && apt-get install -y openssh-server curl ca-certificates bash && rm -rf /var/lib/apt/lists/*",
-        "",
-        "RUN id -u sandbox >/dev/null 2>&1 || useradd --create-home --shell /bin/bash sandbox",
-        "",
-        "RUN curl -fsSL https://tailscale.com/install.sh | sh",
-        "",
-        "RUN mkdir -p /run/sshd",
-        "",
-        "COPY interactive-entrypoint.sh /usr/local/bin/interactive-entrypoint.sh",
-        "RUN chmod +x /usr/local/bin/interactive-entrypoint.sh",
-        "",
-        'ENTRYPOINT ["/usr/local/bin/interactive-entrypoint.sh"]',
-        'CMD ["sleep", "infinity"]',
-    ]
-    return "\n".join(lines)
-
-
-def generate_interactive_entrypoint() -> str:
-    """Generate the entrypoint shell script for the interactive sandbox image.
-
-    The script starts the Tailscale daemon, connects to Headscale using
-    runtime environment variables (HEADSCALE_URL, HEADSCALE_AUTHKEY,
-    SESSION_ID, SSH_PUBLIC_KEY), configures SSH authorized_keys for the
-    sandbox user, starts sshd, and then idles forever.
-    """
-    return """#!/bin/bash
-set -e
-
-echo "Starting interactive environment..."
-
-mkdir -p /var/run/tailscale
-mkdir -p /var/lib/tailscale
-
-# Start Tailscale daemon
-tailscaled \\
-    --state=/var/lib/tailscale/tailscaled.state \\
-    --socket=/var/run/tailscale/tailscaled.sock &
-
-echo "Waiting for Tailscale..."
-until tailscale status >/dev/null 2>&1; do
-    sleep 1
-done
-
-echo "Connecting to Headscale..."
-tailscale up \\
-    --login-server="$HEADSCALE_URL" \\
-    --authkey="$HEADSCALE_AUTHKEY" \\
-    --hostname="$SESSION_ID"
-
-echo "Connected to Headscale."
-
-mkdir -p /home/sandbox/.ssh
-echo "$SSH_PUBLIC_KEY" > /home/sandbox/.ssh/authorized_keys
-chmod 700 /home/sandbox/.ssh
-chmod 600 /home/sandbox/.ssh/authorized_keys
-chown -R sandbox:sandbox /home/sandbox/.ssh
-
-/usr/sbin/sshd
-
-echo "Interactive container ready."
-exec sleep infinity
-"""
-
 def save_debug_copy(job_id: str, build_dir: str) -> None:
-    debug_dir = os.path.join(DEBUG_LOCAL_DIR, job_id)
+    safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(job_id or "job"))[:64] or "job"
+    debug_dir = os.path.join(DEBUG_LOCAL_DIR, safe_job_id)
     try:
         if os.path.exists(debug_dir):
             shutil.rmtree(debug_dir)
         os.makedirs(os.path.dirname(debug_dir) or ".", exist_ok=True)
         shutil.copytree(build_dir, debug_dir)
-        os.chmod(debug_dir, 0o777)
-        for root, dirs, files in os.walk(debug_dir):
-            for d in dirs: os.chmod(os.path.join(root, d), 0o777)
-            for f in files: os.chmod(os.path.join(root, f), 0o666)
     except Exception as e:
         logger.error("Failed to save debug copy for job %s: %s", job_id, e)
 
 
-def upload_build_logs(job_id: str, log_text: str) -> str:
+def upload_build_logs(job_id: str, log_text: str) -> str | None:
     bucket_name = OBJECT_OUTPUT_BUCKET or OBJECT_STORE_BUCKET
-    object_key = f"{job_id}/build.log"
+    safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(job_id or "job"))[:64] or "job"
+    object_key = f"{safe_job_id}/build.log"
     payload = log_text.encode("utf-8")
 
     try:
@@ -145,6 +72,7 @@ def upload_build_logs(job_id: str, log_text: str) -> str:
         logger.info("Uploaded build logs for job %s to %s/%s", job_id, bucket_name, object_key)
     except Exception as exc:
         logger.warning("Failed to upload build logs for job %s: %s", job_id, exc)
+        return None
 
     return object_key
 
@@ -168,7 +96,9 @@ def should_upload_build_line(line: str) -> bool:
     if normalized.startswith("push") or "pushing" in normalized:
         return False
 
-    # Base-image pull/download progress is noise for the user; log it only.
+    # Base-image pull/download progress is noise for the user; drop it from
+    # both the persisted build.log and the realtime stream. (Callers that need
+    # local diagnostics should logger.info before filtering.)
     if (
         normalized.startswith("pulling")
         or normalized.startswith("downloading")
@@ -193,7 +123,10 @@ def maybe_upload_build_logs(job_id: str, log_text: str, last_upload_time: float 
     if not force and last_upload_time is not None and (now - last_upload_time) < 60:
         return last_upload_time
 
-    upload_build_logs(job_id, log_text)
+    # Only advance the throttle timestamp on success; otherwise the next
+    # interval retries instead of assuming the logs were persisted.
+    if upload_build_logs(job_id, log_text) is None:
+        return last_upload_time
     return now
 
 
@@ -232,8 +165,10 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
         if not text:
             continue
         for raw_line in str(text).replace("\r", "\n").splitlines():
-            line = raw_line.strip()
-            if line:
+            # Preserve leading indentation (tracebacks) — only strip the
+            # trailing newline chars and trailing whitespace.
+            line = raw_line.strip("\r\n").rstrip()
+            if line.strip():
                 lines.append(line)
 
     deduped = []
@@ -243,48 +178,29 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
     return deduped
 
 
-def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str, build_type: str = "training") -> tuple[str, str] | None:
+def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> tuple[str, str] | None:
     """Build, push and clean up the job image.
 
     Returns None on success, or a (failure_type, reason) tuple on failure where
     failure_type is "user" (build/code error -> job FAILED) or "system"
     (infra/daemon/registry error -> job RETRY_NEEDED).
     """
-    if build_type == "interactive":
-        image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}-interactive:latest"
-    else:
-        image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
-    build_dir = tempfile.mkdtemp(prefix=f"build_{job_id}_")
-    
-    # Track base image usage
-    update_base_image_usage(base_image)
+    image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+    safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(job_id or "job"))[:64] or "job"
+    build_dir = tempfile.mkdtemp(prefix=f"build_{safe_job_id}_")
 
     try:
-        if build_type == "interactive":
-            # Interactive builds do not copy project files; the base image
-            # already contains the training code. Only the Dockerfile and
-            # entrypoint script are written into the build directory.
-            dockerfile_content = generate_interactive_dockerfile(base_image)
-            with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
-                f.write(dockerfile_content)
+        for item in os.listdir(project_dir):
+            src = os.path.join(project_dir, item)
+            dst = os.path.join(build_dir, item)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
 
-            entrypoint_content = generate_interactive_entrypoint()
-            entrypoint_path = os.path.join(build_dir, "interactive-entrypoint.sh")
-            with open(entrypoint_path, "w") as f:
-                f.write(entrypoint_content)
-            os.chmod(entrypoint_path, 0o755)
-        else:
-            for item in os.listdir(project_dir):
-                src = os.path.join(project_dir, item)
-                dst = os.path.join(build_dir, item)
-                if os.path.isdir(src):
-                    shutil.copytree(src, dst)
-                else:
-                    shutil.copy2(src, dst)
-
-            dockerfile_content = generate_dockerfile(project_dir, command, base_image)
-            with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
-                f.write(dockerfile_content)
+        dockerfile_content = generate_dockerfile(project_dir, command, base_image)
+        with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
+            f.write(dockerfile_content)
 
         if DEBUG_SAVE_LOCAL:
             save_debug_copy(job_id, build_dir)
@@ -294,29 +210,17 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         last_upload_time = None
 
         # Emit a diagnostic header so users have full context for debugging.
-        if build_type == "interactive":
-            emit_build_lines(job_id, build_log_buffer, [
-                "=" * 60,
-                f"Job {job_id}: building interactive Docker image",
-                f"Target image : {image_tag}",
-                f"Base image   : {base_image}",
-                "--- generated Dockerfile ---",
-                dockerfile_content,
-                "--- end Dockerfile ---",
-                "=" * 60,
-            ])
-        else:
-            emit_build_lines(job_id, build_log_buffer, [
-                "=" * 60,
-                f"Job {job_id}: building Docker image",
-                f"Target image : {image_tag}",
-                f"Base image   : {base_image}",
-                f"Command      : {command or '(default Docker CMD)'}",
-                "--- generated Dockerfile ---",
-                dockerfile_content,
-                "--- end Dockerfile ---",
-                "=" * 60,
-            ])
+        emit_build_lines(job_id, build_log_buffer, [
+            "=" * 60,
+            f"Job {job_id}: building Docker image",
+            f"Target image : {image_tag}",
+            f"Base image   : {base_image}",
+            f"Command      : {command or '(default Docker CMD)'}",
+            "--- generated Dockerfile ---",
+            dockerfile_content,
+            "--- end Dockerfile ---",
+            "=" * 60,
+        ])
         last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
         try:
@@ -350,10 +254,6 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                 *error_lines,
             ])
             maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
-            if build_type == "interactive":
-                # Interactive build failures are infra-layer (apt/tailscale/sshd
-                # setup), not user code errors, so treat them as retryable.
-                return "system", reason
             return "user", reason
 
         emit_build_lines(job_id, build_log_buffer, [
@@ -391,12 +291,19 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
 
-    # Clean up the local built image now that it's successfully pushed
     logger.info("Deleting local built image %s ...", image_tag)
     try:
         client.images.remove(image=image_tag, force=True)
     except Exception as e:
         logger.warning("Failed to delete local image %s: %s", image_tag, e)
+
+    # Only record base-image usage after a successful build+push. Recording
+    # it up-front pollutes the LRU DB with failed/injected bases and prevents
+    # pruning of images that were never actually usable.
+    try:
+        update_base_image_usage(base_image)
+    except Exception as e:
+        logger.warning("Failed to record base image usage for %s: %s", base_image, e)
 
     logger.info("Image %s pushed to Docker Hub and local copy cleaned up.", image_tag)
     maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)

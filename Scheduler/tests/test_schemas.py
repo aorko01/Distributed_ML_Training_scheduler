@@ -5,8 +5,6 @@ from pydantic import ValidationError
 from app.models.job_model import JobPriority, JobStatus
 from app.schemas.heartbeat_schema import HeartbeatResponse, HeartbeatSchema
 from app.schemas.job_schema import (
-    InteractiveBuildRequest,
-    InteractiveReadyRequest,
     JobFailureReport,
     JobIDRequest,
     JobResumeRequest,
@@ -22,7 +20,7 @@ class TestJobStatusEnum:
     def test_all_expected_members(self):
         assert {s.value for s in JobStatus} == {
             "NOT_RUNNABLE", "VRAM_ESTIMATION_PENDING", "RUNNABLE", "IN_PROGRESS",
-            "COMPLETED", "FAILED", "RETRY_NEEDED", "INTERACTIVE_READY",
+            "COMPLETED", "FAILED", "RETRY_NEEDED",
         }
 
     def test_priority_members(self):
@@ -46,10 +44,6 @@ class TestJobSchemas:
 
     def test_resume_request_device_optional(self):
         assert JobResumeRequest(job_id="j", worker_id="w").device is None
-
-    def test_interactive_requests(self):
-        assert InteractiveBuildRequest(base_job_id="b").name is None
-        assert InteractiveReadyRequest(job_id="j").job_id == "j"
 
     def test_job_id_request(self):
         assert JobIDRequest(job_id="x").job_id == "x"

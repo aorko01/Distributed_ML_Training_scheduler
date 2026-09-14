@@ -238,6 +238,11 @@ def update_config(update: ConfigUpdate):
 
     if update.schedulerUrl is not None and update.schedulerUrl.strip() != config_module.get_scheduler_url():
         new_url = update.schedulerUrl.strip().rstrip("/")
+        # Reject empty URLs: persisting "" poisons .env so the next restart
+        # fails `config.py` import (SCHEDULER_URL missing) and bricks the worker.
+        if not new_url:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="schedulerUrl must not be empty")
         config_module.set_scheduler_url(new_url)
         config_module.persist_env({"SCHEDULER_URL": new_url})
         telemetry.record_event("info", f"Scheduler URL updated to {new_url}")
@@ -278,7 +283,11 @@ async def ws_metrics(websocket: WebSocket):
         while True:
             payload = {
                 "metrics": _dump(_build_metrics()),
-                "gpus": [_dump(g) for g in get_gpus()],
+                # NOTE: get_gpus() is the FastAPI route (returns Response when
+                # called via HTTP); the live data comes from get_gpus_info().
+                # Calling get_gpus() here returned list[dict] and _dump(dict)
+                # raised AttributeError, killing the socket on first tick.
+                "gpus": get_gpus_info(),
             }
             await websocket.send_json(payload)
             await asyncio.sleep(1.0)

@@ -154,7 +154,8 @@ class TestSaveVramEstimation:
         }
 
     def test_missing_key_raises(self, client):
-        with pytest.raises(KeyError):
+        # Fixed: validation raises ValueError with context instead of raw KeyError.
+        with pytest.raises((KeyError, ValueError)):
             client.save_vram_estimation("j1", {})
 
     def test_exception_swallowed(self, client):

@@ -1,7 +1,9 @@
 import io
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -89,6 +91,11 @@ def presign_upload(
     if not client.bucket_exists(bucket):
         raise HTTPException(status_code=404, detail=f"Bucket '{bucket}' not found")
 
+    # Validate expiry: negative/zero/huge values cause OverflowError (500) or
+    # effectively permanent URLs. S3 caps presigned URLs at 7 days.
+    if expires < 1 or expires > 604800:
+        raise HTTPException(status_code=400, detail="expires must be between 1 and 604800 seconds")
+
     try:
         url = get_public_client().presigned_put_object(
             bucket, object_key, expires=timedelta(seconds=expires)
@@ -142,6 +149,9 @@ def presign_download(
     if not client.bucket_exists(bucket):
         raise HTTPException(status_code=404, detail=f"Bucket '{bucket}' not found")
 
+    if expires < 1 or expires > 604800:
+        raise HTTPException(status_code=400, detail="expires must be between 1 and 604800 seconds")
+
     try:
         url = get_public_client().presigned_get_object(
             bucket, object_key, expires=timedelta(seconds=expires)
@@ -175,10 +185,16 @@ def download_object(bucket: str, object_key: str):
             resp.close()
             resp.release_conn()
 
+    # Sanitize filename for Content-Disposition: object_key is
+    # attacker-influenced; quotes/CRLF would allow HTTP response splitting.
+    raw_name = object_key.split("/")[-1] or "download"
+    safe_name = re.sub(r'[\r\n"]', "_", raw_name)[:200] or "download"
+    quoted = quote(safe_name, safe="._-")
+
     return StreamingResponse(
         iter_response(response),
-        media_type="application/zip",
+        media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{object_key.split("/")[-1]}"'
+            "Content-Disposition": f'attachment; filename="{safe_name}"; filename*=UTF-8\'\'{quoted}'
         },
     )

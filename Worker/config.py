@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Scheduler URLs
 BASE_URL = os.getenv("SCHEDULER_URL")
 if not BASE_URL:
     raise ValueError("SCHEDULER_URL not set in environment")
@@ -47,7 +46,6 @@ MARK_COMPLETED_URL = f"{BASE_URL}/jobs/mark_completed"
 MARK_FAILED_URL = f"{BASE_URL}/jobs/mark_failed"
 SEND_LOG_URL = f"{BASE_URL}/jobs/logs"
 
-# Object Store
 OBJECT_STORE_URL = os.getenv("OBJECT_STORE_URL", "http://localhost:8010").rstrip("/")
 OBJECT_OUTPUT_BUCKET = os.getenv("OBJECT_OUTPUT_BUCKET", "outputs")
 # Files at or above this size bypass the proxied upload endpoint and go straight
@@ -56,7 +54,6 @@ OBJECT_STORE_LARGE_FILE_THRESHOLD = int(
     os.getenv("OBJECT_STORE_LARGE_FILE_THRESHOLD", str(50 * 1024 * 1024))
 )
 
-# Intervals and Auth
 HEARTBEAT_INTERVAL = 5
 JOB_POLL_INTERVAL = 10
 DOCKER_HUB_USERNAME = os.getenv("DOCKER_HUB_USERNAME", "aorko123")
@@ -75,16 +72,13 @@ LOG_PUSH_INTERVAL = float(os.getenv("LOG_PUSH_INTERVAL", "1.0"))
 # and deletable on cleanup. Set CONTAINER_AS_ROOT=1 only if a job needs root.
 CONTAINER_AS_ROOT = os.getenv("CONTAINER_AS_ROOT", "0").lower() in ("1", "true", "yes")
 
-# File Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKER_ID_FILE = os.path.join(BASE_DIR, "worker_id.txt")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 VRAM_ESTIMATION_SCRIPT = os.path.join(BASE_DIR, "vram_estimation.py")
 
-# Ensure output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Central Logger Configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

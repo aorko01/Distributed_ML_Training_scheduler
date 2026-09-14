@@ -13,7 +13,7 @@ OBJECT_STORE_URL = os.environ.get(
 ).rstrip("/")
 OBJECT_OUTPUT_BUCKET = os.environ.get("OBJECT_OUTPUT_BUCKET", "outputs")
 
-TERMINAL_STATUSES = {"COMPLETED", "FAILED"}
+TERMINAL_STATUSES = {"COMPLETED", "FAILED", "RETRY_NEEDED"}
 
 
 def _stream_key(job_id: str) -> str:

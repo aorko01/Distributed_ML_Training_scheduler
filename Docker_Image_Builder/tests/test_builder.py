@@ -22,8 +22,6 @@ def _training_job(job_id="j1", **overrides):
         "object_key": f"{job_id}/a.zip",
         "command": "python train.py",
         "docker_base_image": "base:1",
-        "build_type": "training",
-        "base_job_id": None,
     }
     job.update(overrides)
     return job
@@ -42,7 +40,6 @@ def mocked_env():
         patch.object(builder, "find_project_dir") as mock_find,
         patch.object(builder, "build_push_and_clean") as mock_build,
         patch.object(builder, "notify_scheduler_job_ready") as mock_ready,
-        patch.object(builder, "notify_scheduler_interactive_ready") as mock_iready,
         patch.object(builder, "notify_scheduler_job_failed") as mock_failed,
         patch.object(builder, "mark_job_processed") as mock_mark,
     ):
@@ -52,7 +49,7 @@ def mocked_env():
         yield {
             "docker": mock_docker, "fetch": mock_fetch, "processed": mock_processed,
             "download": mock_dl, "extract": mock_extract, "find": mock_find,
-            "build": mock_build, "ready": mock_ready, "iready": mock_iready,
+            "build": mock_build, "ready": mock_ready,
             "failed": mock_failed, "mark": mock_mark,
         }
 
@@ -117,7 +114,6 @@ class TestScanAndProcess:
         mocked_env["fetch"].return_value = [
             {"id": "", "object_key": "k", "docker_base_image": "b"},
             {"id": "j2"},  # missing object_key/base_image
-            {"id": "j3", "build_type": "interactive"},  # missing base_job_id
         ]
         builder.scan_and_process()
         mocked_env["build"].assert_not_called()
@@ -129,14 +125,6 @@ class TestScanAndProcess:
         mocked_env["ready"].assert_called_once_with("j1")
         mocked_env["build"].assert_not_called()
         mocked_env["mark"].assert_not_called()
-
-    def test_already_processed_renotifies_interactive(self, mocked_env):
-        mocked_env["fetch"].return_value = [
-            _training_job("j1", build_type="interactive", base_job_id="base1")
-        ]
-        mocked_env["processed"].return_value = True
-        builder.scan_and_process()
-        mocked_env["iready"].assert_called_once_with("j1")
 
     def test_training_success_marks_processed(self, mocked_env):
         mocked_env["fetch"].return_value = [_training_job("j1")]
@@ -193,20 +181,6 @@ class TestScanAndProcess:
             builder.scan_and_process()
         mocked_env["failed"].assert_not_called()  # system failures are not reported
         mocked_env["mark"].assert_not_called()
-
-    def test_interactive_success(self, mocked_env):
-        mocked_env["fetch"].return_value = [
-            _training_job("j1", build_type="interactive", base_job_id="base9")
-        ]
-        mocked_env["build"].return_value = None
-        mocked_env["iready"].return_value = True
-        with patch.object(builder.shutil, "rmtree"):
-            builder.scan_and_process()
-        _, kwargs = mocked_env["build"].call_args
-        assert kwargs["build_type"] == "interactive"
-        assert "base9" in kwargs["base_image"]
-        mocked_env["iready"].assert_called_once_with("j1")
-        mocked_env["mark"].assert_called_once_with("j1")
 
 
 class TestMain:

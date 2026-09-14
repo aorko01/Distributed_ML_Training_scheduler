@@ -59,23 +59,6 @@ class TestGenerateDockerfile:
         assert 'CMD ["python"]' in out
 
 
-class TestInteractiveDockerfile:
-    def test_contains_sandbox_setup(self):
-        out = docker_ops.generate_interactive_dockerfile("mybase:latest")
-        assert "FROM mybase:latest" in out
-        assert "openssh-server" in out
-        assert "tailscale" in out.lower()
-        assert "interactive-entrypoint.sh" in out
-        assert 'CMD ["sleep", "infinity"]' in out
-
-    def test_entrypoint_contains_runtime_env(self):
-        out = docker_ops.generate_interactive_entrypoint()
-        for var in ("$HEADSCALE_URL", "$HEADSCALE_AUTHKEY", "$SESSION_ID",
-                    "$SSH_PUBLIC_KEY"):
-            assert var in out
-        assert "/usr/sbin/sshd" in out
-
-
 class TestSaveDebugCopy:
     def test_copies_tree(self, tmp_path):
         src = tmp_path / "build"
@@ -112,10 +95,12 @@ class TestUploadBuildLogs:
         resp.raise_for_status.assert_called_once()
 
     def test_failure_still_returns_key(self):
+        # Fixed: upload failure must return None so callers don't advance the
+        # throttle timestamp and pretend logs were persisted.
         with patch.object(
             docker_ops.requests, "post", side_effect=Exception("down")
         ):
-            assert docker_ops.upload_build_logs("j1", "logs") == "j1/build.log"
+            assert docker_ops.upload_build_logs("j1", "logs") is None
 
     def test_bucket_fallback(self):
         resp = MagicMock()
@@ -244,14 +229,6 @@ class TestBuildPushAndClean:
         assert client.images.build.call_args[1]["tag"].endswith("job1:latest")
         client.images.remove.assert_called_once()
 
-    def test_interactive_success_uses_interactive_tag(self, tmp_path, no_network):
-        client = _mock_client(push_chunks=[{"status": "Pushed"}])
-        out = docker_ops.build_push_and_clean(
-            client, "job1", str(tmp_path), "", "base:1", build_type="interactive"
-        )
-        assert out is None
-        assert "job1-interactive:latest" in client.images.build.call_args[1]["tag"]
-
     def test_training_build_error_is_user_failure(self, tmp_path, no_network):
         proj = tmp_path / "proj"
         proj.mkdir()
@@ -262,14 +239,6 @@ class TestBuildPushAndClean:
         )
         assert out[0] == "user"
         assert "Build failed" in out[1]
-
-    def test_interactive_build_error_is_system_failure(self, tmp_path, no_network):
-        err = docker.errors.BuildError("boom", build_log=[{"error": "apt failed"}])
-        client = _mock_client(build_error=err)
-        out = docker_ops.build_push_and_clean(
-            client, "job1", str(tmp_path), "", "base:1", build_type="interactive"
-        )
-        assert out[0] == "system"
 
     def test_push_error_is_system_failure(self, tmp_path, no_network):
         proj = tmp_path / "proj"

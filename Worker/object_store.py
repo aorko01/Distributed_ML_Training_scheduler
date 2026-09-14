@@ -14,6 +14,26 @@ from config import (
 logger = logging.getLogger("object_store")
 
 
+def _rewind_files(files: dict) -> None:
+    """Seek any file-like objects in a requests `files` dict back to position 0.
+
+    requests consumes the file object on the first POST; without rewinding,
+    retries would send an empty body (EOF) and the object store would store
+    a 0-byte object while reporting success.
+    """
+    if not files:
+        return
+    for value in files.values():
+        # value is (filename, fileobj[, content_type[, headers]])
+        fileobj = value[1] if isinstance(value, (tuple, list)) and len(value) >= 2 else value
+        seek = getattr(fileobj, "seek", None)
+        if callable(seek):
+            try:
+                seek(0)
+            except Exception:
+                pass
+
+
 def _post_retry(
     url: str,
     *,
@@ -25,6 +45,7 @@ def _post_retry(
     """POST to the object store with exponential backoff on transient errors."""
     last_err = None
     for attempt in range(retries):
+        _rewind_files(files)
         try:
             resp = requests.post(url, data=data, files=files, timeout=timeout)
             resp.raise_for_status()

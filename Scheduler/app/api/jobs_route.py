@@ -8,7 +8,7 @@ from app.db.database import SessionLocal
 from app.services import job_service, log_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest, InteractiveBuildRequest, InteractiveReadyRequest
+from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest
 from app.schemas.log_schema import LogLinesRequest
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
@@ -63,7 +63,7 @@ async def submit_job(
             file_content=file_content,
             filename=zip_file.filename,
             require_files=["requirements.txt"],
-            job_id=job_id  # Pass it in
+            job_id=job_id
         )
 
     except Exception as e:
@@ -76,7 +76,7 @@ async def submit_job(
     )
 
     job_data = {
-        "id": job_id,  # Pass it in
+        "id": job_id,
         "user_id": current_user.user_id,
         "object_key": result["object_key"],
         "name": name.strip() or None,
@@ -91,46 +91,6 @@ async def submit_job(
 
     db_job = job_service.create_job(db, job_data)
     return db_job
-
-
-@router.post("/submit_interactive")
-def submit_interactive(
-    request: InteractiveBuildRequest,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    """Create an interactive job derived from an existing training job.
-
-    No zip upload is required; the builder derives the base image tag from
-    base_job_id and produces an SSH + Tailscale sandbox image.
-    """
-    try:
-        db_job = job_service.create_interactive_job(db, {
-            **request.dict(),
-            "user_id": current_user.user_id,
-        })
-        return {
-            "id": db_job.id,
-            "user_id": db_job.user_id,
-            "object_key": db_job.object_key,
-            "name": db_job.name,
-            "command": db_job.command,
-            "resume_command": db_job.resume_command,
-            "docker_base_image": db_job.docker_base_image,
-            "config": db_job.config,
-            "status": db_job.status.value,
-            "priority": db_job.priority.value,
-            "reason_for_priority": db_job.reason_for_priority,
-            "vram_required": db_job.vram_required,
-            "ram_required": db_job.ram_required,
-            "build_type": db_job.build_type,
-            "base_job_id": db_job.base_job_id,
-            "created_at": db_job.created_at,
-            "updated_at": db_job.updated_at,
-            "device": db_job.device,
-        }
-    except Exception as e:
-        return {"error": str(e)}
 
 
 @router.post("/logs/{job_id}")
@@ -152,18 +112,6 @@ def update_job_to_vram_estimation_pending(
         job = job_service.set_job_vram_estimation_pending(db, request.job_id)
         return {"job_id": job.id, "status": job.status.value}
 
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@router.post("/mark_interactive_ready")
-def mark_interactive_ready(
-    request: InteractiveReadyRequest, db: Session = Depends(get_db)
-):
-    """Mark an interactive job as INTERACTIVE_READY after the builder finishes."""
-    try:
-        job = job_service.mark_interactive_ready(db, request.job_id)
-        return {"job_id": job.id, "status": job.status.value}
     except Exception as e:
         return {"error": str(e)}
 
@@ -275,26 +223,33 @@ async def upload_output_file(
     file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     try:
-        # Extract job_id from filename
-        job_id = os.path.splitext(file.filename)[0]
-
+        # Sanitize: confine to output_dir. file.filename is attacker-controlled
+        # (e.g. "../../etc/passwd"); basename + realpath check prevents escape.
         # Go up 3 levels: api → app → Scheduler
         base_dir = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
 
-        # Create output dir
-        output_dir = os.path.join(base_dir, "output")
+        output_dir = os.path.realpath(os.path.join(base_dir, "output"))
         os.makedirs(output_dir, exist_ok=True)
 
-        # Save file
-        file_path = os.path.join(output_dir, file.filename)
+        safe_filename = os.path.basename(file.filename or "")
+        if not safe_filename or safe_filename in (".", ".."):
+            return {"error": "Invalid filename"}
+        file_path = os.path.realpath(os.path.join(output_dir, safe_filename))
+        if file_path != output_dir and not file_path.startswith(output_dir + os.sep):
+            return {"error": "Invalid filename: path traversal blocked"}
 
+        job_id = os.path.splitext(safe_filename)[0]
+        if not job_id or "/" in job_id or "\\" in job_id or ".." in job_id:
+            return {"error": "Invalid job_id derived from filename"}
+
+        # Save file (streamed read is fine for small outputs; large outputs
+        # should use the object store presigned path instead)
         with open(file_path, "wb") as f:
             content = await file.read()
             f.write(content)
 
-        # ✅ mark job as completed
         job_service.set_to_completed(db, job_id)
 
         return {
@@ -311,22 +266,27 @@ async def upload_output_file(
 def get_output_by_id(request: JobIDRequest, db: Session = Depends(get_db)):
     try:
         job_id = request.job_id
+        # Block traversal: job_id comes from the request body and was
+        # previously joined unsanitized (e.g. "../../etc/passwd" → read
+        # arbitrary files with forced ".txt" suffix).
+        if not job_id or "/" in job_id or "\\" in job_id or ".." in job_id:
+            return {"error": f"Invalid job_id {job_id!r}"}
 
         # Base directory: Scheduler/ (api -> app -> Scheduler)
         base_dir = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
 
-        # Output directory: Scheduler/output
-        output_dir = os.path.join(base_dir, "output")
+        output_dir = os.path.realpath(os.path.join(base_dir, "output"))
 
-        # File path
-        file_path = os.path.join(output_dir, f"{job_id}.txt")
+        # File path confined to output_dir
+        file_path = os.path.realpath(os.path.join(output_dir, f"{os.path.basename(job_id)}.txt"))
+        if file_path != output_dir and not file_path.startswith(output_dir + os.sep):
+            return {"error": f"Invalid job_id {job_id!r}"}
 
         if not os.path.exists(file_path):
             return {"error": f"No output file found for job_id {job_id}"}
 
-        # Read file content
         with open(file_path, "r") as f:
             content = f.read()
 

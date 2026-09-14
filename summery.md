@@ -13,7 +13,7 @@ Central FastAPI orchestrator with Postgres + Redis.
 - Worker registry, cluster overview/throughput stats, resource marketplace, Redis-stream live logs (`GET` + `WS /jobs/{id}/logs/stream`), JWT auth, PyTorch tags helper.
 
 **2. Docker Image Builder `Docker_Image_Builder/`**
-Polls `unbuilt_jobs`, builds training images (`FROM base + COPY + pip install + CMD`) and interactive SSH sandboxes (Tailscale), pushes to Docker Hub, streams logs, saves `build.log`.
+Polls `unbuilt_jobs`, builds training images (`FROM base + COPY + pip install + CMD`), pushes to Docker Hub, streams logs, saves `build.log`.
 
 **3. Object Store `Object_store/` (`:8010`, MinIO `:9000/:9001`)**
 S3-compatible storage for code (`uploads`) and outputs/logs (`outputs`). Supports direct upload/download and presigned URLs for large files.
@@ -30,7 +30,7 @@ GPU host agent that registers, heartbeats every 5s, polls jobs every 10s.
 - **Worker (Electron desktop):** GPU/resource gauges, jobs table, logs, config, pause/resume.
 
 ## Stack & Run
-`FastAPI, Postgres, Redis, Docker, MinIO, React+Vite, Electron` + Docker Hub, Tailscale SSH.
+`FastAPI, Postgres, Redis, Docker, MinIO, React+Vite, Electron` + Docker Hub.
 - Scheduler: `docker compose up` → `:8000/docs`
 - Object Store: `docker compose up` → `:8010`
 - Builder: `docker compose up`
@@ -49,7 +49,7 @@ GPU host agent that registers, heartbeats every 5s, polls jobs every 10s.
 |---|---------|-----------------------|
 | F1 | Auth + User profile | `Scheduler/app/api/auth_route.py` → `services/auth_service.py` → `utils/auth.py` → `UI/User/src/services/auth.ts` |
 | F2 | Job submission + validation + upload | `UI/User/src/pages/SubmitJob.tsx` → `Scheduler/app/api/jobs_route.py:submit_job` → `utils/file_utils.py` → `Object_store/main.py:upload_object` |
-| F3 | Docker image building (training + interactive) | `Docker_Image_Builder/builder.py:scan_and_process` → `docker_ops.py:build_push_and_clean` → `api.py` |
+| F3 | Docker image building (training only) | `Docker_Image_Builder/builder.py:scan_and_process` → `docker_ops.py:build_push_and_clean` → `api.py` |
 | F4 | VRAM estimation | `Worker/vram_estimation.py:estimate` → `Worker/executor.py:handle_vram_estimation` → `Scheduler/services/job_service.py:save_vram_estimation` |
 | F5 | Scheduling / dispatch / priorities / resume | `Scheduler/services/job_service.py:get_next_job_for_worker` → `api/jobs_route.py:pull_job,resume_job` → `Worker/main.py:job_loop` |
 | F6 | Training execution on worker | `Worker/executor.py:handle_training,_run_container` → `output_monitor.py` → `object_store.py` |
@@ -87,25 +87,25 @@ Read in order:
 
 1. `UI/User/src/pages/SubmitJob.tsx:SubmitJob()` — PyTorch/CUDA select (`handlePyTorchChange`), zip pick (`handleFileChange`), `bashScript/resumeCommand`, priority checkbox, `handleSubmit→submitJob→navigate(/jobs/:id)`
 2. `UI/User/src/services/jobs.ts:submitJob()` — `FormData(zip_file,name,command,resume_command,docker_base_image,request_for_priority,reason_for_priority)` → `POST /jobs/submit_job`
-3. `Scheduler/app/schemas/job_schema.py` — `JobCreate, JobResponse, JobResumeRequest, VramEstimationReport, JobFailureReport, InteractiveBuildRequest`
-4. `Scheduler/app/models/job_model.py` — `JobStatus (NOT_RUNNABLE,VRAM_ESTIMATION_PENDING,RUNNABLE,IN_PROGRESS,COMPLETED,FAILED,RETRY_NEEDED,INTERACTIVE_READY)`, `JobPriority (NORMAL,REQUESTED,HIGH)`, `Job`
+3. `Scheduler/app/schemas/job_schema.py` — `JobCreate, JobResponse, JobResumeRequest, VramEstimationReport, JobFailureReport`
+4. `Scheduler/app/models/job_model.py` — `JobStatus (NOT_RUNNABLE,VRAM_ESTIMATION_PENDING,RUNNABLE,IN_PROGRESS,COMPLETED,FAILED,RETRY_NEEDED)`, `JobPriority (NORMAL,REQUESTED,HIGH)`, `Job`
 5. `Scheduler/app/utils/file_utils.py` — `find_file_in_zip(), validate_required_files(), save_to_object_store()` (requires `requirements.txt`, pushes zip to `uploads` bucket)
-6. `Scheduler/app/api/jobs_route.py` — `POST /jobs/submit_job→submit_job(), POST /jobs/submit_interactive→submit_interactive(), GET /jobs/unbuilt_jobs→get_unbuilt_jobs(), GET /jobs/mine→get_my_jobs(), GET /jobs/mine/count, GET /jobs/mine/gpu_hours, GET /jobs/queue_length, GET /jobs/{job_id}→get_job_by_id()`
-7. `Scheduler/app/services/job_service.py` — `create_job(), create_interactive_job(), mark_interactive_ready(), get_user_jobs(), get_user_jobs_count(), get_user_gpu_hours(), get_user_job_by_id(), get_runnable_jobs_count()`
+6. `Scheduler/app/api/jobs_route.py` — `POST /jobs/submit_job→submit_job(), GET /jobs/unbuilt_jobs→get_unbuilt_jobs(), GET /jobs/mine→get_my_jobs(), GET /jobs/mine/count, GET /jobs/mine/gpu_hours, GET /jobs/queue_length, GET /jobs/{job_id}→get_job_by_id()`
+7. `Scheduler/app/services/job_service.py` — `create_job(), get_user_jobs(), get_user_jobs_count(), get_user_gpu_hours(), get_user_job_by_id(), get_runnable_jobs_count()`
 
-Tests: `Scheduler/tests/test_job_service.py:TestCreateJob,TestInteractiveJobs`, `test_file_utils.py`, `test_api_routes.py:TestJobsRoutes`
+Tests: `Scheduler/tests/test_job_service.py:TestCreateJob`, `test_file_utils.py`, `test_api_routes.py:TestJobsRoutes`
 
-### F3 — Docker image building (training + interactive SSH)
+### F3 — Docker image building (training only)
 
 Read in order:
 
 1. `Docker_Image_Builder/config.py` — constants only: `SCHEDULER_*_URL, OBJECT_STORE_URL/BUCKET/OUTPUT_BUCKET, DOCKER_HUB_USERNAME, POLL_INTERVAL, DB_PATH`
 2. `Docker_Image_Builder/database.py` — `init_db(), is_job_processed(), mark_job_processed(), update_base_image_usage(), get_old_base_images(), remove_base_image_record()` (SQLite idempotency + base-image LRU)
-3. `Docker_Image_Builder/api.py` — `fetch_unbuilt_jobs()` (`GET /jobs/unbuilt_jobs`), `download_job_archive()` (`GET /objects/{BUCKET}/{key}`), `send_log_lines()` (`POST /jobs/logs/{id}`), `notify_scheduler_job_ready()` (`POST /jobs/update_job_to_vram_estimation_pending`), `notify_scheduler_interactive_ready()` (`POST /jobs/mark_interactive_ready`), `notify_scheduler_job_failed()` (`POST /jobs/mark_failed`)
+3. `Docker_Image_Builder/api.py` — `fetch_unbuilt_jobs()` (`GET /jobs/unbuilt_jobs`), `download_job_archive()` (`GET /objects/{BUCKET}/{key}`), `send_log_lines()` (`POST /jobs/logs/{id}`), `notify_scheduler_job_ready()` (`POST /jobs/update_job_to_vram_estimation_pending`), `notify_scheduler_job_failed()` (`POST /jobs/mark_failed`)
 4. `Docker_Image_Builder/docker_ops.py` —
-   - Build: `docker_login(), generate_dockerfile(), generate_interactive_dockerfile(), generate_interactive_entrypoint(), build_push_and_clean()` (tags `{USER}/{job_id}:latest` vs `{USER}/{job_id}-interactive:latest`, `client.images.build/push/remove`)
+   - Build: `docker_login(), generate_dockerfile(), build_push_and_clean()` (tag `{USER}/{job_id}:latest`, `client.images.build/push/remove`)
    - Logs: `emit_build_lines(), _extract_build_log_lines(), should_upload_build_line(), maybe_upload_build_logs() (60s throttle), upload_build_logs()` (`POST /objects/upload` → `{job_id}/build.log`), `save_debug_copy(), prune_old_base_images()`
-5. `Docker_Image_Builder/builder.py` — `find_project_dir(), extract_job_archive(), scan_and_process()` (poll → validate `id/object_key/docker_base_image/build_type` → training vs interactive → notify ready/failed), `main()` (poll loop `sleep(POLL_INTERVAL)`)
+5. `Docker_Image_Builder/builder.py` — `find_project_dir(), extract_job_archive(), scan_and_process()` (poll → validate `id/object_key/docker_base_image` → build → notify ready/failed), `main()` (poll loop `sleep(POLL_INTERVAL)`)
 
 Tests: `Docker_Image_Builder/tests/test_builder.py, test_docker_ops.py, test_api.py, test_database.py, test_config.py`
 
@@ -140,7 +140,7 @@ Tests: `Scheduler/tests/test_scheduler_service.py` no — scheduling is `test_jo
 
 Read in order:
 
-1. `Worker/executor.py:JobExecutor` — `__init__, pull_docker_image(), _image_workdir(), _resolve_mount_target(), _prepare_output_mount(), _container_user_args(), _parse_python_command(), handle_training(), _run_container(), _remove_output_dir(), _finalize_job(), _flush_log_push(), _append_build_log(), process_job(), resume_persisted_job_if_any()`, helper `_docker_host_path(), _record_job()`
+1. `Worker/executor.py:JobExecutor` — `__init__, pull_docker_image(), _image_workdir(), _resolve_mount_target(), _prepare_output_mount(), _container_user_args(), _parse_python_command(), _reset_log_state(), handle_training(), _run_container(), _remove_output_dir(), _finalize_job(), _throttled(), _flush_log_push(), _append_build_log(), process_job(), resume_persisted_job_if_any()`, helper `_docker_host_path(), _record_job()`
 2. `Worker/output_monitor.py:OutputFileMonitor` — `run/stop/flush/_scan/pending_uploads/_maybe_upload` (thread watching output dir → Object Store)
 3. `Worker/object_store.py:ObjectStore` — `upload_bytes(), upload_file(), _presign_upload(), _upload_large(), download(), list_objects(), _presign_download(), download_to()` + `_post_retry()`
 4. `Worker/api.py:SchedulerAPI.send_logs(), mark_job_completed(), mark_job_failed()`

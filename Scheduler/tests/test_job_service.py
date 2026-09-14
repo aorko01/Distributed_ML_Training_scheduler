@@ -1,6 +1,6 @@
 """Unit tests for app/services/job_service.py."""
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -53,59 +53,6 @@ class TestCreateJob:
         assert job.resume_command == "python resume.py"
 
 
-class TestInteractiveJobs:
-    def _mock_db_with_base(self, base_job):
-        db = MagicMock()
-        db.query.return_value.filter.return_value.first.return_value = base_job
-        return db
-
-    def test_create_interactive_job(self, db):
-        user = make_user(db)
-        base = make_job(db, user.user_id)
-        mock_db = self._mock_db_with_base(base)
-        job = job_service.create_interactive_job(
-            mock_db, {"base_job_id": base.id, "user_id": user.user_id, "name": "shell"}
-        )
-        added = mock_db.add.call_args[0][0]
-        assert added.build_type == "interactive"
-        assert added.base_job_id == base.id
-        assert added.object_key is None
-        assert added.status == JobStatus.NOT_RUNNABLE
-        assert job is added
-
-    def test_create_interactive_missing_base_raises(self, db):
-        user = make_user(db)
-        with pytest.raises(Exception, match="Base job not found"):
-            job_service.create_interactive_job(
-                db, {"base_job_id": "nope", "user_id": user.user_id}
-            )
-
-    def test_create_interactive_other_users_job_raises(self, db):
-        owner = make_user(db)
-        other = make_user(db)
-        base = make_job(db, owner.user_id)
-        with pytest.raises(Exception, match="does not belong"):
-            job_service.create_interactive_job(
-                db, {"base_job_id": base.id, "user_id": other.user_id}
-            )
-
-    def test_mark_interactive_ready(self, db):
-        user = make_user(db)
-        job = make_job(db, user.user_id)  # NOT_RUNNABLE training job row
-        out = job_service.mark_interactive_ready(db, job.id)
-        assert out.status == JobStatus.INTERACTIVE_READY
-
-    def test_mark_interactive_ready_missing_raises(self, db):
-        with pytest.raises(Exception, match="Job not found"):
-            job_service.mark_interactive_ready(db, "missing")
-
-    def test_mark_interactive_ready_wrong_state_raises(self, db):
-        user = make_user(db)
-        job = make_job(db, user.user_id, status=JobStatus.RUNNABLE)
-        with pytest.raises(Exception, match="NOT_RUNNABLE"):
-            job_service.mark_interactive_ready(db, job.id)
-
-
 class TestStateTransitions:
     def test_not_runnable_to_pending(self, db):
         user = make_user(db)
@@ -156,7 +103,6 @@ class TestGetNotRunnableJobs:
         make_job(db, user.user_id, status=JobStatus.RUNNABLE)
         jobs = job_service.get_not_runnable_jobs(db)
         assert [j["id"] for j in jobs] == [j1.id]
-        assert jobs[0]["build_type"] == "training"
 
 
 class TestVramEstimationStrategy:

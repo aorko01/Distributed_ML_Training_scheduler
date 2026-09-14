@@ -5,7 +5,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import Base, engine, run_migrations
 
-# Import routers
 from app.api.jobs_route import router as jobs_router
 from app.api.scheduler_route import router as scheduler_router
 from app.api.worker_route import router as workers_router
@@ -27,7 +26,6 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-# Create FastAPI app
 app = FastAPI(
     title="GPU Scheduler",
     description="Scheduler API for registering workers and submitting jobs",
@@ -51,7 +49,6 @@ app.add_middleware(
 Base.metadata.create_all(bind=engine)
 run_migrations()
 
-# Include API routers
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 app.include_router(scheduler_router, prefix="/scheduler", tags=["scheduler"])
 app.include_router(workers_router, prefix="/workers", tags=["workers"])

@@ -13,7 +13,6 @@ class JobStatus(enum.Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     RETRY_NEEDED = "RETRY_NEEDED"
-    INTERACTIVE_READY = "INTERACTIVE_READY"
 
 
 class JobPriority(enum.Enum):
@@ -46,23 +45,16 @@ class Job(Base):
         default=JobStatus.NOT_RUNNABLE
     )
 
-    # VRAM estimation
     vram_required = Column(Float, nullable=True)  # in GB
     ram_required = Column(Float, nullable=True)  # in GB
     step_time = Column(Float, nullable=True)  # in seconds per step
 
-    # Runtime accounting
     gpu_hour = Column(Float, nullable=True)  # GPU hours used, set when the job completes
     started_at = Column(DateTime(timezone=True), nullable=True)  # when the job started running (IN_PROGRESS)
     device = Column(String, nullable=True)  # device the job is running on (saved when worker pulls for running)
 
     # Failure reporting (set by builder/worker when a job fails)
     failure_reason = Column(String, nullable=True)  # why the job failed / needs a retry
-
-    # Build type: "training" (default) or "interactive" (derived from a base job)
-    build_type = Column(String, nullable=False, default="training")
-    # For interactive jobs, the training job id this interactive job is derived from
-    base_job_id = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

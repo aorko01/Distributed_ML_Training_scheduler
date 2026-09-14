@@ -93,25 +93,6 @@ class TestNotifyReady:
         with patch.object(api.requests, "post", side_effect=Exception("down")):
             assert api.notify_scheduler_job_ready("j1") is False
 
-    def test_interactive_success_true(self):
-        with patch.object(api.requests, "post", return_value=_resp(200, {})) as m:
-            assert api.notify_scheduler_interactive_ready("j1") is True
-            assert m.call_args[0][0] == api.SCHEDULER_INTERACTIVE_UPDATE_URL
-
-    def test_interactive_error_key_false(self):
-        with patch.object(
-            api.requests, "post", return_value=_resp(200, {"error": "x"})
-        ):
-            assert api.notify_scheduler_interactive_ready("j1") is False
-
-    def test_interactive_non_200_false(self):
-        with patch.object(api.requests, "post", return_value=_resp(502, {})):
-            assert api.notify_scheduler_interactive_ready("j1") is False
-
-    def test_interactive_exception_false(self):
-        with patch.object(api.requests, "post", side_effect=Exception("down")):
-            assert api.notify_scheduler_interactive_ready("j1") is False
-
 
 class TestNotifyFailed:
     def test_success_and_truncation(self):

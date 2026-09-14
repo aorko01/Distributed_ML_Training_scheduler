@@ -1,18 +1,48 @@
 import os
 import io
+import re
 import time
 import shutil
 import zipfile
 import tempfile
 import docker
 
-from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL, DOCKER_HUB_USERNAME
+from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL
 from database import init_db, is_job_processed, mark_job_processed
-from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_interactive_ready, notify_scheduler_job_failed
+from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_job_failed
 from docker_ops import docker_login, build_push_and_clean, prune_old_base_images
 
+def _sanitize_job_id(job_id: str) -> str:
+    """Make a job id safe for use in temp-dir prefixes, tags and paths."""
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(job_id or "job"))
+    return safe[:64] or "job"
+
+
 def find_project_dir(extracted_dir: str) -> str:
-    for entry in sorted(os.listdir(extracted_dir)):
+    # Prefer a directory (or the root) that actually looks like a project:
+    # contains requirements.txt or at least one .py file. Otherwise fall back
+    # to the previous behaviour (alphabetically first subdir, else root) so
+    # existing callers/tests keep working.
+    try:
+        entries = sorted(os.listdir(extracted_dir))
+    except OSError:
+        return extracted_dir
+    if os.path.isfile(os.path.join(extracted_dir, "requirements.txt")):
+        return extracted_dir
+    for entry in entries:
+        if entry.startswith("__") or entry.startswith("."):
+            continue
+        candidate = os.path.join(extracted_dir, entry)
+        if os.path.isfile(candidate) and entry.endswith(".py"):
+            return extracted_dir
+    for entry in entries:
+        if entry.startswith("__") or entry.startswith("."):
+            continue
+        candidate = os.path.join(extracted_dir, entry)
+        if os.path.isdir(candidate):
+            if os.path.isfile(os.path.join(candidate, "requirements.txt")):
+                return candidate
+    for entry in entries:
         if entry.startswith("__") or entry.startswith("."):
             continue
         candidate = os.path.join(extracted_dir, entry)
@@ -21,10 +51,28 @@ def find_project_dir(extracted_dir: str) -> str:
     return extracted_dir
 
 def extract_job_archive(archive_bytes: bytes, job_id: str) -> str:
-    extract_dir = tempfile.mkdtemp(prefix=f"job_{job_id}_")
+    safe_job_id = _sanitize_job_id(job_id)
+    extract_dir = tempfile.mkdtemp(prefix=f"job_{safe_job_id}_")
     try:
         with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as zip_ref:
-            zip_ref.extractall(extract_dir)
+            # Safe extraction (ZipSlip protection): reject absolute paths
+            # and entries that would escape extract_dir via `..`.
+            base = os.path.realpath(extract_dir)
+            for member in zip_ref.infolist():
+                name = member.filename
+                if not name or name.endswith("/"):
+                    continue
+                if os.path.isabs(name) or re.match(r"^[a-zA-Z]:", name):
+                    raise ValueError(f"Unsafe zip entry (absolute path): {name!r}")
+                dest = os.path.realpath(os.path.join(base, name))
+                if dest != base and not dest.startswith(base + os.sep):
+                    raise ValueError(f"Unsafe zip entry (path traversal): {name!r}")
+                if member.is_dir():
+                    os.makedirs(dest, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(dest) or base, exist_ok=True)
+                    with zip_ref.open(member, "r") as src, open(dest, "wb") as out:
+                        shutil.copyfileobj(src, out)
     except Exception:
         shutil.rmtree(extract_dir, ignore_errors=True)
         raise
@@ -34,7 +82,6 @@ def scan_and_process():
     client = docker.from_env()
     docker_login(client)
 
-    # Perform routine cleanup of old base images
     prune_old_base_images(client)
 
     try:
@@ -48,23 +95,14 @@ def scan_and_process():
         object_key = job.get("object_key")
         command = job.get("command", "")
         base_image = job.get("docker_base_image")
-        build_type = job.get("build_type", "training")
-        base_job_id = job.get("base_job_id")
 
-        if not job_id or (build_type != "interactive" and (not object_key or not base_image)):
+        if not job_id or not object_key or not base_image:
             logger.warning("Skipping malformed job payload: %s", job)
-            continue
-
-        if build_type == "interactive" and not base_job_id:
-            logger.warning("Skipping malformed interactive job payload (missing base_job_id): %s", job)
             continue
 
         if is_job_processed(job_id):
             logger.info("Job %s already built but still unbuilt in scheduler, re-notifying...", job_id)
-            if build_type == "interactive":
-                notify_scheduler_interactive_ready(job_id)
-            else:
-                notify_scheduler_job_ready(job_id)
+            notify_scheduler_job_ready(job_id)
             continue
 
         logger.info("=" * 50)
@@ -74,23 +112,10 @@ def scan_and_process():
         result = None
 
         try:
-            if build_type == "interactive":
-                # Interactive builds skip zip download/extraction; the base
-                # image already contains the training code.
-                base_image_tag = f"{DOCKER_HUB_USERNAME}/{base_job_id}:latest"
-                temp_dir = tempfile.mkdtemp(prefix=f"interactive_{job_id}_")
-                try:
-                    result = build_push_and_clean(
-                        client, job_id, temp_dir, command="",
-                        base_image=base_image_tag, build_type="interactive",
-                    )
-                finally:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-            else:
-                archive_bytes = download_job_archive(object_key)
-                extract_dir = extract_job_archive(archive_bytes, job_id)
-                project_dir = find_project_dir(extract_dir)
-                result = build_push_and_clean(client, job_id, project_dir, command, base_image)
+            archive_bytes = download_job_archive(object_key)
+            extract_dir = extract_job_archive(archive_bytes, job_id)
+            project_dir = find_project_dir(extract_dir)
+            result = build_push_and_clean(client, job_id, project_dir, command, base_image)
         except Exception as e:
             logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
             result = ("system", f"Unexpected error while processing job: {e}")
@@ -99,10 +124,7 @@ def scan_and_process():
                 shutil.rmtree(extract_dir, ignore_errors=True)
 
         if result is None:
-            if build_type == "interactive":
-                notified = notify_scheduler_interactive_ready(job_id)
-            else:
-                notified = notify_scheduler_job_ready(job_id)
+            notified = notify_scheduler_job_ready(job_id)
             if notified:
                 mark_job_processed(job_id)
                 logger.info("Job %s completed.", job_id)
