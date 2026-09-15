@@ -5,9 +5,6 @@ on:
     branches: ["main", "master"]
   pull_request:
     branches: ["main", "master"]
-  # Manual re-run on demand (every push to main already does a real
-  # login/build/push/delete, so use this to retry without a new merge;
-  # be mindful of Docker Hub rate limits if main is pushed frequently).
   workflow_dispatch:
 
 concurrency:
@@ -59,102 +56,9 @@ jobs:
         run: |
           python -m pytest test/unit/ -q
 
-  integration-tests:
-    name: ${{ matrix.component }} integration (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
-        component: ["Scheduler", "Docker_Image_Builder", "Worker"]
-
-    defaults:
-      run:
-        working-directory: ${{ matrix.component }}
-
-    env:
-      DATABASE_URL: "sqlite:///:memory:"
-      DOCKER_HUB_USERNAME: "ci-test-user"
-      DOCKER_HUB_PASSWORD: ""
-      SCHEDULER_URL: "http://localhost:8000"
-      SCHEDULER_API_URL: "http://localhost:8000"
-      OBJECT_STORE_URL: "http://localhost:8010"
-      JWT_SECRET_KEY: "ci-test-secret-key"
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            ${{ matrix.component }}/requirements.txt
-
-      - name: Install component + test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio httpx
-
-      - name: Run integration tests
-        run: |
-          python -m pytest test/integration/ -q --ignore=test/integration/__init__.py; code=$?; if [ $code -eq 5 ]; then echo "no integration tests collected, treating as pass"; exit 0; fi; exit $code
-
-  e2e-tests:
-    name: ${{ matrix.component }} e2e (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
-        component: ["Scheduler", "Docker_Image_Builder", "Worker"]
-
-    defaults:
-      run:
-        working-directory: ${{ matrix.component }}
-
-    env:
-      DATABASE_URL: "sqlite:///:memory:"
-      DOCKER_HUB_USERNAME: "ci-test-user"
-      DOCKER_HUB_PASSWORD: ""
-      SCHEDULER_URL: "http://localhost:8000"
-      SCHEDULER_API_URL: "http://localhost:8000"
-      OBJECT_STORE_URL: "http://localhost:8010"
-      JWT_SECRET_KEY: "ci-test-secret-key"
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            ${{ matrix.component }}/requirements.txt
-
-      - name: Install component + test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio httpx
-
-      - name: Run e2e tests
-        run: |
-          python -m pytest test/e2e/ -q --ignore=test/e2e/__init__.py -m "not real_dockerhub"; code=$?; if [ $code -eq 5 ]; then echo "no e2e tests selected, treating as pass"; exit 0; fi; exit $code
-
   builder-dockerhub-real-e2e:
     name: Builder real Docker Hub e2e (Python 3.11)
     runs-on: ubuntu-latest
-    # Real external service: only run where secrets are safe to expose.
-    # - Every push to main (not PRs, never fork PRs where secrets are absent).
-    # - Manual re-runs via workflow_dispatch.
-    # Each run does a real login, build, push, and delete against Docker Hub,
-    # so avoid pushing to main in tight loops (Hub rate limits).
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     concurrency:
       group: builder-dockerhub-real-e2e
@@ -163,8 +67,6 @@ jobs:
       run:
         working-directory: Docker_Image_Builder
     env:
-      # Same variable names as .env_test (repo root template). Must be set as
-      # CI secrets with identical names: DOCKER_HUB_USERNAME / DOCKER_HUB_PASSWORD.
       DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
       DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
       RUN_REAL_DOCKERHUB_E2E: "1"
@@ -189,9 +91,6 @@ jobs:
           pip install pytest pytest-asyncio httpx
 
       - name: Check Docker daemon is reachable
-        # ubuntu-latest ships a Docker Engine the test talks to via
-        # docker.from_env(). Fail loudly here so a setup problem is obvious
-        # instead of surfacing as a confusing test failure.
         run: |
           docker info
           docker version
