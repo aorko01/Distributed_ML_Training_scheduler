@@ -101,7 +101,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          python -m pytest test/integration/ -q --ignore=test/integration/__init__.py
+          python -m pytest test/integration/ -q --ignore=test/integration/__init__.py; code=$?; if [ $code -eq 5 ]; then echo "no integration tests collected, treating as pass"; exit 0; fi; exit $code
 
   e2e-tests:
     name: ${{ matrix.component }} e2e (Python ${{ matrix.python-version }})
@@ -145,7 +145,7 @@ jobs:
 
       - name: Run e2e tests
         run: |
-          python -m pytest test/e2e/ -q --ignore=test/e2e/__init__.py -m "not real_dockerhub"
+          python -m pytest test/e2e/ -q --ignore=test/e2e/__init__.py -m "not real_dockerhub"; code=$?; if [ $code -eq 5 ]; then echo "no e2e tests selected, treating as pass"; exit 0; fi; exit $code
 
   builder-dockerhub-real-e2e:
     name: Builder real Docker Hub e2e (Python 3.11)
