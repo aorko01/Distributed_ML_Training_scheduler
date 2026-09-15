@@ -1,5 +1,8 @@
 """Unit tests for docker_ops.py."""
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import docker.errors
@@ -334,3 +337,109 @@ class TestPruneOldBaseImages:
         ):
             docker_ops.prune_old_base_images(client)  # no raise
         mock_rm.assert_not_called()
+
+
+class TestTransientBuildErrorDetection:
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "failed to export image: No such image: sha256:abc",
+            "no such image: sha256:7e2c08b3e4d4",
+            "connection reset by peer",
+            "tls handshake timeout",
+            "unexpected eof",
+        ],
+    )
+    def test_transient_patterns(self, msg):
+        assert docker_ops._is_transient_build_error(msg) is True
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "Step 4/5 : RUN pip install torch\nCould not find a version",
+            "permission denied while trying to connect",
+            "build failed",
+        ],
+    )
+    def test_non_transient(self, msg):
+        assert docker_ops._is_transient_build_error(msg) is False
+
+
+class TestBuildErrorClassification:
+    def _proj(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "train.py").write_text("print(1)")
+        return proj
+
+    def test_transient_export_error_is_system(self, tmp_path, no_network):
+        proj = self._proj(tmp_path)
+        err = docker.errors.BuildError(
+            "Step 3/5: COPY failed to export image: No such image: sha256:abc",
+            build_log=[{"errorDetail": {"message": "failed to export image: No such image"}}],
+        )
+        client = _mock_client(build_error=err)
+        out = docker_ops.build_push_and_clean(
+            client, "job1", str(proj), "python train.py", "base:1"
+        )
+        assert out[0] == "system"
+        assert "infra race" in out[1]
+
+    def test_real_dockerfile_error_is_user(self, tmp_path, no_network):
+        proj = self._proj(tmp_path)
+        err = docker.errors.BuildError("boom", build_log=[{"error": "pip failed"}])
+        client = _mock_client(build_error=err)
+        out = docker_ops.build_push_and_clean(
+            client, "job1", str(proj), "python train.py", "base:1"
+        )
+        assert out[0] == "user"
+
+
+class TestBuildLock:
+    def _proj(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "train.py").write_text("print(1)")
+        return proj
+
+    def _counting_client(self):
+        client = MagicMock()
+        state = {"max": 0, "current": 0, "lock": threading.Lock()}
+
+        def _build_blocker(*args, **kwargs):
+            with state["lock"]:
+                state["current"] += 1
+                state["max"] = max(state["max"], state["current"])
+                time.sleep(0.05)
+                state["current"] -= 1
+            return (MagicMock(), [{"stream": "done\n"}])
+
+        client.images.build.side_effect = _build_blocker
+        client.images.push.return_value = iter([])
+        return client, state
+
+    def test_different_base_images_get_distinct_locks(self):
+        base_locks = [docker_ops._get_build_lock(f"base{i}:1") for i in range(6)]
+        assert len(set(id(l) for l in base_locks)) == 6
+
+    def test_same_base_images_are_serialized(self, tmp_path, no_network):
+        proj = self._proj(tmp_path)
+        client, state = self._counting_client()
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futures = [
+                ex.submit(
+                    docker_ops.build_push_and_clean,
+                    client, f"job{i}", str(proj), "python train.py", "same-base:1"
+                )
+                for i in range(4)
+            ]
+            for f in futures:
+                f.result()
+        assert state["max"] == 1  # never more than one build in flight
+
+    def test_build_lock_is_per_base_image(self):
+        a1 = docker_ops._get_build_lock("base-a:1")
+        a2 = docker_ops._get_build_lock("base-a:1")
+        b1 = docker_ops._get_build_lock("base-b:1")
+        assert a1 is a2
+        assert b1 is not a1

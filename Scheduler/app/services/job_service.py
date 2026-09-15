@@ -33,8 +33,8 @@ def set_job_vram_estimation_pending(db: Session, job_id: str):
     if not job:
         raise Exception("Job not found")
 
-    if job.status != JobStatus.NOT_RUNNABLE:
-        raise Exception("Job is not in NOT_RUNNABLE state")
+    if job.status != JobStatus.IMAGE_BUILDING:
+        raise Exception("Job is not in IMAGE_BUILDING state")
 
     job.status = JobStatus.VRAM_ESTIMATION_PENDING
 

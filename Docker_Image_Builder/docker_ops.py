@@ -3,6 +3,7 @@ import re
 import shutil
 import tempfile
 import time
+import threading
 import docker
 import requests
 
@@ -20,7 +21,43 @@ def _is_auth_error(error_msg: str) -> bool:
     lower = error_msg.lower()
     return any(pat in lower for pat in _AUTH_ERROR_PATTERNS)
 
+# Transient errors raised by the classic Docker builder (and occasionally
+# during push) that are caused by infrastructure / concurrency races rather
+# than a defect in the user's project. When one of these surfaces as a
+# BuildError we surface it as a "system" failure so the scheduler retries the
+# job instead of marking it permanently FAILED.
+_TRANSIENT_BUILD_ERROR_PATTERNS = (
+    "failed to export image",
+    "no such image",
+    "connection reset",
+    "connection refused",
+    "tls handshake timeout",
+    "broken pipe",
+    "unexpected eof",
+    "registry: unavailable",
+    "no connection",
+)
+
+def _is_transient_build_error(error_msg: str) -> bool:
+    lower = error_msg.lower()
+    return any(pat in lower for pat in _TRANSIENT_BUILD_ERROR_PATTERNS)
+
 _logged_in = False
+
+# The classic Docker builder is not safe for concurrent builds that share a
+# base image: builds reuse the same intermediate cache layers and one build's
+# cleanup can delete a layer another build is still exporting, surfacing as
+# `failed to export image: No such image: sha256:...`. To prevent this race we
+# serialize builds per base image. Builds with *different* base images still
+# run in parallel. Push/delete operations are not serialized.
+_build_locks_guard = threading.Lock()
+_build_locks: dict[str, threading.Lock] = {}
+
+
+def _get_build_lock(base_image: str) -> threading.Lock:
+    """Return a lock dedicated to ``base_image``, creating it on first use."""
+    with _build_locks_guard:
+        return _build_locks.setdefault(base_image, threading.Lock())
 
 def docker_login(client: docker.DockerClient) -> bool:
     global _logged_in
@@ -246,38 +283,56 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         ])
         last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
-        try:
-            _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True)
-            for chunk in build_logs:
-                chunk_lines = []
-                if "error" in chunk:
-                    chunk_lines.append(f"Docker error: {chunk['error']}")
-                if "stream" in chunk and chunk["stream"].strip():
-                    for stream_line in chunk["stream"].splitlines():
-                        stream_line = stream_line.strip()
-                        if not stream_line or not should_upload_build_line(stream_line):
-                            continue
-                        chunk_lines.append(stream_line)
-                if "status" in chunk and chunk["status"].strip():
-                    status_line = chunk["status"].strip()
-                    if should_upload_build_line(status_line):
-                        chunk_lines.append(status_line)
+        # The classic Docker builder shares a single global build cache and is
+        # unsafe for concurrent builds that reuse the same base image: one
+        # build's intermediate cleanup can drop a cached layer that another
+        # build still needs, raising `failed to export image: No such image`.
+        # Serialize builds per base image to eliminate the race.
+        build_lock = _get_build_lock(base_image)
+        with build_lock:
+            try:
+                _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True)
+                for chunk in build_logs:
+                    chunk_lines = []
+                    if "error" in chunk:
+                        chunk_lines.append(f"Docker error: {chunk['error']}")
+                    if "stream" in chunk and chunk["stream"].strip():
+                        for stream_line in chunk["stream"].splitlines():
+                            stream_line = stream_line.strip()
+                            if not stream_line or not should_upload_build_line(stream_line):
+                                continue
+                            chunk_lines.append(stream_line)
+                    if "status" in chunk and chunk["status"].strip():
+                        status_line = chunk["status"].strip()
+                        if should_upload_build_line(status_line):
+                            chunk_lines.append(status_line)
 
-                emit_build_lines(job_id, build_log_buffer, chunk_lines)
-                if chunk_lines:
-                    last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
-        except docker.errors.BuildError as e:
-            logger.error("Build failed for job %s: %s", job_id, e)
-            reason = f"Build failed: {e}"
-            error_lines = _extract_build_log_lines(e)
-            if not error_lines:
-                error_lines = [str(e).strip()]
-            emit_build_lines(job_id, build_log_buffer, [
-                "Build failed with BuildError:",
-                *error_lines,
-            ])
-            maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
-            return "user", reason
+                    emit_build_lines(job_id, build_log_buffer, chunk_lines)
+                    if chunk_lines:
+                        last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
+            except docker.errors.BuildError as e:
+                logger.error("Build failed for job %s: %s", job_id, e)
+                error_lines = _extract_build_log_lines(e)
+                full_msg = str(e) + "\n" + "\n".join(error_lines)
+                if _is_transient_build_error(full_msg):
+                    # Infrastructure / concurrency race: retry instead of
+                    # permanently failing the user's job.
+                    reason = f"Transient build failure (infra race): {e}"
+                    emit_build_lines(job_id, build_log_buffer, [
+                        "Build failed with BuildError:",
+                        *error_lines,
+                    ])
+                    maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+                    return "system", reason
+                reason = f"Build failed: {e}"
+                if not error_lines:
+                    error_lines = [str(e).strip()]
+                emit_build_lines(job_id, build_log_buffer, [
+                    "Build failed with BuildError:",
+                    *error_lines,
+                ])
+                maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+                return "user", reason
 
         emit_build_lines(job_id, build_log_buffer, [
             "Docker build completed successfully.",
