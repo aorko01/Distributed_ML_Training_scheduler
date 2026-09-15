@@ -124,6 +124,36 @@ def get_unbuilt_jobs(db: Session = Depends(get_db)):
     except Exception as e:
         return {"error": str(e)}
 
+
+@router.post("/claim_for_building")
+def claim_job_for_building(db: Session = Depends(get_db)):
+    """Atomically claim the oldest NOT_RUNNABLE job for image building.
+
+    The job's status is set to IMAGE_BUILDING so no other builder will pull it.
+    Returns the job dict, or a message when no unbuilt jobs are available.
+    """
+    try:
+        job = job_service.claim_job_for_building(db)
+        if job is None:
+            return {"message": "No unbuilt jobs available"}
+        return job
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/release_to_not_runnable")
+def release_job_to_not_runnable(request: JobIDRequest, db: Session = Depends(get_db)):
+    """Release a job from IMAGE_BUILDING back to NOT_RUNNABLE.
+
+    Called by the Docker Image Builder when a system-level failure occurs so
+    another builder thread/instance can retry the job.
+    """
+    try:
+        job = job_service.release_job_to_not_runnable(db, request.job_id)
+        return {"job_id": job.id, "status": job.status.value}
+    except Exception as e:
+        return {"error": str(e)}
+
 @router.post("/save_vram_estimation")
 def save_vram_estimation(
     request: VramEstimationReport,

@@ -10,6 +10,8 @@ SCHEDULER_UPDATE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/update_job_to_vra
 SCHEDULER_FAILURE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/mark_failed"
 SCHEDULER_QUEUE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/unbuilt_jobs"
 SCHEDULER_LOG_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/logs"
+SCHEDULER_CLAIM_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/claim_for_building"
+SCHEDULER_RELEASE_URL = SCHEDULER_BASE_URL.rstrip("/") + "/jobs/release_to_not_runnable"
 
 OBJECT_STORE_URL = os.environ.get("OBJECT_STORE_URL", "http://localhost:8010").rstrip("/")
 OBJECT_STORE_BUCKET = os.environ.get("OBJECT_STORE_BUCKET", "uploads")
@@ -21,6 +23,7 @@ DOCKER_HUB_PASSWORD = os.environ.get("DOCKER_HUB_PASSWORD", "")
 
 # App Settings
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
+MAX_CONCURRENT_BUILDS = int(os.environ.get("MAX_CONCURRENT_BUILDS", "3"))
 DB_PATH = os.environ.get("DB_PATH", "/data/builder.db")
 
 # Debugging

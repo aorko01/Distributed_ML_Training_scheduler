@@ -33,7 +33,8 @@ def mocked_env():
         patch.object(builder, "docker") as mock_docker,
         patch.object(builder, "docker_login") as mock_login,
         patch.object(builder, "prune_old_base_images") as mock_prune,
-        patch.object(builder, "fetch_unbuilt_jobs") as mock_fetch,
+        patch.object(builder, "claim_job_for_building") as mock_claim,
+        patch.object(builder, "release_job_to_not_runnable") as mock_release,
         patch.object(builder, "download_job_archive") as mock_dl,
         patch.object(builder, "extract_job_archive") as mock_extract,
         patch.object(builder, "find_project_dir") as mock_find,
@@ -42,11 +43,16 @@ def mocked_env():
         patch.object(builder, "notify_scheduler_job_failed") as mock_failed,
     ):
         mock_docker.from_env.return_value = MagicMock()
-        mock_fetch.return_value = []
+        mock_claim.return_value = None
         yield {
-            "docker": mock_docker, "fetch": mock_fetch,
-            "download": mock_dl, "extract": mock_extract, "find": mock_find,
-            "build": mock_build, "ready": mock_ready,
+            "docker": mock_docker,
+            "claim": mock_claim,
+            "release": mock_release,
+            "download": mock_dl,
+            "extract": mock_extract,
+            "find": mock_find,
+            "build": mock_build,
+            "ready": mock_ready,
             "failed": mock_failed,
         }
 
@@ -91,7 +97,6 @@ class TestExtractJobArchive:
     def test_invalid_bytes_raise_and_cleanup(self):
         import tempfile
 
-        before = set()
         with pytest.raises(Exception):
             builder.extract_job_archive(b"not a zip", "j1")
         # extract dir must have been removed (no leftover job_j1_ dirs)
@@ -102,69 +107,89 @@ class TestExtractJobArchive:
         assert leftovers == []
 
 
-class TestScanAndProcess:
+class TestWorkerLoop:
     def test_fetch_failure_returns_quietly(self, mocked_env):
-        mocked_env["fetch"].side_effect = Exception("scheduler down")
-        builder.scan_and_process(mocked_env["docker"].from_env.return_value)  # no raise
+        mocked_env["claim"].side_effect = [Exception("scheduler down"), KeyboardInterrupt]
+        with patch.object(builder.time, "sleep"):
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
+
+    def test_no_jobs_sleeps(self, mocked_env):
+        mocked_env["claim"].side_effect = [None, KeyboardInterrupt]
+        with patch.object(builder.time, "sleep") as mock_sleep:
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
+        mock_sleep.assert_called_with(builder.POLL_INTERVAL)
 
     def test_malformed_jobs_skipped(self, mocked_env):
-        mocked_env["fetch"].return_value = [
-            {"id": "", "object_key": "k", "docker_base_image": "b"},
-            {"id": "j2"},  # missing object_key/base_image
+        mocked_env["claim"].side_effect = [
+            {"id": "j1"},  # missing object_key/base_image
+            KeyboardInterrupt,
         ]
-        builder.scan_and_process(mocked_env["docker"].from_env.return_value)
+        with pytest.raises(KeyboardInterrupt):
+            builder.worker_loop(mocked_env["docker"].from_env.return_value)
+        mocked_env["release"].assert_called_once_with("j1")
         mocked_env["build"].assert_not_called()
 
     def test_training_success(self, mocked_env):
-        mocked_env["fetch"].return_value = [_training_job("j1")]
+        mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
         mocked_env["download"].return_value = _zip_bytes()
         mocked_env["extract"].return_value = "/tmp/extract"
         mocked_env["find"].return_value = "/tmp/extract/proj"
         mocked_env["build"].return_value = None
         mocked_env["ready"].return_value = True
-        with patch.object(builder.shutil, "rmtree") as mock_rmtree:
-            builder.scan_and_process(mocked_env["docker"].from_env.return_value)
+        with patch.object(builder.shutil, "rmtree"):
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
         mocked_env["build"].assert_called_once()
         args = mocked_env["build"].call_args[0]
         assert args[1] == "j1" and args[3] == "python train.py"
+        mocked_env["ready"].assert_called_once_with("j1")
 
     def test_notify_failure(self, mocked_env):
-        mocked_env["fetch"].return_value = [_training_job("j1")]
+        mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
         mocked_env["download"].return_value = _zip_bytes()
         mocked_env["extract"].return_value = "/tmp/extract"
         mocked_env["find"].return_value = "/tmp/extract/proj"
         mocked_env["build"].return_value = None
         mocked_env["ready"].return_value = False
         with patch.object(builder.shutil, "rmtree"):
-            builder.scan_and_process(mocked_env["docker"].from_env.return_value)
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
+        mocked_env["ready"].assert_called_once_with("j1")
 
     def test_user_failure_reported(self, mocked_env):
-        mocked_env["fetch"].return_value = [_training_job("j1")]
+        mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
         mocked_env["download"].return_value = _zip_bytes()
         mocked_env["extract"].return_value = "/tmp/extract"
         mocked_env["find"].return_value = "/tmp/extract/proj"
         mocked_env["build"].return_value = ("user", "pip failed")
         mocked_env["failed"].return_value = True
         with patch.object(builder.shutil, "rmtree"):
-            builder.scan_and_process(mocked_env["docker"].from_env.return_value)
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
         mocked_env["failed"].assert_called_once_with("j1", "user", "pip failed")
 
-    def test_system_failure_kept_pending(self, mocked_env):
-        mocked_env["fetch"].return_value = [_training_job("j1")]
+    def test_system_failure_released(self, mocked_env):
+        mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
         mocked_env["download"].return_value = _zip_bytes()
         mocked_env["extract"].return_value = "/tmp/extract"
         mocked_env["find"].return_value = "/tmp/extract/proj"
         mocked_env["build"].return_value = ("system", "daemon down")
         with patch.object(builder.shutil, "rmtree"):
-            builder.scan_and_process(mocked_env["docker"].from_env.return_value)
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
         mocked_env["failed"].assert_not_called()
+        mocked_env["release"].assert_called_once_with("j1")
 
     def test_download_exception_becomes_system_result(self, mocked_env):
-        mocked_env["fetch"].return_value = [_training_job("j1")]
+        mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
         mocked_env["download"].side_effect = Exception("store down")
         with patch.object(builder.shutil, "rmtree"):
-            builder.scan_and_process(mocked_env["docker"].from_env.return_value)
-        mocked_env["failed"].assert_not_called()  # system failures are not reported
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
+        mocked_env["failed"].assert_not_called()
+        mocked_env["release"].assert_called_once_with("j1")
 
 
 class TestMain:
@@ -174,8 +199,9 @@ class TestMain:
             patch.object(builder, "docker") as mock_docker,
             patch.object(builder, "docker_login") as mock_login,
             patch.object(builder, "prune_old_base_images") as mock_prune,
-            patch.object(builder, "scan_and_process") as mock_scan,
-            patch.object(builder.time, "sleep", side_effect=[None, KeyboardInterrupt]),
+            patch.object(builder, "worker_loop") as mock_worker,
+            patch.object(builder.ThreadPoolExecutor, "__enter__") as mock_executor,
+            patch.object(builder.time, "sleep", side_effect=KeyboardInterrupt),
         ):
             mock_docker.from_env.return_value = MagicMock()
             with pytest.raises(KeyboardInterrupt):
@@ -183,18 +209,18 @@ class TestMain:
         mock_init.assert_called_once()
         mock_login.assert_called_once()
         assert mock_prune.call_count >= 1
-        assert mock_scan.call_count == 2
 
-    def test_main_survives_scan_errors(self):
+    def test_main_survives_prune_errors(self):
         with (
             patch.object(builder, "init_db"),
             patch.object(builder, "docker") as mock_docker,
             patch.object(builder, "docker_login"),
-            patch.object(builder, "prune_old_base_images"),
             patch.object(
-                builder, "scan_and_process", side_effect=Exception("boom")
+                builder, "prune_old_base_images", side_effect=[Exception("boom"), None]
             ),
-            patch.object(builder.time, "sleep", side_effect=KeyboardInterrupt),
+            patch.object(builder, "worker_loop"),
+            patch.object(builder.ThreadPoolExecutor, "__enter__"),
+            patch.object(builder.time, "sleep", side_effect=[None, KeyboardInterrupt]),
         ):
             mock_docker.from_env.return_value = MagicMock()
             with pytest.raises(KeyboardInterrupt):

@@ -105,6 +105,37 @@ class TestGetNotRunnableJobs:
         assert [j["id"] for j in jobs] == [j1.id]
 
 
+class TestClaimAndReleaseForBuilding:
+    def test_claim_job_success(self, db):
+        user = make_user(db)
+        job = make_job(db, user.user_id, status=JobStatus.NOT_RUNNABLE)
+        claimed = job_service.claim_job_for_building(db)
+        assert claimed is not None
+        assert claimed["id"] == job.id
+        assert claimed["status"] == JobStatus.IMAGE_BUILDING.value
+        assert claimed["flag"] == "image_building"
+
+    def test_claim_job_no_jobs(self, db):
+        assert job_service.claim_job_for_building(db) is None
+
+    def test_release_job_success(self, db):
+        user = make_user(db)
+        job = make_job(db, user.user_id, status=JobStatus.IMAGE_BUILDING)
+        released = job_service.release_job_to_not_runnable(db, job.id)
+        assert released.status == JobStatus.NOT_RUNNABLE
+
+    def test_release_job_not_found(self, db):
+        with pytest.raises(Exception, match="Job not found"):
+            job_service.release_job_to_not_runnable(db, "nonexistent-job")
+
+    def test_release_job_wrong_status(self, db):
+        user = make_user(db)
+        job = make_job(db, user.user_id, status=JobStatus.NOT_RUNNABLE)
+        with pytest.raises(Exception, match="Job is not in IMAGE_BUILDING state"):
+            job_service.release_job_to_not_runnable(db, job.id)
+
+
+
 class TestVramEstimationStrategy:
     @pytest.mark.asyncio()
     async def test_highest_vram_worker_gets_pending_job(self, db, fake_redis):

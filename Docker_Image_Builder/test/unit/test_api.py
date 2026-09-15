@@ -117,3 +117,47 @@ class TestNotifyFailed:
     def test_exception_false(self):
         with patch.object(api.requests, "post", side_effect=Exception("down")):
             assert api.notify_scheduler_job_failed("j", "user", "r") is False
+
+
+class TestClaimJobForBuilding:
+    def test_returns_job_on_success(self):
+        with patch.object(
+            api.requests, "post", return_value=_resp(200, {"id": "j1"})
+        ):
+            assert api.claim_job_for_building() == {"id": "j1"}
+
+    def test_no_jobs_returns_none(self):
+        with patch.object(
+            api.requests,
+            "post",
+            return_value=_resp(200, {"message": "No unbuilt jobs available"}),
+        ):
+            assert api.claim_job_for_building() is None
+
+    def test_error_returns_none(self):
+        with patch.object(
+            api.requests, "post", return_value=_resp(200, {"error": "failed"})
+        ):
+            assert api.claim_job_for_building() is None
+
+    def test_exception_returns_none(self):
+        with patch.object(api.requests, "post", side_effect=Exception("down")):
+            assert api.claim_job_for_building() is None
+
+
+class TestReleaseJobToNotRunnable:
+    def test_success_returns_true(self):
+        with patch.object(
+            api.requests, "post", return_value=_resp(200, {"status": "NOT_RUNNABLE"})
+        ):
+            assert api.release_job_to_not_runnable("j1") is True
+
+    def test_error_returns_false(self):
+        with patch.object(
+            api.requests, "post", return_value=_resp(200, {"error": "failed"})
+        ):
+            assert api.release_job_to_not_runnable("j1") is False
+
+    def test_exception_returns_false(self):
+        with patch.object(api.requests, "post", side_effect=Exception("down")):
+            assert api.release_job_to_not_runnable("j1") is False

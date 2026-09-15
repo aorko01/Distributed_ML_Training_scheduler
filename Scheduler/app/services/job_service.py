@@ -109,6 +109,59 @@ def get_not_runnable_jobs(db: Session):
     ]
 
 
+def claim_job_for_building(db: Session) -> dict | None:
+    """Atomically claim the oldest NOT_RUNNABLE job for image building.
+
+    Sets the job's status to IMAGE_BUILDING so that no other builder thread
+    or instance will pull the same job. Returns the job dict (shaped via
+    ``_format_job_response`` with flag ``"image_building"``) or ``None`` when
+    no unbuilt job is available.
+
+    SQLite serializes write transactions, so a simple query-then-update inside
+    a single commit is safe. For PostgreSQL, ``with_for_update(skip_locked=True)``
+    can be added later.
+    """
+    job = (
+        db.query(Job)
+        .filter(Job.status == JobStatus.NOT_RUNNABLE)
+        .order_by(Job.created_at)
+        .first()
+    )
+
+    if not job:
+        return None
+
+    job.status = JobStatus.IMAGE_BUILDING
+    db.commit()
+    db.refresh(job)
+
+    return _format_job_response(job, flag="image_building")
+
+
+def release_job_to_not_runnable(db: Session, job_id: str) -> Job:
+    """Release a job that is currently IMAGE_BUILDING back to NOT_RUNNABLE.
+
+    Used when a builder encounters a system-level failure and the job should be
+    retried by another builder thread/instance. Raises an exception if the job
+    is not found or is not in the IMAGE_BUILDING state.
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+
+    if not job:
+        raise Exception("Job not found")
+
+    if job.status != JobStatus.IMAGE_BUILDING:
+        raise Exception(
+            f"Job is not in IMAGE_BUILDING state (current: {job.status.value})"
+        )
+
+    job.status = JobStatus.NOT_RUNNABLE
+    db.commit()
+    db.refresh(job)
+
+    return job
+
+
 import asyncio
 from app.core.redis import redis_client
 
