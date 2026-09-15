@@ -41,6 +41,7 @@ class TestWorkerInfo:
                 workerId="w", hostname="h", ipAddress="1.1.1.1", os="Linux",
                 platform="linux", arch="x86_64", schedulerUrl="http://s",
                 heartbeatIntervalSec=5, jobPollIntervalSec=10,
+                maxConcurrentJobs=2,
                 dockerAvailable=True, cudaAvailable=False, cpus=8,
                 memTotalGb=32.0, gpuCount=1, gpuName="A100", gpuVramTotalGb=80.0,
             ),
@@ -137,6 +138,23 @@ class TestConfig:
         resp = client.get("/api/config")
         assert resp.status_code == 200
         assert "schedulerUrl" in resp.json()
+
+    def test_update_and_roundtrip_max_concurrent_jobs(self, client, restore_runtime_config):
+        with (
+            patch.object(server.telemetry, "record_event"),
+            patch.object(server.runtime_config, "get",
+                         return_value=3.0),
+        ):
+            resp = client.put(
+                "/api/config", json={"maxConcurrentJobs": 3}
+            )
+        assert resp.status_code == 200
+        resp2 = client.get("/api/config")
+        assert resp2.status_code == 200
+        assert resp2.json()["maxConcurrentJobs"] == 3.0
+        from server import runtime_config
+        assert runtime_config.get("max_concurrent_jobs") == 3.0
+
 
     def test_update_intervals(self, client, restore_runtime_config):
         with patch.object(server.telemetry, "record_event"):

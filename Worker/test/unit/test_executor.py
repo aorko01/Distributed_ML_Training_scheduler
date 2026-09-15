@@ -471,7 +471,7 @@ class TestFinalizeJob:
         ):
             executor._finalize_job("j", "img", "/out", monitor, 0.0, True)
         executor.api.mark_job_completed.assert_called_once_with("j")
-        mock_clear.assert_called_once()
+        mock_clear.assert_called_once_with("j")
 
     def test_pending_uploads_keep_dir(self, executor):
         monitor = MagicMock()
@@ -480,10 +480,11 @@ class TestFinalizeJob:
         with (
             patch.object(JobExecutor, "_remove_output_dir") as mock_rm,
             patch.object(JobExecutor, "_record_job"),
-            patch.object(executor_module, "clear_running_job"),
+            patch.object(executor_module, "clear_running_job") as mock_clear,
         ):
             executor._finalize_job("j", "img", "/out", monitor, 0.0, True)
         mock_rm.assert_not_called()
+        mock_clear.assert_called_once_with("j")
 
     def test_failure_marks_failed(self, executor):
         monitor = MagicMock()
@@ -492,11 +493,12 @@ class TestFinalizeJob:
         with (
             patch.object(JobExecutor, "_remove_output_dir", return_value=True),
             patch.object(JobExecutor, "_record_job"),
-            patch.object(executor_module, "clear_running_job"),
+            patch.object(executor_module, "clear_running_job") as mock_clear,
         ):
             executor._finalize_job("j", "img", "/out", monitor, 0.0, False,
                                    "user", "bad code")
         executor.api.mark_job_failed.assert_called_once_with("j", "user", "bad code")
+        mock_clear.assert_called_once_with("j")
 
 
 class TestFlushAndAppendLogs:
@@ -506,13 +508,14 @@ class TestFlushAndAppendLogs:
         executor.api.send_logs.assert_not_called()
 
     def test_flush_throttled(self, executor):
-        executor._log_push_buffer = ["a"]
         executor.api.send_logs = MagicMock()
+        state = executor._get_job_log_state("j")
+        state.log_push_buffer = ["a"]
+        state.last_log_push = 99.0
         with (
             patch.object(executor_module.time, "monotonic", return_value=100.0),
             patch.object(executor_module.runtime_config, "get", return_value=60.0),
         ):
-            executor._last_log_push = 99.0
             executor._flush_log_push("j")
             executor.api.send_logs.assert_not_called()
             executor._flush_log_push("j", force=True)
@@ -528,7 +531,8 @@ class TestFlushAndAppendLogs:
         store.download.return_value = "base-line".encode()
         store.upload_bytes.return_value = True
         with patch.object(executor_module.runtime_config, "get", return_value=60.0):
-            executor._build_log_base = None
+            state = executor._get_job_log_state("j")
+            state.build_log_base = None
             executor._append_build_log("j", store, ["l1", "l2"], force=True)
         content = store.upload_bytes.call_args[0][1].decode()
         assert "base-line" in content and "l1" in content
@@ -538,10 +542,11 @@ class TestFlushAndAppendLogs:
         store.download.return_value = None
         store.upload_bytes.return_value = False
         with patch.object(executor_module.runtime_config, "get", return_value=60.0):
-            executor._build_log_base = None
-            executor._last_log_upload = None
+            state = executor._get_job_log_state("j")
+            state.build_log_base = None
+            state.last_log_upload = None
             executor._append_build_log("j", store, ["l1"], force=True)
-        assert executor._last_log_upload is None
+        assert state.last_log_upload is None
 
 
 class TestProcessJob:
@@ -595,6 +600,7 @@ class TestResumePersisted:
 
     def test_missing_job_id_clears(self, executor):
         with (
+            patch.object(executor_module, "load_running_jobs", return_value=[]),
             patch.object(executor_module, "load_running_job", return_value={"x": 1}),
             patch.object(executor_module, "clear_running_job") as mock_clear,
         ):
@@ -642,3 +648,262 @@ class TestResumePersisted:
         ):
             assert executor.resume_persisted_job_if_any() is True
         mock_retry.assert_called_once()
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="R3: a persisted entry missing job_id calls clear_running_job(None), "
+        "which deletes the whole state file and wipes every other job's resume "
+        "marker. Remove this marker once malformed entries are skipped/removed "
+        "without clearing all persisted jobs.",
+    )
+    def test_malformed_entry_does_not_wipe_all_state(self, executor):
+        executor.api.resume_job = MagicMock(return_value=None)
+        with (
+            patch.object(executor_module, "load_running_jobs",
+                         return_value=[{"saved_at": 0.0},
+                                       {"job_id": "j2", "saved_at": 0.0}]),
+            patch.object(executor_module, "get_gpu_info",
+                         return_value=("A100", 1, 1, 1, 1)),
+            patch.object(executor_module, "clear_running_job") as mock_clear,
+        ):
+            executor.resume_persisted_job_if_any()
+        # The malformed entry must never trigger a clear-all.
+        assert not any(
+            call.args and call.args[0] is None
+            for call in mock_clear.call_args_list
+        )
+        assert ("j2",) in [call.args for call in mock_clear.call_args_list]
+
+
+class TestConcurrentExecution:
+    def test_active_jobs_count_starts_zero(self, executor):
+        assert executor.active_jobs_count == 0
+
+    def test_register_and_unregister_job(self, executor):
+        executor._register_job("j1", 2.0)
+        assert executor.active_jobs_count == 1
+        assert executor.is_job_active("j1")
+        executor._unregister_job("j1")
+        assert executor.active_jobs_count == 0
+        assert not executor.is_job_active("j1")
+
+    def test_multiple_active_jobs(self, executor):
+        executor._register_job("j1", 2.0)
+        executor._register_job("j2", 4.0)
+        assert executor.active_jobs_count == 2
+        assert executor.is_job_active("j1")
+        assert executor.is_job_active("j2")
+        executor._unregister_job("j1")
+        assert executor.active_jobs_count == 1
+        assert not executor.is_job_active("j1")
+        assert executor.is_job_active("j2")
+        executor._unregister_job("j2")
+        assert executor.active_jobs_count == 0
+
+    def test_get_effective_free_vram(self, executor):
+        """Effective free VRAM should subtract active jobs' requirements
+        when GPUtil hasn't yet reflected their allocations."""
+        executor._register_job("j1", 2.0)
+        executor._register_job("j2", 3.0)
+        # total=5.1, free=10.0 → current_used=5.1-10.0<0 → max(0, -4.9)=0
+        # Need active > current_used for an adjustment.
+        # total=12.0, free=10.0 → current_used=2.0, active=5.0
+        # unobserved = 5.0-2.0 = 3.0, effective = 10.0-3.0 = 7.0
+        effective = executor.get_effective_free_vram(10.0, 12.0)
+        assert effective == 7.0
+
+    def test_get_effective_free_vram_no_active_jobs(self, executor):
+        effective = executor.get_effective_free_vram(10.0, 80.0)
+        assert effective == 10.0
+
+    def test_get_effective_free_vram_no_total(self, executor):
+        executor._register_job("j1", 2.0)
+        effective = executor.get_effective_free_vram(10.0, 0.0)
+        assert effective == 8.0
+
+    def test_per_job_log_state_isolation(self, executor):
+        """Each job should have independent log state."""
+        s1 = executor._get_job_log_state("j1")
+        s2 = executor._get_job_log_state("j2")
+        assert s1 is not None
+        assert s2 is not None
+        assert s1 is not s2
+        s1.log_push_buffer.append("line from j1")
+        s2.log_push_buffer.append("line from j2")
+        assert s1.log_push_buffer == ["line from j1"]
+        assert s2.log_push_buffer == ["line from j2"]
+
+    def test_drop_job_log_state(self, executor):
+        executor._get_job_log_state("j1")
+        assert "j1" in executor._job_logs
+        executor._drop_job_log_state("j1")
+        assert "j1" not in executor._job_logs
+
+    def test_reset_log_state_per_job(self, executor):
+        state = executor._get_job_log_state("j1")
+        state.log_push_buffer = ["a"]
+        state.last_log_push = 100.0
+        executor._reset_log_state("j1")
+        assert state.log_push_buffer == []
+        assert state.last_log_push is None
+
+    def test_has_unresumed_job_true(self, executor):
+        with patch.object(executor_module, "load_running_jobs",
+                          return_value=[{"job_id": "j1", "saved_at": 0.0}]):
+            assert executor.has_unresumed_job() is True
+
+    def test_has_unresumed_job_false_when_active(self, executor):
+        executor._register_job("j1", 2.0)
+        with patch.object(executor_module, "load_running_jobs",
+                          return_value=[{"job_id": "j1", "saved_at": 0.0}]):
+            assert executor.has_unresumed_job() is False
+
+    def test_has_unresumed_job_false_when_none(self, executor):
+        with (
+            patch.object(executor_module, "load_running_jobs", return_value=[]),
+            patch.object(executor_module, "load_running_job", return_value=None),
+        ):
+            assert executor.has_unresumed_job() is False
+
+    def test_process_job_tracks_active(self, executor):
+        """process_job should register and unregister job in active_jobs."""
+        executor.pull_docker_image = MagicMock(return_value=True)
+        executor.handle_training = MagicMock()
+        executor.api.mark_job_failed = MagicMock()
+
+        job = {"id": "j1", "flag": "training", "vram_required": 2.0}
+        with patch.object(executor_module, "save_running_job"):
+            executor.process_job(job)
+
+        assert not executor.is_job_active("j1")
+        executor.handle_training.assert_called_once()
+
+    def test_process_job_unregisters_on_failure(self, executor):
+        """process_job should unregister job even if pull fails."""
+        executor.pull_docker_image = MagicMock(return_value=False)
+        executor.api.mark_job_failed = MagicMock()
+
+        job = {"id": "j1", "flag": "training"}
+        with patch.object(executor_module, "save_running_job"):
+            executor.process_job(job)
+
+        assert not executor.is_job_active("j1")
+        executor.api.mark_job_failed.assert_called_once()
+
+    def test_success_resumes_releases_capacity(self, executor):
+        """successful resume must release the capacity slot."""
+        executor.api.resume_job = MagicMock(
+            return_value={"resume_command": "r", "command": "c"}
+        )
+        with (
+            patch.object(executor_module, "load_running_job",
+                          return_value={"job_id": "j1"}),
+            patch.object(executor_module, "get_gpu_info",
+                         return_value=("A100", 1, 1, 1, 1)),
+            patch.object(JobExecutor, "pull_docker_image", return_value=True),
+            patch.object(JobExecutor, "handle_retry"),
+        ):
+            result = executor.resume_persisted_job_if_any()
+        assert result is True
+        assert executor.active_jobs_count == 0
+        assert executor.get_effective_free_vram(10.0, 80.0) == 10.0
+
+    def test_pull_failure_releases_capacity(self, executor):
+        executor.api.resume_job = MagicMock(
+            return_value={"resume_command": "r", "command": "c"}
+        )
+        with (
+            patch.object(executor_module, "load_running_job",
+                          return_value={"job_id": "j1"}),
+            patch.object(executor_module, "get_gpu_info",
+                         return_value=("A100", 1, 1, 1, 1)),
+            patch.object(JobExecutor, "pull_docker_image", return_value=False),
+        ):
+            result = executor.resume_persisted_job_if_any()
+        assert result is False
+        assert executor.active_jobs_count == 0
+
+    def test_exception_releases_capacity(self, executor):
+        executor.api.resume_job = MagicMock(
+            return_value={"resume_command": "r", "command": "c"}
+        )
+        with (
+            patch.object(executor_module, "load_running_job",
+                          return_value={"job_id": "j1"}),
+            patch.object(executor_module, "get_gpu_info",
+                         return_value=("A100", 1, 1, 1, 1)),
+            patch.object(JobExecutor, "pull_docker_image",
+                         side_effect=Exception("boom")),
+        ):
+            result = executor.resume_persisted_job_if_any()
+        assert result is False
+        assert executor.active_jobs_count == 0
+
+    def test_capacity_freed_after_unregister(self, executor):
+        """Unregistering a job must restore effective free VRAM."""
+        executor._register_job("j1", 2.0)
+        executor._register_job("j2", 3.0)
+        assert executor.get_effective_free_vram(10.0, 12.0) == 7.0
+        executor._unregister_job("j1")
+        executor._unregister_job("j2")
+        assert executor.get_effective_free_vram(10.0, 12.0) == 10.0
+
+    def test_multi_job_resume_respects_capacity(self, executor):
+        """With 1 occupied slot, only 1 of 2 persisted jobs resumes."""
+        executor._register_job("running", 2.0)
+        with patch.object(executor_module, "load_running_jobs",
+                           return_value=[
+                               {"job_id": "j1", "saved_at": 0.0},
+                               {"job_id": "j2", "saved_at": 0.0},
+                           ]):
+            executor.api.resume_job = MagicMock(
+                return_value={"resume_command": "r", "command": "c"}
+            )
+            with (
+                patch.object(executor_module, "get_gpu_info",
+                             return_value=("A100", 1, 1, 1, 1)),
+                patch.object(JobExecutor, "pull_docker_image", return_value=True),
+                patch.object(JobExecutor, "handle_retry"),
+            ):
+                result = executor.resume_persisted_job_if_any()
+        assert result is True
+        assert executor.active_jobs_count == 1
+
+    def test_multi_job_resume_all_within_capacity(self, executor):
+        """With 2 free slots, both persisted jobs resume."""
+        with patch.object(executor_module, "load_running_jobs",
+                           return_value=[
+                               {"job_id": "j1", "saved_at": 0.0},
+                               {"job_id": "j2", "saved_at": 0.0},
+                           ]):
+            executor.api.resume_job = MagicMock(
+                side_effect=[
+                    {"resume_command": "r1", "command": "c1"},
+                    {"resume_command": "r2", "command": "c2"},
+                ]
+            )
+            with (
+                patch.object(executor_module, "get_gpu_info",
+                             return_value=("A100", 1, 1, 1, 1)),
+                patch.object(JobExecutor, "pull_docker_image", return_value=True),
+                patch.object(JobExecutor, "handle_retry") as mock_retry,
+            ):
+                result = executor.resume_persisted_job_if_any()
+        assert result is True
+        assert mock_retry.call_count == 2
+
+    def test_has_unresumed_job_true_after_partial_resume(self, executor):
+        executor._register_job("j1", 2.0)
+        with patch.object(executor_module, "load_running_jobs",
+                          return_value=[
+                              {"job_id": "j1", "saved_at": 0.0},
+                              {"job_id": "j2", "saved_at": 0.0},
+                          ]):
+            assert executor.has_unresumed_job() is True
+
+    def test_max_concurrent_jobs_default(self):
+        """max_concurrent_jobs should be available via runtime_config."""
+        import runtime_config
+        max_jobs = runtime_config.get("max_concurrent_jobs")
+        assert max_jobs >= 1.0
+        assert isinstance(max_jobs, float)

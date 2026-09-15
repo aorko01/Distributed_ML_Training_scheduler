@@ -66,6 +66,60 @@ class TestJobState:
 
         job_state.clear_running_job()  # no raise
 
+    def test_save_multiple_jobs(self, state_file):
+        import job_state
+
+        job_state.save_running_job("job-1")
+        job_state.save_running_job("job-2")
+        loaded = job_state.load_running_jobs()
+        assert len(loaded) == 2
+        ids = {j["job_id"] for j in loaded}
+        assert "job-1" in ids
+        assert "job-2" in ids
+
+    def test_clear_one_preserves_other(self, state_file):
+        import os
+        import job_state
+
+        job_state.save_running_job("job-1")
+        job_state.save_running_job("job-2")
+        job_state.clear_running_job("job-1")
+        assert os.path.exists(state_file)
+        loaded = job_state.load_running_jobs()
+        assert len(loaded) == 1
+        assert loaded[0]["job_id"] == "job-2"
+
+    def test_clear_last_removes_file(self, state_file):
+        import os
+        import job_state
+
+        job_state.save_running_job("job-1")
+        job_state.clear_running_job("job-1")
+        assert not os.path.exists(state_file)
+
+    def test_migrate_legacy_single_job_format(self, state_file):
+        import json
+        import job_state
+
+        with open(state_file, "w") as f:
+            json.dump({"job_id": "legacy-1", "saved_at": 12345.0}, f)
+        loaded = job_state.load_running_jobs()
+        assert len(loaded) == 1
+        assert loaded[0]["job_id"] == "legacy-1"
+        job_state.save_running_job("legacy-2")
+        loaded = job_state.load_running_jobs()
+        ids = {j["job_id"] for j in loaded}
+        assert "legacy-1" in ids
+        assert "legacy-2" in ids
+
+    def test_corrupt_file_returns_empty(self, state_file):
+        import job_state
+
+        with open(state_file, "w") as f:
+            f.write("{not valid json")
+        assert job_state.load_running_jobs() == []
+        job_state.clear_running_job("any")  # no raise
+
 
 # ---------------------------------------------------------------------------
 # runtime_config

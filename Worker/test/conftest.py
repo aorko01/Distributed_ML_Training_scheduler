@@ -75,10 +75,4 @@ def executor(mock_api):
         from executor import JobExecutor
 
         ex = JobExecutor(mock_api)
-    # per-job log buffers normally created by handle_training/_resume_attempt
-    ex._build_log_base = None
-    ex._last_log_upload = None
-    ex._log_push_buffer = []
-    ex._last_log_push = None
-    ex._job_log_buffer = []
     return ex
