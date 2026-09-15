@@ -270,17 +270,23 @@ def test_push_auth_failure_triggers_relogin_and_retry(monkeypatch, tmp_path):
         logins_before_push = len(login_calls)
 
         # Simulate ONLY the trigger: first push looks auth-rejected, every
-        # later push delegates to the real bound method.
+        # later push delegates to the real method.
+        #
+        # NOTE: DockerClient.images is a @property returning a fresh
+        # ImageCollection on every access, so patching a single
+        # `client.images` instance never affects the fresh instance
+        # `docker_ops` looks up internally. Patch the class instead.
         push_calls: list = []
-        original_push = client.images.push
+        images_cls = type(client.images)
+        original_push = images_cls.push
 
-        def _flaky_push(*args, **kwargs):
+        def _flaky_push(self, *args, **kwargs):
             push_calls.append((args, kwargs))
             if len(push_calls) == 1:
                 return iter([{"error": "unauthorized: authentication required"}])
-            return original_push(*args, **kwargs)
+            return original_push(self, *args, **kwargs)
 
-        monkeypatch.setattr(client.images, "push", _flaky_push)
+        monkeypatch.setattr(images_cls, "push", _flaky_push)
 
         # -- 2. Real build + retry loop ------------------------------------
         result = docker_ops.build_push_and_clean(
