@@ -7,6 +7,11 @@ upload/
 uploads/
 **/uploads/
 .env
+# Real credentials for the Docker Hub e2e test. The committed `.env_test`
+# template contains placeholders only; local/CI filled-in copies must never
+# be committed.
+.env_test
+**/.env_test
 
 __pycache__/
 **/__pycache__/
