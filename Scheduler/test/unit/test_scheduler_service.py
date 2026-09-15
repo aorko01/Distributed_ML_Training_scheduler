@@ -6,7 +6,7 @@ import pytest
 
 from app.models.job_model import JobStatus
 from app.services import scheduler_service
-from conftest import make_job, make_user, make_worker
+from test.helpers import make_job, make_user, make_worker
 
 
 class TestGetOverview:

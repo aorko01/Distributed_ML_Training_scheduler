@@ -8,7 +8,7 @@ import pytest
 
 from app.models.job_model import JobStatus
 from app.services import watchdog_service
-from conftest import make_job, make_user
+from test.helpers import make_job, make_user
 
 
 class TestLastHeartbeatTs:

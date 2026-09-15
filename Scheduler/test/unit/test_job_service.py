@@ -8,7 +8,7 @@ from app.models.job_model import JobPriority, JobStatus
 from app.models.worker_model import Worker
 from app.schemas.worker_schema import WorkerResource
 from app.services import job_service
-from conftest import make_job, make_user, make_worker
+from test.helpers import make_job, make_user, make_worker
 
 
 def _request(worker_id="w1", gpu_type="NVIDIA A100", free_vram=20.0):

@@ -5,7 +5,7 @@ import pytest
 
 from app.schemas.resource_schema import ResourceConfig, ResourceRequestCreate
 from app.services import resource_service
-from conftest import make_user, make_worker
+from test.helpers import make_user, make_worker
 
 
 class TestGetResourceOptions:

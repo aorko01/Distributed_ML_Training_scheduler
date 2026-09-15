@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   unit-tests:
-    name: ${{ matrix.component }} (Python ${{ matrix.python-version }})
+    name: ${{ matrix.component }} unit (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -25,8 +25,6 @@ jobs:
         working-directory: ${{ matrix.component }}
 
     env:
-      # Unit tests are hermetic (SQLite + mocks); these env vars only need
-      # to exist so import-time config validation passes.
       DATABASE_URL: "sqlite:///:memory:"
       DOCKER_HUB_USERNAME: "ci-test-user"
       DOCKER_HUB_PASSWORD: ""
@@ -55,4 +53,92 @@ jobs:
 
       - name: Run unit tests
         run: |
-          python -m pytest tests/ -q
+          python -m pytest test/unit/ -q
+
+  integration-tests:
+    name: ${{ matrix.component }} integration (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+        component: ["Scheduler", "Docker_Image_Builder", "Worker"]
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.component }}
+
+    env:
+      DATABASE_URL: "sqlite:///:memory:"
+      DOCKER_HUB_USERNAME: "ci-test-user"
+      DOCKER_HUB_PASSWORD: ""
+      SCHEDULER_URL: "http://localhost:8000"
+      SCHEDULER_API_URL: "http://localhost:8000"
+      OBJECT_STORE_URL: "http://localhost:8010"
+      JWT_SECRET_KEY: "ci-test-secret-key"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            ${{ matrix.component }}/requirements.txt
+
+      - name: Install component + test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run integration tests
+        run: |
+          python -m pytest test/integration/ -q --ignore=test/integration/__init__.py
+
+  e2e-tests:
+    name: ${{ matrix.component }} e2e (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+        component: ["Scheduler", "Docker_Image_Builder", "Worker"]
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.component }}
+
+    env:
+      DATABASE_URL: "sqlite:///:memory:"
+      DOCKER_HUB_USERNAME: "ci-test-user"
+      DOCKER_HUB_PASSWORD: ""
+      SCHEDULER_URL: "http://localhost:8000"
+      SCHEDULER_API_URL: "http://localhost:8000"
+      OBJECT_STORE_URL: "http://localhost:8010"
+      JWT_SECRET_KEY: "ci-test-secret-key"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            ${{ matrix.component }}/requirements.txt
+
+      - name: Install component + test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run e2e tests
+        run: |
+          python -m pytest test/e2e/ -q --ignore=test/e2e/__init__.py

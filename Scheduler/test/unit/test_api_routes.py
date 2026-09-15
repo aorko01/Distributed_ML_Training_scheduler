@@ -12,7 +12,7 @@ from app.api import auth_route, docker_route, jobs_route, resource_route
 from app.api import scheduler_route, worker_route
 from app.models.job_model import JobStatus
 from app.utils.auth import create_access_token, get_password_hash
-from conftest import make_job, make_user, make_worker
+from test.helpers import make_job, make_user, make_worker
 
 
 def _client_with(router, db, user=None, db_dep=None):

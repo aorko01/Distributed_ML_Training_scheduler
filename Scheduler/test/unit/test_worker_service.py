@@ -6,7 +6,7 @@ import pytest
 from app.schemas.heartbeat_schema import HeartbeatSchema
 from app.schemas.worker_schema import WorkerInfo
 from app.services import worker_service
-from conftest import make_job, make_user, make_worker
+from test.helpers import make_job, make_user, make_worker
 
 
 def _worker_info(worker_id="w1", **overrides):

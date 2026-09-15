@@ -4,7 +4,7 @@ import pytest
 from app.schemas.user_schema import UserCreate, UserUpdate
 from app.services import auth_service
 from app.utils.auth import verify_password
-from conftest import make_user
+from test.helpers import make_user
 
 
 class TestCreateUser:
