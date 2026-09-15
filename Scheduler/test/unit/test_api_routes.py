@@ -267,7 +267,7 @@ class TestJobsRoutes:
 
     def test_update_to_pending_and_runnable(self, db):
         user = make_user(db)
-        job = make_job(db, user.user_id)
+        job = make_job(db, user.user_id, status=JobStatus.IMAGE_BUILDING)
         client = self._client(db)
         resp = client.post("/update_job_to_vram_estimation_pending", json={"job_id": job.id})
         assert resp.json()["status"] == "VRAM_ESTIMATION_PENDING"

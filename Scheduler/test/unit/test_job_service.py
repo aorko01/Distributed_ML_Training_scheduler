@@ -56,14 +56,14 @@ class TestCreateJob:
 class TestStateTransitions:
     def test_not_runnable_to_pending(self, db):
         user = make_user(db)
-        job = make_job(db, user.user_id)
+        job = make_job(db, user.user_id, status=JobStatus.IMAGE_BUILDING)
         out = job_service.set_job_vram_estimation_pending(db, job.id)
         assert out.status == JobStatus.VRAM_ESTIMATION_PENDING
 
     def test_pending_requires_not_runnable(self, db):
         user = make_user(db)
         job = make_job(db, user.user_id, status=JobStatus.RUNNABLE)
-        with pytest.raises(Exception, match="NOT_RUNNABLE"):
+        with pytest.raises(Exception, match="Job is not in IMAGE_BUILDING state"):
             job_service.set_job_vram_estimation_pending(db, job.id)
 
     def test_pending_to_runnable(self, db):
