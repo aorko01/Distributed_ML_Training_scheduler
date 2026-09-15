@@ -8,7 +8,7 @@ import tempfile
 import docker
 
 from config import logger, POLL_INTERVAL, SCHEDULER_QUEUE_URL
-from database import init_db, is_job_processed, mark_job_processed
+from database import init_db
 from api import fetch_unbuilt_jobs, download_job_archive, notify_scheduler_job_ready, notify_scheduler_job_failed
 from docker_ops import docker_login, build_push_and_clean, prune_old_base_images
 
@@ -78,12 +78,7 @@ def extract_job_archive(archive_bytes: bytes, job_id: str) -> str:
         raise
     return extract_dir
 
-def scan_and_process():
-    client = docker.from_env()
-    docker_login(client)
-
-    prune_old_base_images(client)
-
+def scan_and_process(client: docker.DockerClient):
     try:
         jobs = fetch_unbuilt_jobs()
     except Exception as e:
@@ -98,11 +93,6 @@ def scan_and_process():
 
         if not job_id or not object_key or not base_image:
             logger.warning("Skipping malformed job payload: %s", job)
-            continue
-
-        if is_job_processed(job_id):
-            logger.info("Job %s already built but still unbuilt in scheduler, re-notifying...", job_id)
-            notify_scheduler_job_ready(job_id)
             continue
 
         logger.info("=" * 50)
@@ -126,7 +116,6 @@ def scan_and_process():
         if result is None:
             notified = notify_scheduler_job_ready(job_id)
             if notified:
-                mark_job_processed(job_id)
                 logger.info("Job %s completed.", job_id)
             else:
                 logger.error("Job %s built but scheduler notification failed, will retry.", job_id)
@@ -149,10 +138,20 @@ def main():
     logger.info("Watching scheduler queue: %s", SCHEDULER_QUEUE_URL)
     
     init_db()
+    client = docker.from_env()
+    docker_login(client)
+    prune_old_base_images(client)
+
+    last_prune_time = time.monotonic()
+    PRUNE_INTERVAL = 86400  # 24 hours in seconds
 
     while True:
         try:
-            scan_and_process()
+            now = time.monotonic()
+            if now - last_prune_time >= PRUNE_INTERVAL:
+                prune_old_base_images(client)
+                last_prune_time = now
+            scan_and_process(client)
         except Exception as e:
             logger.error("Error during scan cycle: %s", e, exc_info=True)
         time.sleep(POLL_INTERVAL)

@@ -14,12 +14,35 @@ from config import (
 from database import update_base_image_usage, get_old_base_images, remove_base_image_record
 from api import send_log_lines
 
-def docker_login(client: docker.DockerClient):
-    if DOCKER_HUB_PASSWORD:
+_AUTH_ERROR_PATTERNS = ("unauthorized", "authentication required", "no basic auth credentials", "token is expired")
+
+def _is_auth_error(error_msg: str) -> bool:
+    lower = error_msg.lower()
+    return any(pat in lower for pat in _AUTH_ERROR_PATTERNS)
+
+_logged_in = False
+
+def docker_login(client: docker.DockerClient) -> bool:
+    global _logged_in
+    if not DOCKER_HUB_PASSWORD:
+        logger.info("No Docker Hub password provided, assuming already logged in.")
+        _logged_in = True
+        return True
+    try:
         logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
         client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
-    else:
-        logger.info("No Docker Hub password provided, assuming already logged in.")
+        _logged_in = True
+        return True
+    except Exception as e:
+        logger.error("Docker Hub login failed: %s", e)
+        _logged_in = False
+        return False
+
+def ensure_logged_in(client: docker.DockerClient) -> bool:
+    global _logged_in
+    if _logged_in:
+        return True
+    return docker_login(client)
 
 def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
     if "\n" in base_image or "\r" in base_image or not base_image.strip():
@@ -265,18 +288,38 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         # Push progress/status is logged locally only; only build-related lines are
         # streamed to the scheduler UI.
         logger.info("Pushing image %s ...", image_tag)
-        push_output = client.images.push(repository=image_tag.rsplit(":", 1)[0], tag="latest", stream=True, decode=True)
-        for chunk in push_output:
-            if "error" in chunk:
-                logger.error("Push error for job %s: %s", job_id, chunk["error"])
-                error_line = f"Push error: {chunk['error']}"
-                emit_build_lines(job_id, build_log_buffer, [error_line])
-                maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
-                return "system", error_line
-            status = chunk.get("status", "").strip()
-            progress = chunk.get("progress", "").strip()
-            if status:
-                logger.info("  [push] %s%s", status, f" {progress}" if progress else "")
+        push_failed = False
+        for attempt in range(2):
+            push_output = client.images.push(repository=image_tag.rsplit(":", 1)[0], tag="latest", stream=True, decode=True)
+            auth_error = False
+            for chunk in push_output:
+                if "error" in chunk:
+                    error_msg = chunk["error"]
+                    logger.error("Push error for job %s: %s", job_id, error_msg)
+                    if _is_auth_error(error_msg) and attempt == 0:
+                        logger.warning("Auth error during push, re-logging in and retrying ...")
+                        auth_error = True
+                        break
+                    error_line = f"Push error: {error_msg}"
+                    emit_build_lines(job_id, build_log_buffer, [error_line])
+                    maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+                    push_failed = True
+                    break
+                status = chunk.get("status", "").strip()
+                progress = chunk.get("progress", "").strip()
+                if status:
+                    logger.info("  [push] %s%s", status, f" {progress}" if progress else "")
+            if auth_error:
+                global _logged_in
+                _logged_in = False
+                if not ensure_logged_in(client):
+                    emit_build_lines(job_id, build_log_buffer, ["Push failed: could not re-login to Docker Hub"])
+                    maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
+                    push_failed = True
+                continue
+            break
+        if push_failed:
+            return "system", error_line
         maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
                 
     except docker.errors.ImageNotFound as e:

@@ -10,30 +10,11 @@ def get_connection():
 def init_db():
     with get_connection() as conn:
         conn.execute('''
-            CREATE TABLE IF NOT EXISTS processed_jobs (
-                job_id TEXT PRIMARY KEY,
-                processed_at TIMESTAMP
-            )
-        ''')
-        conn.execute('''
             CREATE TABLE IF NOT EXISTS base_images (
                 image_name TEXT PRIMARY KEY,
                 last_used_at TIMESTAMP
             )
         ''')
-
-def is_job_processed(job_id: str) -> bool:
-    with get_connection() as conn:
-        cursor = conn.execute("SELECT 1 FROM processed_jobs WHERE job_id = ?", (job_id,))
-        return cursor.fetchone() is not None
-
-def mark_job_processed(job_id: str):
-    with get_connection() as conn:
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT OR REPLACE INTO processed_jobs (job_id, processed_at) VALUES (?, ?)",
-            (job_id, now)
-        )
 
 def update_base_image_usage(image_name: str):
     with get_connection() as conn:

@@ -1,4 +1,4 @@
-"""Unit tests for database.py (SQLite idempotency + base-image LRU)."""
+"""Unit tests for database.py (base-image LRU)."""
 import os
 
 import pytest
@@ -9,7 +9,6 @@ import database
 class TestInitDb:
     def test_creates_tables_and_is_idempotent(self, temp_db):
         database.init_db()  # second call must not fail
-        assert database.is_job_processed("nothing") is False
         assert database.get_old_base_images() == []
 
     def test_creates_parent_dirs(self, tmp_path, monkeypatch):
@@ -17,22 +16,6 @@ class TestInitDb:
         monkeypatch.setattr(database, "DB_PATH", nested)
         database.init_db()
         assert os.path.exists(nested)
-
-
-class TestProcessedJobs:
-    def test_mark_and_check(self, temp_db):
-        assert database.is_job_processed("j1") is False
-        database.mark_job_processed("j1")
-        assert database.is_job_processed("j1") is True
-
-    def test_mark_is_upsert(self, temp_db):
-        database.mark_job_processed("j1")
-        database.mark_job_processed("j1")
-        assert database.is_job_processed("j1") is True
-
-    def test_independent_job_ids(self, temp_db):
-        database.mark_job_processed("j1")
-        assert database.is_job_processed("j2") is False
 
 
 class TestBaseImages:
