@@ -3,8 +3,6 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import main
 
 
@@ -196,13 +194,6 @@ class TestJobLoop:
         ]
         assert len(resume_threads) >= 1
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="R1: job_loop does not reserve a capacity slot before starting the "
-        "worker thread, so a job whose thread has not called _register_job yet is "
-        "not counted and job_loop over-pulls beyond max_concurrent_jobs. Remove this "
-        "marker once job_loop reserves synchronously before t.start().",
-    )
     def test_reserves_capacity_before_worker_thread_registers(self):
         """job_loop must count a pulled job immediately, not only once the
         background thread reaches _register_job."""
@@ -244,13 +235,6 @@ class TestJobLoop:
         ex.gate.set()
         assert api.pull_job.call_count <= 2
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="R2: while a persisted job is being resumed (resume thread has not "
-        "registered yet) job_loop spawns a new resume thread on every poll, so the "
-        "same job can be resumed concurrently. Remove this marker once resume is "
-        "reserved/deduplicated in job_loop.",
-    )
     def test_resume_spawned_once_per_persisted_job(self):
         """A persisted job must not get multiple concurrent resume attempts."""
         import executor as executor_module

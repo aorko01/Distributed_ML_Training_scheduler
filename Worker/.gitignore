@@ -1,0 +1,50 @@
+venv/
+**/venv/
+output/
+**/output/
+upload/
+**/upload/
+uploads/
+**/uploads/
+.env
+# Real credentials for the Docker Hub e2e test. The committed `.env_test`
+# template contains placeholders only; local/CI filled-in copies must never
+# be committed.
+.env_test
+**/.env_test
+
+running_job.json
+**/running_job.json
+*.tmp
+**/.tmp
+
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*/run.sh
+debug_jobs/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

@@ -42,6 +42,7 @@ class WorkerInfo(BaseModel):
     schedulerUrl: str
     heartbeatIntervalSec: int
     jobPollIntervalSec: int
+    maxConcurrentJobs: int
     dockerAvailable: bool
     cudaAvailable: bool
     cpus: int
@@ -99,6 +100,7 @@ class ConfigState(BaseModel):
     schedulerUrl: str
     heartbeatIntervalSec: float
     jobPollIntervalSec: float
+    maxConcurrentJobs: float
     logPushIntervalSec: float
     logUploadIntervalSec: float
 
@@ -129,6 +131,7 @@ def _build_worker_info() -> WorkerInfo:
         gpuCount=num_gpus,
         gpuName=gpu_name,
         gpuVramTotalGb=total_vram,
+        maxConcurrentJobs=int(runtime_config.get("max_concurrent_jobs")),
     )
 
 
@@ -210,6 +213,7 @@ def get_config():
         schedulerUrl=config_module.get_scheduler_url(),
         heartbeatIntervalSec=runtime_config.get("heartbeat_interval"),
         jobPollIntervalSec=runtime_config.get("job_poll_interval"),
+        maxConcurrentJobs=runtime_config.get("max_concurrent_jobs"),
         logPushIntervalSec=runtime_config.get("log_push_interval"),
         logUploadIntervalSec=runtime_config.get("log_upload_interval"),
     )
@@ -219,6 +223,7 @@ class ConfigUpdate(BaseModel):
     schedulerUrl: str | None = None
     heartbeatIntervalSec: float | None = None
     jobPollIntervalSec: float | None = None
+    maxConcurrentJobs: float | None = None
     logPushIntervalSec: float | None = None
     logUploadIntervalSec: float | None = None
 
@@ -230,6 +235,8 @@ def update_config(update: ConfigUpdate):
         pairs["heartbeat_interval"] = update.heartbeatIntervalSec
     if update.jobPollIntervalSec is not None:
         pairs["job_poll_interval"] = update.jobPollIntervalSec
+    if update.maxConcurrentJobs is not None:
+        pairs["max_concurrent_jobs"] = update.maxConcurrentJobs
     if update.logPushIntervalSec is not None:
         pairs["log_push_interval"] = update.logPushIntervalSec
     if update.logUploadIntervalSec is not None:

@@ -649,13 +649,6 @@ class TestResumePersisted:
             assert executor.resume_persisted_job_if_any() is True
         mock_retry.assert_called_once()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="R3: a persisted entry missing job_id calls clear_running_job(None), "
-        "which deletes the whole state file and wipes every other job's resume "
-        "marker. Remove this marker once malformed entries are skipped/removed "
-        "without clearing all persisted jobs.",
-    )
     def test_malformed_entry_does_not_wipe_all_state(self, executor):
         executor.api.resume_job = MagicMock(return_value=None)
         with (

@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import threading
 import docker
 
 from config import (
@@ -17,11 +18,22 @@ from api import SchedulerAPI
 from object_store import ObjectStore
 from output_monitor import META_FILE, OutputFileMonitor, write_baseline, load_baseline
 from telemetry import record_job, record_event
-from job_state import load_running_job, save_running_job, clear_running_job
+from job_state import (
+    load_running_job, load_running_jobs, save_running_job, clear_running_job,
+)
 from hardware import get_gpu_info
 import runtime_config
 
 logger = logging.getLogger("executor")
+
+
+class _JobLogState:
+    def __init__(self):
+        self.build_log_base: str | None = None
+        self.last_log_upload: float | None = None
+        self.log_push_buffer: list[str] = []
+        self.last_log_push: float | None = None
+        self.job_log_buffer: list[str] = []
 
 
 def _docker_host_path(path: str) -> str:
@@ -46,6 +58,75 @@ class JobExecutor:
             self.docker_client = docker.from_env()
         except Exception as e:
             logger.error("Failed to connect to Docker daemon: %s", e)
+
+        self._active_jobs_lock = threading.Lock()
+        self._active_jobs: dict[str, dict] = {}
+        self._pending: set[str] = set()
+        self._resuming: set[str] = set()
+
+        self._job_logs_lock = threading.Lock()
+        self._job_logs: dict[str, _JobLogState] = {}
+
+    @property
+    def active_jobs_count(self) -> int:
+        with self._active_jobs_lock:
+            if self._pending:
+                return int(runtime_config.get("max_concurrent_jobs") or 2)
+            return len(self._active_jobs)
+
+    def is_job_active(self, job_id: str) -> bool:
+        with self._active_jobs_lock:
+            return job_id in self._active_jobs
+
+    def get_active_job_ids(self) -> set[str]:
+        with self._active_jobs_lock:
+            return set(self._active_jobs.keys())
+
+    def begin_resume(self, job_id: str) -> bool:
+        with self._active_jobs_lock:
+            if job_id in self._active_jobs or job_id in self._resuming:
+                return False
+            self._resuming.add(job_id)
+            return True
+
+    def end_resume(self, job_id: str):
+        with self._active_jobs_lock:
+            self._resuming.discard(job_id)
+
+    def get_effective_free_vram(self, free_vram: float, total_vram: float = 0.0) -> float:
+        """Compute free VRAM accounting for active jobs whose allocations may
+        not yet be reflected by GPUtil (e.g. image pulling or startup phase)."""
+        with self._active_jobs_lock:
+            active_required = sum(
+                float(job.get("vram_required") or 0.0)
+                for job in self._active_jobs.values()
+            )
+        if active_required <= 0.0:
+            return free_vram
+
+        if total_vram > 0.0:
+            current_used = max(0.0, total_vram - free_vram)
+            unobserved = max(0.0, active_required - current_used)
+            return round(max(0.0, free_vram - unobserved), 2)
+        else:
+            return round(max(0.0, free_vram - active_required), 2)
+
+    def has_unresumed_job(self) -> bool:
+        """True if there is any persisted job not currently actively executing."""
+        persisted = []
+        try:
+            persisted = load_running_jobs()
+        except Exception:
+            persisted = []
+        if not persisted:
+            single = load_running_job()
+            if single:
+                persisted = [single]
+        for item in persisted:
+            jid = item.get("job_id") if isinstance(item, dict) else None
+            if jid and not self.is_job_active(jid) and jid not in self._resuming:
+                return True
+        return False
 
     @staticmethod
     def _record_job(job_id: str, image_name: str, flag: str, status: str,
@@ -240,13 +321,31 @@ class JobExecutor:
             started_at, round(report.get("peak_reserved_memory", 0.0), 2),
         )
 
-    def _reset_log_state(self):
+    def _reset_log_state(self, job_id: str | None = None):
         """Clear per-run log buffers/throttle markers before a container run."""
-        self._build_log_base = None
-        self._last_log_upload = None
-        self._log_push_buffer = []
-        self._last_log_push = None
-        self._job_log_buffer: list[str] = []
+        if job_id is None:
+            return
+        state = self._get_job_log_state(job_id)
+        state.build_log_base = None
+        state.last_log_upload = None
+        state.log_push_buffer = []
+        state.last_log_push = None
+        state.job_log_buffer = []
+
+    def _get_job_log_state(self, job_id: str | None) -> _JobLogState | None:
+        """Retrieve or create the per-job log state. Returns None for legacy
+        callers that pass no job_id (existing tests that manipulate the legacy
+        attributes directly)."""
+        if job_id is None:
+            return None
+        with self._job_logs_lock:
+            if job_id not in self._job_logs:
+                self._job_logs[job_id] = _JobLogState()
+            return self._job_logs[job_id]
+
+    def _drop_job_log_state(self, job_id: str):
+        with self._job_logs_lock:
+            self._job_logs.pop(job_id, None)
 
     def handle_training(self, job_id: str, image_name: str):
         started_at = time.time()
@@ -265,8 +364,7 @@ class JobExecutor:
         monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
         monitor.start()
 
-        self._reset_log_state()
-
+        self._reset_log_state(job_id)
         self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
             monitor, started_at,
@@ -301,7 +399,7 @@ class JobExecutor:
                              job_id, failure_reason)
                 self._record_job(job_id, image_name, "training", "failed", started_at)
                 self.api.mark_job_failed(job_id, failure_type, failure_reason)
-                clear_running_job()
+                clear_running_job(job_id)
                 return
 
             logger.warning(
@@ -319,7 +417,7 @@ class JobExecutor:
             self.api.mark_job_failed(
                 job_id, "system", "Retry job has no original command"
             )
-            clear_running_job()
+            clear_running_job(job_id)
             return
 
         logger.info("Job %s: starting fresh training run.", job_id)
@@ -365,7 +463,7 @@ class JobExecutor:
         monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
         monitor.start()
 
-        self._reset_log_state()
+        self._reset_log_state(job_id)
 
         success, failure_type, failure_reason = self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
@@ -428,6 +526,7 @@ class JobExecutor:
             cmd.extend(command_args)
         logger.info("Running container: %s", " ".join(cmd))
 
+        job_log = self._get_job_log_state(job_id)
         success = False
         failure_type = "system"
         failure_reason = "Training container failed to start"
@@ -439,13 +538,15 @@ class JobExecutor:
 
             for line in iter(proc.stdout.readline, ""):
                 line = line.rstrip("\r\n")
-                self._job_log_buffer.append(line)
-                self._log_push_buffer.append(line)
+                if job_log is not None:
+                    job_log.job_log_buffer.append(line)
                 self._flush_log_push(job_id)
                 logger.info("[job %s] %s", job_id, line)
 
-                if time.monotonic() - (self._last_log_upload or 0) >= runtime_config.get("log_upload_interval"):
-                    self._append_build_log(job_id, store, self._job_log_buffer)
+                last_upload = job_log.last_log_upload if job_log is not None else None
+                if time.monotonic() - (last_upload or 0) >= runtime_config.get("log_upload_interval"):
+                    if job_log is not None:
+                        self._append_build_log(job_id, store, job_log.job_log_buffer)
 
             proc.wait()
             success = proc.returncode == 0
@@ -458,7 +559,8 @@ class JobExecutor:
             logger.error("Execution error for job %s: %s", job_id, e)
 
         self._flush_log_push(job_id, force=True)
-        self._append_build_log(job_id, store, self._job_log_buffer, force=True)
+        if job_log is not None:
+            self._append_build_log(job_id, store, job_log.job_log_buffer, force=True)
         monitor.stop()
 
         if not finalize:
@@ -519,7 +621,8 @@ class JobExecutor:
             self._record_job(job_id, image_name, "training", "failed", started_at)
             self.api.mark_job_failed(job_id, failure_type, failure_reason)
 
-        clear_running_job()
+        self._drop_job_log_state(job_id)
+        clear_running_job(job_id)
 
     @staticmethod
     def _throttled(last: float | None, interval: float, force: bool) -> bool:
@@ -531,19 +634,18 @@ class JobExecutor:
         )
 
     def _flush_log_push(self, job_id: str, force: bool = False):
-        if not self._log_push_buffer:
+        state = self._get_job_log_state(job_id)
+        if state is None or not state.log_push_buffer:
             return
-
         now = time.monotonic()
         if self._throttled(
-            self._last_log_push, runtime_config.get("log_push_interval"), force
+            state.last_log_push, runtime_config.get("log_push_interval"), force
         ):
             return
-
-        lines = self._log_push_buffer
-        self._log_push_buffer = []
+        lines = state.log_push_buffer
+        state.log_push_buffer = []
         self.api.send_logs(job_id, lines)
-        self._last_log_push = now
+        state.last_log_push = now
 
     def _append_build_log(
         self, job_id: str, store: ObjectStore, log_buffer: list[str], force: bool = False
@@ -551,19 +653,26 @@ class JobExecutor:
         if not log_buffer:
             return
 
+        state = self._get_job_log_state(job_id)
+        if state is None:
+            return
+
+        build_log_base = state.build_log_base
+        last_log_upload = state.last_log_upload
+
         now = time.monotonic()
         if self._throttled(
-            self._last_log_upload, runtime_config.get("log_upload_interval"), force
+            last_log_upload, runtime_config.get("log_upload_interval"), force
         ):
             return
 
-        if self._build_log_base is None:
+        if build_log_base is None:
             existing = store.download(f"{job_id}/build.log")
-            self._build_log_base = (
+            build_log_base = (
                 existing.decode("utf-8", errors="replace") if existing else ""
             )
 
-        content = self._build_log_base
+        content = build_log_base
         if content and not content.endswith("\n"):
             content += "\n"
         content += "\n".join(log_buffer) + "\n"
@@ -571,7 +680,8 @@ class JobExecutor:
         if store.upload_bytes(
             f"{job_id}/build.log", content.encode("utf-8"), "text/plain"
         ):
-            self._last_log_upload = now
+            state.build_log_base = build_log_base
+            state.last_log_upload = now
 
     def process_job(self, job: dict):
         job_id = job.get("job_id") or job.get("id")
@@ -579,8 +689,6 @@ class JobExecutor:
         if not job_id:
             logger.error("Received job without job_id/id: %s", job)
             return
-        # Guard path traversal: job_id is used in OUTPUT_DIR joins, image tags
-        # and object-store keys. Reject separators to keep it inside its dir.
         if "/" in str(job_id) or "\\" in str(job_id) or ".." in str(job_id):
             logger.error("Rejecting job with unsafe job_id %r", job_id)
             try:
@@ -589,75 +697,143 @@ class JobExecutor:
                 pass
             return
         image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+        vram_required = job.get("vram_required")
 
-        if not self.pull_docker_image(image_name):
-            logger.error("Aborting job %s: image pull failed.", job_id)
-            self.api.mark_job_failed(
-                job_id, "system", f"Failed to pull Docker image {image_name}"
-            )
-            return
-
-        if flag == "vram_estimation":
-            self.handle_vram_estimation(job_id, image_name, job.get("command", ""))
-        elif flag == "training":
-            save_running_job(job_id)
-            self.handle_training(job_id, image_name)
-        elif flag == "retry":
-            save_running_job(job_id)
-            self.handle_retry(job_id, image_name, job.get("resume_command"),
-                              job.get("command"))
-        else:
-            # Unknown flags previously only warned, leaving the scheduler job
-            # stuck IN_PROGRESS forever. Fail it so the watchdog can requeue.
-            logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)
-            try:
-                self.api.mark_job_failed(job_id, "system", f"Unknown job flag: {flag}")
-            except Exception:
-                pass
-
-    def resume_persisted_job_if_any(self) -> bool:
-        """Pick up a job this worker was running before it died, if the scheduler
-        still has it IN_PROGRESS on this worker.
-
-        The scheduler only requeues a job (RETRY_NEEDED) after the worker has
-        missed heartbeats for several minutes, so a worker that comes back sooner
-        would otherwise leave the job stuck IN_PROGRESS with nothing running it.
-        The persisted marker lets the restarted worker resume it (restoring the
-        last checkpoints and running the resume command, falling back to a fresh
-        run if the resume fails).
-        """
-        state = load_running_job()
-        if not state:
-            return False
-
-        job_id = state.get("job_id")
-        if not job_id:
-            clear_running_job()
-            return False
+        self._register_job(job_id, vram_required)
+        self._finalize_job_log_state(job_id)
 
         try:
-            gpu_type, _, _, _, _ = get_gpu_info()
-            job = self.api.resume_job(job_id, gpu_type)
-        except Exception as e:
-            logger.warning("Could not contact scheduler to resume job %s; "
-                           "will retry later.", job_id)
-            return False
+            if not self.pull_docker_image(image_name):
+                logger.error("Aborting job %s: image pull failed.", job_id)
+                self.api.mark_job_failed(
+                    job_id, "system", f"Failed to pull Docker image {image_name}"
+                )
+                return
 
-        if job is None:
-            logger.info("Job %s is no longer in progress on this worker; "
-                        "dropping local resume state.", job_id)
-            clear_running_job()
-            return False
+            if flag == "vram_estimation":
+                self.handle_vram_estimation(job_id, image_name, job.get("command", ""))
+            elif flag == "training":
+                save_running_job(job_id)
+                self.handle_training(job_id, image_name)
+            elif flag == "retry":
+                save_running_job(job_id)
+                self.handle_retry(job_id, image_name, job.get("resume_command"),
+                                  job.get("command"))
+            else:
+                logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)
+                try:
+                    self.api.mark_job_failed(job_id, "system", f"Unknown job flag: {flag}")
+                except Exception:
+                    pass
+        finally:
+            self._unregister_job(job_id)
 
-        image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
-        logger.info("Resuming persisted job %s after worker restart.", job_id)
-        record_event("info", f"Resuming persisted job {job_id} after worker restart")
+    def resume_persisted_job_if_any(self) -> bool:
+        """Pick up jobs this worker was running before it died, if the
+        scheduler still has them IN_PROGRESS on this worker.
 
-        if not self.pull_docker_image(image_name):
-            logger.error("Aborting resume of job %s: image pull failed.", job_id)
-            clear_running_job()
-            return False
+        The scheduler only requeues a job (RETRY_NEEDED) after a worker
+        has missed heartbeats for several minutes, so a worker that comes
+        back sooner would otherwise leave the job stuck IN_PROGRESS with
+        nothing running it. Persisted jobs are kept so a restarted worker
+        can resume them. This method resumes all eligible persisted jobs
+        up to available capacity so a single call recovers as many as
+        possible without blocking the polling loop for the duration of
+        a long resume operation.
+        """
+        max_jobs = int(runtime_config.get("max_concurrent_jobs") or 2)
+        persisted = []
+        try:
+            persisted = load_running_jobs()
+        except Exception:
+            pass
+        if not persisted:
+            single = load_running_job()
+            if single:
+                persisted = [single]
 
-        self.handle_retry(job_id, image_name, job.get("resume_command"),
-                          job.get("command"))
-        return True
+        any_resumed = False
+        for item in persisted:
+            if self.active_jobs_count >= max_jobs:
+                break
+            if not isinstance(item, dict):
+                continue
+            job_id = item.get("job_id")
+            if not job_id:
+                has_valid = any(
+                    isinstance(other, dict) and other.get("job_id")
+                    for other in persisted
+                )
+                if has_valid:
+                    continue
+                clear_running_job()
+                continue
+            if self.is_job_active(job_id):
+                continue
+            try:
+                gpu_type, _, _, _, _ = get_gpu_info()
+                job = self.api.resume_job(job_id, gpu_type)
+            except Exception as e:
+                logger.warning("Could not contact scheduler to resume job %s; "
+                               "will retry later.", job_id)
+                continue
+
+            if job is None:
+                logger.info("Job %s is no longer in progress on this worker; "
+                            "dropping local resume state.", job_id)
+                clear_running_job(job_id)
+                continue
+
+            self._register_job(job_id, job.get("vram_required"))
+            self._finalize_job_log_state(job_id)
+            image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+            logger.info("Resuming persisted job %s after worker restart.", job_id)
+            record_event("info", f"Resuming persisted job {job_id} after worker restart")
+
+            try:
+                if not self.pull_docker_image(image_name):
+                    logger.error("Aborting resume of job %s: image pull failed.", job_id)
+                    clear_running_job(job_id)
+                    continue
+
+                self.handle_retry(job_id, image_name, job.get("resume_command"),
+                                  job.get("command"))
+                any_resumed = True
+            except Exception:
+                continue
+            finally:
+                self._unregister_job(job_id)
+                self.end_resume(job_id)
+        return any_resumed
+
+    def try_begin_job(self, job_id: str, vram_required: float | None = None) -> bool:
+        with self._active_jobs_lock:
+            if job_id in self._active_jobs or job_id in self._pending:
+                return False
+            self._active_jobs[job_id] = {
+                "started_at": time.time(),
+                "vram_required": vram_required,
+            }
+            self._pending.add(job_id)
+            return True
+
+    def _register_job(self, job_id: str, vram_required: float | None = None):
+        """Track a job as currently being executed."""
+        with self._active_jobs_lock:
+            if job_id in self._active_jobs:
+                self._pending.discard(job_id)
+                return
+            self._active_jobs[job_id] = {
+                "started_at": time.time(),
+                "vram_required": vram_required,
+            }
+
+    def _unregister_job(self, job_id: str):
+        """Remove a job from the active tracking set."""
+        with self._active_jobs_lock:
+            self._active_jobs.pop(job_id, None)
+            self._pending.discard(job_id)
+
+    def _finalize_job_log_state(self, job_id: str | None):
+        """Reset per-job log state before a new run starts."""
+        self._reset_log_state(job_id)
