@@ -4,6 +4,10 @@ import shutil
 import tempfile
 import time
 import threading
+import queue
+import signal
+import subprocess
+from collections.abc import Callable
 import docker
 import requests
 
@@ -43,6 +47,7 @@ def _is_transient_build_error(error_msg: str) -> bool:
     return any(pat in lower for pat in _TRANSIENT_BUILD_ERROR_PATTERNS)
 
 _logged_in = False
+_login_lock = threading.RLock()
 
 # The classic Docker builder is not safe for concurrent builds that share a
 # base image: builds reuse the same intermediate cache layers and one build's
@@ -59,27 +64,43 @@ def _get_build_lock(base_image: str) -> threading.Lock:
     with _build_locks_guard:
         return _build_locks.setdefault(base_image, threading.Lock())
 
+
+def image_tag_for_attempt(job_id: str, attempt_id: str | None = None) -> str:
+    """Return a unique registry tag for a build attempt.
+
+    Legacy/direct callers without an attempt ID retain the old ``latest`` tag.
+    Scheduler-managed builds use an attempt tag so stale and replacement
+    builders never publish to the same registry reference.
+    """
+    if not attempt_id:
+        tag = "latest"
+    else:
+        safe_attempt = re.sub(r"[^a-zA-Z0-9_.-]", "-", attempt_id)[:64]
+        tag = f"build-{safe_attempt}"
+    return f"{DOCKER_HUB_USERNAME}/{job_id}:{tag}"
+
 def docker_login(client: docker.DockerClient) -> bool:
     global _logged_in
-    if not DOCKER_HUB_PASSWORD:
-        logger.info("No Docker Hub password provided, assuming already logged in.")
-        _logged_in = True
-        return True
-    try:
-        logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
-        client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
-        _logged_in = True
-        return True
-    except Exception as e:
-        logger.error("Docker Hub login failed: %s", e)
-        _logged_in = False
-        return False
+    with _login_lock:
+        if not DOCKER_HUB_PASSWORD:
+            logger.info("No Docker Hub password provided, assuming already logged in.")
+            _logged_in = True
+            return True
+        try:
+            logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
+            client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
+            _logged_in = True
+            return True
+        except Exception as e:
+            logger.error("Docker Hub login failed: %s", e)
+            _logged_in = False
+            return False
 
 def ensure_logged_in(client: docker.DockerClient) -> bool:
-    global _logged_in
-    if _logged_in:
-        return True
-    return docker_login(client)
+    with _login_lock:
+        if _logged_in:
+            return True
+        return docker_login(client)
 
 def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
     if "\n" in base_image or "\r" in base_image or not base_image.strip():
@@ -238,14 +259,126 @@ def _extract_build_log_lines(error: docker.errors.BuildError) -> list[str]:
     return deduped
 
 
-def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: str, command: str, base_image: str) -> tuple[str, str] | None:
+def _terminate_process(process: subprocess.Popen) -> None:
+    """Terminate a cancellable docker CLI process and escalate if necessary."""
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=5)
+
+
+def _run_cancellable_docker_build(
+    build_dir: str,
+    image_tag: str,
+    should_cancel: Callable[[], bool],
+    on_line: Callable[[str], None],
+) -> tuple[int, list[str], bool]:
+    """Run ``docker build`` while allowing the heartbeat thread to abort it.
+
+    docker-py's high-level ``images.build`` consumes the whole response before
+    returning, so it cannot react to a cancellation event during a long RUN
+    step.  The CLI is already installed in the service image; terminating it
+    closes the daemon build request and cancels the in-flight build.
+    """
+    process = subprocess.Popen(
+        [
+            "docker",
+            "build",
+            "--rm",
+            "--force-rm",
+            "--tag",
+            image_tag,
+            build_dir,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    output_queue: queue.Queue[str | None] = queue.Queue()
+
+    def _read_output() -> None:
+        assert process.stdout is not None
+        try:
+            for raw_line in process.stdout:
+                output_queue.put(raw_line.rstrip("\r\n"))
+        finally:
+            output_queue.put(None)
+
+    reader = threading.Thread(
+        target=_read_output,
+        name=f"docker-build-output-{process.pid}",
+        daemon=True,
+    )
+    reader.start()
+
+    lines: list[str] = []
+    cancelled = False
+    stream_closed = False
+    while not stream_closed:
+        if should_cancel() and not cancelled:
+            cancelled = True
+            _terminate_process(process)
+
+        try:
+            line = output_queue.get(timeout=0.25)
+        except queue.Empty:
+            continue
+        if line is None:
+            stream_closed = True
+            continue
+        lines.append(line)
+        on_line(line)
+
+    if process.poll() is None:
+        process.wait()
+    reader.join(timeout=1)
+    return process.returncode, lines, cancelled
+
+
+def _remove_local_image(client: docker.DockerClient, image_tag: str) -> None:
+    try:
+        client.images.remove(image=image_tag, force=True)
+    except Exception as e:
+        logger.warning("Failed to delete local image %s: %s", image_tag, e)
+
+
+def build_push_and_clean(
+    client: docker.DockerClient,
+    job_id: str,
+    project_dir: str,
+    command: str,
+    base_image: str,
+    build_attempt_id: str | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[str, str] | None:
     """Build, push and clean up the job image.
 
     Returns None on success, or a (failure_type, reason) tuple on failure where
     failure_type is "user" (build/code error -> job FAILED) or "system"
-    (infra/daemon/registry error -> job RETRY_NEEDED).
+    (infra/daemon/registry error -> retry). "cancelled" means the scheduler
+    revoked the build lease, so the stale attempt must not publish or report a
+    terminal job state.
     """
-    image_tag = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+    image_tag = image_tag_for_attempt(job_id, build_attempt_id)
+    should_cancel = should_cancel or (lambda: False)
     safe_job_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(job_id or "job"))[:64] or "job"
     build_dir = tempfile.mkdtemp(prefix=f"build_{safe_job_id}_")
 
@@ -290,26 +423,70 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         # Serialize builds per base image to eliminate the race.
         build_lock = _get_build_lock(base_image)
         with build_lock:
+            if should_cancel():
+                return "cancelled", "Build lease was cancelled before Docker build"
             try:
-                _, build_logs = client.images.build(path=build_dir, tag=image_tag, rm=True, forcerm=True)
-                for chunk in build_logs:
-                    chunk_lines = []
-                    if "error" in chunk:
-                        chunk_lines.append(f"Docker error: {chunk['error']}")
-                    if "stream" in chunk and chunk["stream"].strip():
-                        for stream_line in chunk["stream"].splitlines():
-                            stream_line = stream_line.strip()
-                            if not stream_line or not should_upload_build_line(stream_line):
-                                continue
-                            chunk_lines.append(stream_line)
-                    if "status" in chunk and chunk["status"].strip():
-                        status_line = chunk["status"].strip()
-                        if should_upload_build_line(status_line):
-                            chunk_lines.append(status_line)
+                if build_attempt_id is not None:
+                    def _emit_cli_line(line: str) -> None:
+                        nonlocal last_upload_time
+                        clean = line.strip()
+                        if not clean or not should_upload_build_line(clean):
+                            return
+                        emit_build_lines(job_id, build_log_buffer, [clean])
+                        last_upload_time = maybe_upload_build_logs(
+                            job_id,
+                            "\n".join(build_log_buffer),
+                            last_upload_time,
+                        )
 
-                    emit_build_lines(job_id, build_log_buffer, chunk_lines)
-                    if chunk_lines:
-                        last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
+                    return_code, raw_lines, cancelled = _run_cancellable_docker_build(
+                        build_dir,
+                        image_tag,
+                        should_cancel,
+                        _emit_cli_line,
+                    )
+                    if cancelled:
+                        _remove_local_image(client, image_tag)
+                        return "cancelled", "Build lease expired or was reassigned"
+                    if return_code != 0:
+                        full_msg = "\n".join(raw_lines)
+                        reason = f"Docker build exited with status {return_code}"
+                        maybe_upload_build_logs(
+                            job_id,
+                            "\n".join(build_log_buffer),
+                            last_upload_time,
+                            force=True,
+                        )
+                        if _is_transient_build_error(full_msg):
+                            _remove_local_image(client, image_tag)
+                            return "system", f"Transient build failure: {reason}"
+                        _remove_local_image(client, image_tag)
+                        return "user", reason
+                else:
+                    _, build_logs = client.images.build(
+                        path=build_dir,
+                        tag=image_tag,
+                        rm=True,
+                        forcerm=True,
+                    )
+                    for chunk in build_logs:
+                        chunk_lines = []
+                        if "error" in chunk:
+                            chunk_lines.append(f"Docker error: {chunk['error']}")
+                        if "stream" in chunk and chunk["stream"].strip():
+                            for stream_line in chunk["stream"].splitlines():
+                                stream_line = stream_line.strip()
+                                if not stream_line or not should_upload_build_line(stream_line):
+                                    continue
+                                chunk_lines.append(stream_line)
+                        if "status" in chunk and chunk["status"].strip():
+                            status_line = chunk["status"].strip()
+                            if should_upload_build_line(status_line):
+                                chunk_lines.append(status_line)
+
+                        emit_build_lines(job_id, build_log_buffer, chunk_lines)
+                        if chunk_lines:
+                            last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time)
             except docker.errors.BuildError as e:
                 logger.error("Build failed for job %s: %s", job_id, e)
                 error_lines = _extract_build_log_lines(e)
@@ -339,15 +516,35 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         ])
         maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
+        if should_cancel():
+            _remove_local_image(client, image_tag)
+            return "cancelled", "Build lease expired before image push"
+
         # Push image (capture push status so registry/network issues are debuggable).
         # Push progress/status is logged locally only; only build-related lines are
         # streamed to the scheduler UI.
         logger.info("Pushing image %s ...", image_tag)
         push_failed = False
+        error_line = "Push failed"
         for attempt in range(2):
-            push_output = client.images.push(repository=image_tag.rsplit(":", 1)[0], tag="latest", stream=True, decode=True)
+            if should_cancel():
+                _remove_local_image(client, image_tag)
+                return "cancelled", "Build lease expired during image push"
+            repository, tag = image_tag.rsplit(":", 1)
+            push_output = client.images.push(
+                repository=repository,
+                tag=tag,
+                stream=True,
+                decode=True,
+            )
             auth_error = False
             for chunk in push_output:
+                if should_cancel():
+                    close = getattr(push_output, "close", None)
+                    if callable(close):
+                        close()
+                    _remove_local_image(client, image_tag)
+                    return "cancelled", "Build lease expired during image push"
                 if "error" in chunk:
                     error_msg = chunk["error"]
                     logger.error("Push error for job %s: %s", job_id, error_msg)
@@ -366,14 +563,18 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
                     logger.info("  [push] %s%s", status, f" {progress}" if progress else "")
             if auth_error:
                 global _logged_in
-                _logged_in = False
-                if not ensure_logged_in(client):
+                with _login_lock:
+                    _logged_in = False
+                if not docker_login(client):
+                    error_line = "Push failed: could not re-login to Docker Hub"
                     emit_build_lines(job_id, build_log_buffer, ["Push failed: could not re-login to Docker Hub"])
                     maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
                     push_failed = True
+                    break
                 continue
             break
         if push_failed:
+            _remove_local_image(client, image_tag)
             return "system", error_line
         maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
                 
@@ -390,10 +591,7 @@ def build_push_and_clean(client: docker.DockerClient, job_id: str, project_dir: 
         shutil.rmtree(build_dir, ignore_errors=True)
 
     logger.info("Deleting local built image %s ...", image_tag)
-    try:
-        client.images.remove(image=image_tag, force=True)
-    except Exception as e:
-        logger.warning("Failed to delete local image %s: %s", image_tag, e)
+    _remove_local_image(client, image_tag)
 
     # Only record base-image usage after a successful build+push. Recording
     # it up-front pollutes the LRU DB with failed/injected bases and prevents
@@ -413,7 +611,11 @@ def prune_old_base_images(client: docker.DockerClient):
     for image_name in old_images:
         logger.info("Attempting to prune old base image: %s", image_name)
         try:
-            client.images.remove(image=image_name, force=True)
+            # Coordinate pruning with builds that currently use this base.
+            # Without the same per-base lock, the daily prune thread can
+            # delete a cached base while another thread is building from it.
+            with _get_build_lock(image_name):
+                client.images.remove(image=image_name, force=True)
             logger.info("Successfully deleted old base image: %s", image_name)
             remove_base_image_record(image_name)
         except docker.errors.ImageNotFound:

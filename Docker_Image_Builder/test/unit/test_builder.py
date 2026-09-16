@@ -22,6 +22,7 @@ def _training_job(job_id="j1", **overrides):
         "object_key": f"{job_id}/a.zip",
         "command": "python train.py",
         "docker_base_image": "base:1",
+        "image_build_attempt_id": f"attempt-{job_id}",
     }
     job.update(overrides)
     return job
@@ -123,12 +124,14 @@ class TestWorkerLoop:
 
     def test_malformed_jobs_skipped(self, mocked_env):
         mocked_env["claim"].side_effect = [
-            {"id": "j1"},  # missing object_key/base_image
+            {"id": "j1", "image_build_attempt_id": "attempt-j1"},
             KeyboardInterrupt,
         ]
         with pytest.raises(KeyboardInterrupt):
             builder.worker_loop(mocked_env["docker"].from_env.return_value)
-        mocked_env["release"].assert_called_once_with("j1")
+        mocked_env["release"].assert_called_once_with(
+            "j1", builder.BUILDER_ID, "attempt-j1"
+        )
         mocked_env["build"].assert_not_called()
 
     def test_training_success(self, mocked_env):
@@ -144,7 +147,12 @@ class TestWorkerLoop:
         mocked_env["build"].assert_called_once()
         args = mocked_env["build"].call_args[0]
         assert args[1] == "j1" and args[3] == "python train.py"
-        mocked_env["ready"].assert_called_once_with("j1")
+        mocked_env["ready"].assert_called_once_with(
+            "j1",
+            builder.BUILDER_ID,
+            "attempt-j1",
+            builder.image_tag_for_attempt("j1", "attempt-j1"),
+        )
 
     def test_notify_failure(self, mocked_env):
         mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
@@ -156,7 +164,10 @@ class TestWorkerLoop:
         with patch.object(builder.shutil, "rmtree"):
             with pytest.raises(KeyboardInterrupt):
                 builder.worker_loop(mocked_env["docker"].from_env.return_value)
-        mocked_env["ready"].assert_called_once_with("j1")
+        mocked_env["ready"].assert_called_once()
+        mocked_env["release"].assert_called_once_with(
+            "j1", builder.BUILDER_ID, "attempt-j1"
+        )
 
     def test_user_failure_reported(self, mocked_env):
         mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
@@ -168,7 +179,23 @@ class TestWorkerLoop:
         with patch.object(builder.shutil, "rmtree"):
             with pytest.raises(KeyboardInterrupt):
                 builder.worker_loop(mocked_env["docker"].from_env.return_value)
-        mocked_env["failed"].assert_called_once_with("j1", "user", "pip failed")
+        mocked_env["failed"].assert_called_once_with(
+            "j1", "user", "pip failed", builder.BUILDER_ID, "attempt-j1"
+        )
+
+    def test_user_failure_notification_failure_releases_job(self, mocked_env):
+        mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
+        mocked_env["download"].return_value = _zip_bytes()
+        mocked_env["extract"].return_value = "/tmp/extract"
+        mocked_env["find"].return_value = "/tmp/extract/proj"
+        mocked_env["build"].return_value = ("user", "pip failed")
+        mocked_env["failed"].return_value = False
+        with patch.object(builder.shutil, "rmtree"):
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
+        mocked_env["release"].assert_called_once_with(
+            "j1", builder.BUILDER_ID, "attempt-j1"
+        )
 
     def test_system_failure_released(self, mocked_env):
         mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
@@ -180,7 +207,9 @@ class TestWorkerLoop:
             with pytest.raises(KeyboardInterrupt):
                 builder.worker_loop(mocked_env["docker"].from_env.return_value)
         mocked_env["failed"].assert_not_called()
-        mocked_env["release"].assert_called_once_with("j1")
+        mocked_env["release"].assert_called_once_with(
+            "j1", builder.BUILDER_ID, "attempt-j1"
+        )
 
     def test_download_exception_becomes_system_result(self, mocked_env):
         mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
@@ -189,7 +218,41 @@ class TestWorkerLoop:
             with pytest.raises(KeyboardInterrupt):
                 builder.worker_loop(mocked_env["docker"].from_env.return_value)
         mocked_env["failed"].assert_not_called()
-        mocked_env["release"].assert_called_once_with("j1")
+        mocked_env["release"].assert_called_once_with(
+            "j1", builder.BUILDER_ID, "attempt-j1"
+        )
+
+    def test_stale_attempt_cancellation_does_not_mutate_scheduler(self, mocked_env):
+        mocked_env["claim"].side_effect = [_training_job("j1"), KeyboardInterrupt]
+        mocked_env["download"].return_value = _zip_bytes()
+        mocked_env["extract"].return_value = "/tmp/extract"
+        mocked_env["find"].return_value = "/tmp/extract/proj"
+        mocked_env["build"].return_value = ("cancelled", "reassigned")
+        with patch.object(builder.shutil, "rmtree"):
+            with pytest.raises(KeyboardInterrupt):
+                builder.worker_loop(mocked_env["docker"].from_env.return_value)
+        mocked_env["ready"].assert_not_called()
+        mocked_env["failed"].assert_not_called()
+        mocked_env["release"].assert_not_called()
+
+
+class TestBuildLeaseRegistry:
+    def test_heartbeat_cancels_matching_stale_attempt(self):
+        registry = builder.BuildLeaseRegistry()
+        event = registry.register("j1", "a1")
+        registry.accept_heartbeat({
+            "heartbeat_timeout_seconds": 45,
+            "cancel_builds": [{"job_id": "j1", "attempt_id": "a1"}],
+        })
+        assert event.is_set()
+        assert registry.should_cancel("a1") is True
+
+    def test_heartbeat_payload_contains_active_builds(self):
+        registry = builder.BuildLeaseRegistry()
+        registry.register("j1", "a1")
+        assert registry.heartbeat_payload() == [
+            {"job_id": "j1", "attempt_id": "a1"}
+        ]
 
 
 class TestMain:
@@ -201,14 +264,19 @@ class TestMain:
             patch.object(builder, "prune_old_base_images") as mock_prune,
             patch.object(builder, "worker_loop") as mock_worker,
             patch.object(builder.ThreadPoolExecutor, "__enter__") as mock_executor,
-            patch.object(builder.time, "sleep", side_effect=KeyboardInterrupt),
+            patch.object(builder.threading, "Event") as mock_event,
+            patch.object(builder.threading, "Thread") as mock_thread,
         ):
             mock_docker.from_env.return_value = MagicMock()
-            with pytest.raises(KeyboardInterrupt):
-                builder.main()
+            mock_event.return_value.is_set.return_value = False
+            mock_event.return_value.wait.side_effect = KeyboardInterrupt
+            builder.main()
         mock_init.assert_called_once()
         mock_login.assert_called_once()
         assert mock_prune.call_count >= 1
+        mock_event.return_value.set.assert_called_once()
+        mock_thread.return_value.start.assert_called_once()
+        mock_thread.return_value.join.assert_called_once_with(timeout=2.0)
 
     def test_main_survives_prune_errors(self):
         with (
@@ -220,8 +288,10 @@ class TestMain:
             ),
             patch.object(builder, "worker_loop"),
             patch.object(builder.ThreadPoolExecutor, "__enter__"),
-            patch.object(builder.time, "sleep", side_effect=[None, KeyboardInterrupt]),
+            patch.object(builder.threading, "Event") as mock_event,
+            patch.object(builder.threading, "Thread"),
         ):
             mock_docker.from_env.return_value = MagicMock()
-            with pytest.raises(KeyboardInterrupt):
-                builder.main()
+            mock_event.return_value.is_set.return_value = False
+            mock_event.return_value.wait.side_effect = KeyboardInterrupt
+            builder.main()

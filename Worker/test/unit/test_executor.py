@@ -562,6 +562,19 @@ class TestFlushAndAppendLogs:
 
 
 class TestProcessJob:
+    def test_uses_attempt_specific_image_tag_from_scheduler(self, executor):
+        with (
+            patch.object(JobExecutor, "pull_docker_image", return_value=True) as pull,
+            patch.object(executor_module, "save_running_job"),
+            patch.object(JobExecutor, "handle_training"),
+        ):
+            executor.process_job({
+                "id": "j1",
+                "flag": "training",
+                "image_tag": "repo/j1:build-attempt-1",
+            })
+        pull.assert_called_once_with("repo/j1:build-attempt-1")
+
     def test_pull_failure_marks_failed(self, executor):
         executor.api.mark_job_failed = MagicMock()
         with patch.object(JobExecutor, "pull_docker_image", return_value=False):

@@ -57,5 +57,21 @@ class Job(Base):
     # Failure reporting (set by builder/worker when a job fails)
     failure_reason = Column(String, nullable=True)  # why the job failed / needs a retry
 
+    # Image-build lease.  ``image_build_attempt_id`` is a fencing token: every
+    # state-changing callback from an image builder must present the token that
+    # was returned when the job was claimed.  A timed-out/reassigned builder
+    # therefore cannot complete or release somebody else's newer attempt.
+    image_builder_id = Column(String, nullable=True, index=True)
+    image_build_attempt_id = Column(String, nullable=True, unique=True, index=True)
+    image_build_started_at = Column(DateTime(timezone=True), nullable=True)
+    image_build_excluded_builder_id = Column(String, nullable=True)
+    image_build_excluded_until = Column(DateTime(timezone=True), nullable=True)
+
+    # Successful builds use an attempt-specific registry tag rather than a
+    # shared ``latest`` tag.  Workers receive this exact immutable-ish tag from
+    # the scheduler, preventing overlapping attempts from overwriting each
+    # other's image.
+    image_tag = Column(String, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

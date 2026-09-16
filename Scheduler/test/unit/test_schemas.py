@@ -5,6 +5,8 @@ from pydantic import ValidationError
 from app.models.job_model import JobPriority, JobStatus
 from app.schemas.heartbeat_schema import HeartbeatResponse, HeartbeatSchema
 from app.schemas.job_schema import (
+    ImageBuilderHeartbeat,
+    ImageBuildReadyRequest,
     JobFailureReport,
     JobIDRequest,
     JobResumeRequest,
@@ -47,6 +49,20 @@ class TestJobSchemas:
 
     def test_job_id_request(self):
         assert JobIDRequest(job_id="x").job_id == "x"
+
+    def test_image_builder_lease_schemas(self):
+        ready = ImageBuildReadyRequest(
+            job_id="j",
+            builder_id="b",
+            attempt_id="a",
+            image_tag="repo/j:build-a",
+        )
+        assert ready.attempt_id == "a"
+        heartbeat = ImageBuilderHeartbeat(
+            builder_id="b",
+            active_builds=[{"job_id": "j", "attempt_id": "a"}],
+        )
+        assert heartbeat.active_builds[0].job_id == "j"
 
 
 class TestWorkerSchemas:

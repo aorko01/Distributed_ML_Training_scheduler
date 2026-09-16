@@ -38,6 +38,9 @@ class TestSchedulerUrls:
         )
         assert config.SCHEDULER_FAILURE_URL.endswith("/jobs/mark_failed")
         assert config.SCHEDULER_LOG_URL.endswith("/jobs/logs")
+        assert config.SCHEDULER_BUILDER_HEARTBEAT_URL.endswith(
+            "/jobs/builder_heartbeat"
+        )
 
     def test_default_scheduler_url(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -52,6 +55,16 @@ class TestSchedulerUrls:
 class TestSettings:
     def test_poll_interval_parsed(self):
         assert _reload_config({"POLL_INTERVAL": "42"}).POLL_INTERVAL == 42
+
+    def test_heartbeat_settings_parsed(self):
+        config = _reload_config({
+            "IMAGE_BUILDER_ID": "builder-a",
+            "IMAGE_BUILDER_HEARTBEAT_INTERVAL": "3",
+            "IMAGE_BUILDER_HEARTBEAT_TIMEOUT": "20",
+        })
+        assert config.BUILDER_ID == "builder-a"
+        assert config.HEARTBEAT_INTERVAL == 3.0
+        assert config.HEARTBEAT_TIMEOUT == 20.0
 
     def test_debug_flag_truthy_values(self):
         for truthy in ("1", "true", "yes", "on", "TRUE", " Yes "):

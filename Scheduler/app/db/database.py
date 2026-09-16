@@ -42,8 +42,26 @@ def run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS name VARCHAR",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS failure_reason VARCHAR",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ram_required FLOAT",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_builder_id VARCHAR",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_build_attempt_id VARCHAR",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_build_started_at TIMESTAMPTZ",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_build_excluded_builder_id VARCHAR",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_build_excluded_until TIMESTAMPTZ",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_tag VARCHAR",
         "ALTER TABLE workers ADD COLUMN IF NOT EXISTS is_testing BOOLEAN",
     ]
     with engine.begin() as conn:
         for statement in statements:
             conn.execute(text(statement))
+
+        # The attempt token is the distributed fencing key.  Use a unique
+        # partial index so NULL remains valid for jobs that are not building.
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_jobs_image_build_attempt_id "
+            "ON jobs (image_build_attempt_id) "
+            "WHERE image_build_attempt_id IS NOT NULL"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_jobs_image_builder_id "
+            "ON jobs (image_builder_id)"
+        ))

@@ -255,6 +255,22 @@ class TestBuildPushAndClean:
         assert out[0] == "system"
         assert "denied" in out[1]
 
+    def test_failed_relogin_returns_system_failure_without_crashing(
+        self, tmp_path, no_network
+    ):
+        proj = tmp_path / "proj-login"
+        proj.mkdir()
+        client = _mock_client(
+            build_result=[],
+            push_chunks=[{"error": "unauthorized: authentication required"}],
+        )
+        with patch.object(docker_ops, "docker_login", return_value=False):
+            out = docker_ops.build_push_and_clean(
+                client, "job1", str(proj), "python train.py", "base:1"
+            )
+        assert out[0] == "system"
+        assert "re-login" in out[1]
+
     def test_image_not_found(self, tmp_path, no_network):
         proj = tmp_path / "proj"
         proj.mkdir()
@@ -300,6 +316,53 @@ class TestBuildPushAndClean:
         assert len(created) == 1
         assert not os.path.exists(created[0])
 
+    def test_scheduler_attempt_uses_unique_tag_and_cancellable_build(
+        self, tmp_path, no_network
+    ):
+        proj = tmp_path / "proj-attempt"
+        proj.mkdir()
+        client = _mock_client(push_chunks=[])
+        with patch.object(
+            docker_ops,
+            "_run_cancellable_docker_build",
+            return_value=(0, ["done"], False),
+        ) as run_build:
+            result = docker_ops.build_push_and_clean(
+                client,
+                "job1",
+                str(proj),
+                "python train.py",
+                "base:1",
+                build_attempt_id="attempt-1",
+                should_cancel=lambda: False,
+            )
+        assert result is None
+        image_tag = docker_ops.image_tag_for_attempt("job1", "attempt-1")
+        assert run_build.call_args.args[1] == image_tag
+        assert client.images.push.call_args.kwargs["tag"] == "build-attempt-1"
+        client.images.build.assert_not_called()
+
+    def test_cancelled_attempt_is_not_pushed(self, tmp_path, no_network):
+        proj = tmp_path / "proj-cancel"
+        proj.mkdir()
+        client = _mock_client()
+        with patch.object(
+            docker_ops,
+            "_run_cancellable_docker_build",
+            return_value=(-15, [], True),
+        ):
+            result = docker_ops.build_push_and_clean(
+                client,
+                "job1",
+                str(proj),
+                "python train.py",
+                "base:1",
+                build_attempt_id="attempt-1",
+                should_cancel=lambda: False,
+            )
+        assert result[0] == "cancelled"
+        client.images.push.assert_not_called()
+
 
 class TestPruneOldBaseImages:
     def test_empty_list_does_nothing(self):
@@ -337,6 +400,25 @@ class TestPruneOldBaseImages:
         ):
             docker_ops.prune_old_base_images(client)  # no raise
         mock_rm.assert_not_called()
+
+    def test_prune_waits_for_build_using_same_base(self):
+        client = MagicMock()
+        build_lock = docker_ops._get_build_lock("img:busy")
+        build_lock.acquire()
+        try:
+            with patch.object(
+                docker_ops, "get_old_base_images", return_value=["img:busy"]
+            ), patch.object(docker_ops, "remove_base_image_record"):
+                thread = threading.Thread(
+                    target=docker_ops.prune_old_base_images, args=(client,)
+                )
+                thread.start()
+                time.sleep(0.05)
+                client.images.remove.assert_not_called()
+        finally:
+            build_lock.release()
+        thread.join(timeout=1)
+        client.images.remove.assert_called_once_with(image="img:busy", force=True)
 
 
 class TestTransientBuildErrorDetection:

@@ -1,6 +1,6 @@
 """Unit tests for app/services/job_service.py."""
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -106,33 +106,96 @@ class TestGetNotRunnableJobs:
 
 
 class TestClaimAndReleaseForBuilding:
+    def test_claim_uses_skip_locked_row_lock(self):
+        db = MagicMock()
+        query = db.query.return_value
+        query.filter.return_value = query
+        query.order_by.return_value = query
+        query.with_for_update.return_value = query
+        query.first.return_value = None
+
+        assert job_service.claim_job_for_building(db, "builder-1") is None
+        query.with_for_update.assert_called_once_with(skip_locked=True)
+
     def test_claim_job_success(self, db):
         user = make_user(db)
         job = make_job(db, user.user_id, status=JobStatus.NOT_RUNNABLE)
-        claimed = job_service.claim_job_for_building(db)
+        claimed = job_service.claim_job_for_building(db, "builder-1")
         assert claimed is not None
         assert claimed["id"] == job.id
         assert claimed["status"] == JobStatus.IMAGE_BUILDING.value
         assert claimed["flag"] == "image_building"
+        assert claimed["image_builder_id"] == "builder-1"
+        assert claimed["image_build_attempt_id"]
 
     def test_claim_job_no_jobs(self, db):
-        assert job_service.claim_job_for_building(db) is None
+        assert job_service.claim_job_for_building(db, "builder-1") is None
 
     def test_release_job_success(self, db):
         user = make_user(db)
-        job = make_job(db, user.user_id, status=JobStatus.IMAGE_BUILDING)
-        released = job_service.release_job_to_not_runnable(db, job.id)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_BUILDING,
+            image_builder_id="builder-1",
+            image_build_attempt_id="attempt-1",
+        )
+        released = job_service.release_job_to_not_runnable(
+            db, job.id, "builder-1", "attempt-1"
+        )
         assert released.status == JobStatus.NOT_RUNNABLE
+        assert released.image_build_attempt_id is None
 
     def test_release_job_not_found(self, db):
         with pytest.raises(Exception, match="Job not found"):
-            job_service.release_job_to_not_runnable(db, "nonexistent-job")
+            job_service.release_job_to_not_runnable(
+                db, "nonexistent-job", "builder-1", "attempt-1"
+            )
 
     def test_release_job_wrong_status(self, db):
         user = make_user(db)
         job = make_job(db, user.user_id, status=JobStatus.NOT_RUNNABLE)
         with pytest.raises(Exception, match="Job is not in IMAGE_BUILDING state"):
-            job_service.release_job_to_not_runnable(db, job.id)
+            job_service.release_job_to_not_runnable(
+                db, job.id, "builder-1", "attempt-1"
+            )
+
+    def test_stale_attempt_cannot_release_reassigned_job(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_BUILDING,
+            image_builder_id="builder-2",
+            image_build_attempt_id="attempt-2",
+        )
+        with pytest.raises(Exception, match="Stale or unowned"):
+            job_service.release_job_to_not_runnable(
+                db, job.id, "builder-1", "attempt-1"
+            )
+        db.refresh(job)
+        assert job.status == JobStatus.IMAGE_BUILDING
+        assert job.image_build_attempt_id == "attempt-2"
+
+    def test_ready_callback_records_attempt_tag_and_clears_lease(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_BUILDING,
+            image_builder_id="builder-1",
+            image_build_attempt_id="attempt-1",
+        )
+        result = job_service.set_job_vram_estimation_pending(
+            db,
+            job.id,
+            "builder-1",
+            "attempt-1",
+            "repo/job:build-attempt-1",
+        )
+        assert result.status == JobStatus.VRAM_ESTIMATION_PENDING
+        assert result.image_tag == "repo/job:build-attempt-1"
+        assert result.image_build_attempt_id is None
 
 
 

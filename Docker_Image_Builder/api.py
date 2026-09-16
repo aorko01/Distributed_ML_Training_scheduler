@@ -3,6 +3,7 @@ from urllib.parse import quote
 from config import (
     SCHEDULER_QUEUE_URL, SCHEDULER_UPDATE_URL, SCHEDULER_LOG_URL,
     SCHEDULER_FAILURE_URL, SCHEDULER_CLAIM_URL, SCHEDULER_RELEASE_URL,
+    SCHEDULER_BUILDER_HEARTBEAT_URL,
     OBJECT_STORE_URL, OBJECT_STORE_BUCKET, logger
 )
 
@@ -31,8 +32,15 @@ def send_log_lines(job_id: str, lines: list[str]) -> None:
     except Exception as e:
         logger.debug("Failed to stream logs for job %s: %s", job_id, e)
 
-def notify_scheduler_job_ready(job_id: str) -> bool:
-    payload = {"job_id": job_id}
+def notify_scheduler_job_ready(
+    job_id: str, builder_id: str, attempt_id: str, image_tag: str
+) -> bool:
+    payload = {
+        "job_id": job_id,
+        "builder_id": builder_id,
+        "attempt_id": attempt_id,
+        "image_tag": image_tag,
+    }
     try:
         response = requests.post(SCHEDULER_UPDATE_URL, json=payload, timeout=10)
         if response.status_code == 200:
@@ -47,7 +55,13 @@ def notify_scheduler_job_ready(job_id: str) -> bool:
         logger.error("Failed to contact scheduler for job %s: %s", job_id, e)
     return False
 
-def notify_scheduler_job_failed(job_id: str, failure_type: str, failure_reason: str) -> bool:
+def notify_scheduler_job_failed(
+    job_id: str,
+    failure_type: str,
+    failure_reason: str,
+    builder_id: str,
+    attempt_id: str,
+) -> bool:
     """Report a job failure to the scheduler.
 
     failure_type: "user" (build/code error -> FAILED) or "system" (infra -> RETRY_NEEDED).
@@ -56,6 +70,8 @@ def notify_scheduler_job_failed(job_id: str, failure_type: str, failure_reason: 
         "job_id": job_id,
         "failure_type": failure_type,
         "failure_reason": failure_reason[:2000],
+        "builder_id": builder_id,
+        "attempt_id": attempt_id,
     }
     try:
         response = requests.post(SCHEDULER_FAILURE_URL, json=payload, timeout=10)
@@ -72,7 +88,7 @@ def notify_scheduler_job_failed(job_id: str, failure_type: str, failure_reason: 
     return False
 
 
-def claim_job_for_building() -> dict | None:
+def claim_job_for_building(builder_id: str) -> dict | None:
     """Atomically claim the oldest NOT_RUNNABLE job for image building.
 
     POSTs to the scheduler's ``/jobs/claim_for_building`` endpoint. Returns the
@@ -80,7 +96,11 @@ def claim_job_for_building() -> dict | None:
     error occurs.
     """
     try:
-        response = requests.post(SCHEDULER_CLAIM_URL, timeout=10)
+        response = requests.post(
+            SCHEDULER_CLAIM_URL,
+            json={"builder_id": builder_id},
+            timeout=10,
+        )
         if response.status_code != 200:
             logger.error(
                 "Claim request failed: %s %s", response.status_code, response.text
@@ -98,7 +118,9 @@ def claim_job_for_building() -> dict | None:
         return None
 
 
-def release_job_to_not_runnable(job_id: str) -> bool:
+def release_job_to_not_runnable(
+    job_id: str, builder_id: str, attempt_id: str
+) -> bool:
     """Release a job from IMAGE_BUILDING back to NOT_RUNNABLE.
 
     POSTs ``{"job_id": job_id}`` to the scheduler's
@@ -107,7 +129,13 @@ def release_job_to_not_runnable(job_id: str) -> bool:
     """
     try:
         response = requests.post(
-            SCHEDULER_RELEASE_URL, json={"job_id": job_id}, timeout=10
+            SCHEDULER_RELEASE_URL,
+            json={
+                "job_id": job_id,
+                "builder_id": builder_id,
+                "attempt_id": attempt_id,
+            },
+            timeout=10,
         )
         if response.status_code != 200:
             logger.error(
@@ -123,3 +151,24 @@ def release_job_to_not_runnable(job_id: str) -> bool:
     except Exception as e:
         logger.error("Failed to release job %s to NOT_RUNNABLE: %s", job_id, e)
         return False
+
+
+def send_builder_heartbeat(
+    builder_id: str, active_builds: list[dict[str, str]]
+) -> dict | None:
+    """Renew build leases and receive cancellation commands from Scheduler."""
+    try:
+        response = requests.post(
+            SCHEDULER_BUILDER_HEARTBEAT_URL,
+            json={"builder_id": builder_id, "active_builds": active_builds},
+            timeout=10,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if "error" in body:
+            logger.error("Scheduler rejected builder heartbeat: %s", body["error"])
+            return None
+        return body
+    except Exception as e:
+        logger.warning("Image-builder heartbeat failed: %s", e)
+        return None

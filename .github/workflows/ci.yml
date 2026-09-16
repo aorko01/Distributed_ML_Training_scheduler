@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: ["main", "master"]
+
   pull_request:
     branches: ["main", "master"]
+
   workflow_dispatch:
 
 concurrency:
@@ -12,14 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ------------------------------------------------------------
+  # UNIT TESTS
+  # ------------------------------------------------------------
   unit-tests:
     name: ${{ matrix.component }} unit (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-        component: ["Scheduler", "Docker_Image_Builder", "Worker"]
+        component:
+          - Scheduler
+          - Docker_Image_Builder
+          - Worker
 
     defaults:
       run:
@@ -56,22 +65,33 @@ jobs:
         run: |
           python -m pytest test/unit/ -q
 
+  # ------------------------------------------------------------
+  # REAL DOCKER HUB E2E TEST
+  # ------------------------------------------------------------
   builder-dockerhub-real-e2e:
     name: Builder real Docker Hub e2e (Python 3.11)
     runs-on: ubuntu-latest
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+
+    if: >
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+      || github.event_name == 'workflow_dispatch'
+
     concurrency:
       group: builder-dockerhub-real-e2e
       cancel-in-progress: false
+
     defaults:
       run:
         working-directory: Docker_Image_Builder
+
     env:
       DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
       DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
       RUN_REAL_DOCKERHUB_E2E: "1"
       SCHEDULER_API_URL: "http://localhost:8000"
       OBJECT_STORE_URL: "http://localhost:8010"
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -105,4 +125,54 @@ jobs:
 
       - name: Run real Docker Hub retry e2e
         run: |
-          python -m pytest test/e2e/test_dockerhub_retry_e2e.py -v --run-real-dockerhub
+          python -m pytest \
+            test/e2e/test_dockerhub_retry_e2e.py \
+            -v \
+            --run-real-dockerhub
+
+  # ------------------------------------------------------------
+  # DEPLOY
+  # ------------------------------------------------------------
+  deploy:
+    name: Deploy Distributed ML System
+
+    needs:
+      - unit-tests
+      - builder-dockerhub-real-e2e
+
+    # Only deploy for pushes to main/master, or a manual workflow run.
+    # Pull requests will run CI but will NOT deploy.
+    if: >
+      success() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+        github.event_name == 'workflow_dispatch'
+      )
+
+    runs-on:
+      - self-hosted
+      - macOS
+
+    concurrency:
+      group: production-deployment
+      cancel-in-progress: false
+
+    steps:
+      - name: Show deployment information
+        run: |
+          echo "Commit: $GITHUB_SHA"
+          echo "Branch: $GITHUB_REF"
+          echo "Triggered by: $GITHUB_ACTOR"
+          echo "Runner: $RUNNER_NAME"
+          echo "Host: $(hostname)"
+          echo "User: $(whoami)"
+
+      - name: Verify deployment script exists
+        run: |
+          test -f "$HOME/Desktop/github-deploy/deploy.sh"
+          test -x "$HOME/Desktop/github-deploy/deploy.sh"
+
+      - name: Deploy
+        run: |
+          "$HOME/Desktop/github-deploy/deploy.sh"

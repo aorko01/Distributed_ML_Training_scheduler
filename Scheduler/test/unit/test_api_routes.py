@@ -267,9 +267,23 @@ class TestJobsRoutes:
 
     def test_update_to_pending_and_runnable(self, db):
         user = make_user(db)
-        job = make_job(db, user.user_id, status=JobStatus.IMAGE_BUILDING)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_BUILDING,
+            image_builder_id="builder-1",
+            image_build_attempt_id="attempt-1",
+        )
         client = self._client(db)
-        resp = client.post("/update_job_to_vram_estimation_pending", json={"job_id": job.id})
+        resp = client.post(
+            "/update_job_to_vram_estimation_pending",
+            json={
+                "job_id": job.id,
+                "builder_id": "builder-1",
+                "attempt_id": "attempt-1",
+                "image_tag": "repo/job:build-attempt-1",
+            },
+        )
         assert resp.json()["status"] == "VRAM_ESTIMATION_PENDING"
         resp = client.post("/update_job_to_runnable", json={"job_id": job.id})
         assert resp.json()["status"] == "RUNNABLE"
@@ -277,7 +291,13 @@ class TestJobsRoutes:
     def test_update_missing_returns_error(self, db):
         client = self._client(db)
         resp = client.post(
-            "/update_job_to_vram_estimation_pending", json={"job_id": "nope"}
+            "/update_job_to_vram_estimation_pending",
+            json={
+                "job_id": "nope",
+                "builder_id": "builder-1",
+                "attempt_id": "attempt-1",
+                "image_tag": "repo/job:build-attempt-1",
+            },
         )
         assert "error" in resp.json()
 

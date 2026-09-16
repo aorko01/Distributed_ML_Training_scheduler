@@ -736,7 +736,7 @@ class JobExecutor:
             # An early validation return must release that reservation.
             self._unregister_job(job_id)
             return
-        image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+        image_name = job.get("image_tag") or f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
         vram_required = job.get("vram_required")
 
         self._register_job(job_id, vram_required)
@@ -789,7 +789,7 @@ class JobExecutor:
             self._register_job(job_id, job.get("vram_required"))
             activated = True
             self._finalize_job_log_state(job_id)
-            image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+            image_name = job.get("image_tag") or f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
             logger.info("Resuming persisted job %s after worker restart.", job_id)
             record_event("info", f"Resuming persisted job {job_id} after worker restart")
 

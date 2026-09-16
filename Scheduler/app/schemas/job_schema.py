@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, Dict, Literal
 from app.models.job_model import JobPriority
 
@@ -21,11 +21,36 @@ class JobResponse(BaseModel):
     reason_for_priority: Optional[str] = None
     resume_command: Optional[str] = None
     device: Optional[str] = None
+    image_tag: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
 class Job_status_to_vram_estimation_pending(BaseModel):
     job_id: str
+
+
+class ImageBuilderClaimRequest(BaseModel):
+    builder_id: str
+
+
+class ImageBuildAttemptRequest(BaseModel):
+    job_id: str
+    builder_id: str
+    attempt_id: str
+
+
+class ImageBuildReadyRequest(ImageBuildAttemptRequest):
+    image_tag: str
+
+
+class ActiveImageBuild(BaseModel):
+    job_id: str
+    attempt_id: str
+
+
+class ImageBuilderHeartbeat(BaseModel):
+    builder_id: str
+    active_builds: list[ActiveImageBuild] = Field(default_factory=list)
 
 class JobIDRequest(BaseModel):
     job_id: str
@@ -48,3 +73,7 @@ class JobFailureReport(BaseModel):
     # "user" -> job FAILED (build/training code error), "system" -> job RETRY_NEEDED (infra issue)
     failure_type: Literal["user", "system"]
     failure_reason: Optional[str] = None
+    # Required when IMAGE_BUILDING; omitted for failures reported by training
+    # workers, which use the same endpoint after the image has been built.
+    builder_id: Optional[str] = None
+    attempt_id: Optional[str] = None

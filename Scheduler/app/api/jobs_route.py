@@ -7,10 +7,19 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from app.db.database import SessionLocal
-from app.services import job_service, log_service, output_service
+from app.services import image_builder_service, job_service, log_service, output_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
-from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest
+from app.schemas.job_schema import (
+    ImageBuilderClaimRequest,
+    ImageBuilderHeartbeat,
+    ImageBuildAttemptRequest,
+    ImageBuildReadyRequest,
+    JobIDRequest,
+    VramEstimationReport,
+    JobFailureReport,
+    JobResumeRequest,
+)
 from app.schemas.log_schema import LogLinesRequest
 from app.schemas.worker_schema import WorkerResource
 from app.models.user_model import User
@@ -121,10 +130,16 @@ async def ingest_job_logs(job_id: str, request: LogLinesRequest):
 
 @router.post("/update_job_to_vram_estimation_pending")
 def update_job_to_vram_estimation_pending(
-    request: Job_status_to_vram_estimation_pending, db: Session = Depends(get_db)
+    request: ImageBuildReadyRequest, db: Session = Depends(get_db)
 ):
     try:
-        job = job_service.set_job_vram_estimation_pending(db, request.job_id)
+        job = job_service.set_job_vram_estimation_pending(
+            db,
+            request.job_id,
+            request.builder_id,
+            request.attempt_id,
+            request.image_tag,
+        )
         return {"job_id": job.id, "status": job.status.value}
 
     except Exception as e:
@@ -141,14 +156,16 @@ def get_unbuilt_jobs(db: Session = Depends(get_db)):
 
 
 @router.post("/claim_for_building")
-def claim_job_for_building(db: Session = Depends(get_db)):
+def claim_job_for_building(
+    request: ImageBuilderClaimRequest, db: Session = Depends(get_db)
+):
     """Atomically claim the oldest NOT_RUNNABLE job for image building.
 
     The job's status is set to IMAGE_BUILDING so no other builder will pull it.
     Returns the job dict, or a message when no unbuilt jobs are available.
     """
     try:
-        job = job_service.claim_job_for_building(db)
+        job = job_service.claim_job_for_building(db, request.builder_id)
         if job is None:
             return {"message": "No unbuilt jobs available"}
         return job
@@ -157,17 +174,32 @@ def claim_job_for_building(db: Session = Depends(get_db)):
 
 
 @router.post("/release_to_not_runnable")
-def release_job_to_not_runnable(request: JobIDRequest, db: Session = Depends(get_db)):
+def release_job_to_not_runnable(
+    request: ImageBuildAttemptRequest, db: Session = Depends(get_db)
+):
     """Release a job from IMAGE_BUILDING back to NOT_RUNNABLE.
 
     Called by the Docker Image Builder when a system-level failure occurs so
     another builder thread/instance can retry the job.
     """
     try:
-        job = job_service.release_job_to_not_runnable(db, request.job_id)
+        job = job_service.release_job_to_not_runnable(
+            db, request.job_id, request.builder_id, request.attempt_id
+        )
         return {"job_id": job.id, "status": job.status.value}
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.post("/builder_heartbeat")
+async def image_builder_heartbeat(
+    request: ImageBuilderHeartbeat, db: Session = Depends(get_db)
+):
+    """Renew active image-build leases and return stale attempts to cancel."""
+    try:
+        return await image_builder_service.process_heartbeat(db, request)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Image-builder heartbeat failed") from e
 
 @router.post("/save_vram_estimation")
 def save_vram_estimation(
@@ -253,6 +285,8 @@ def mark_job_failed(request: JobFailureReport, db: Session = Depends(get_db)):
             job_id=request.job_id,
             failure_type=request.failure_type,
             failure_reason=request.failure_reason,
+            builder_id=request.builder_id,
+            attempt_id=request.attempt_id,
         )
         return {
             "job_id": job.id,

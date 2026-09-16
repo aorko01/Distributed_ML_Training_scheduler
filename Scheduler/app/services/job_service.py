@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import uuid
 
 from app.models.worker_model import Worker
 from sqlalchemy.orm import Session
@@ -27,8 +28,19 @@ def create_job(db: Session, job_data: dict):
     return db_job
 
 
-def set_job_vram_estimation_pending(db: Session, job_id: str):
-    job = db.query(Job).filter(Job.id == job_id).first()
+def set_job_vram_estimation_pending(
+    db: Session,
+    job_id: str,
+    builder_id: str | None = None,
+    attempt_id: str | None = None,
+    image_tag: str | None = None,
+):
+    job = (
+        db.query(Job)
+        .filter(Job.id == job_id)
+        .with_for_update()
+        .first()
+    )
 
     if not job:
         raise Exception("Job not found")
@@ -36,7 +48,13 @@ def set_job_vram_estimation_pending(db: Session, job_id: str):
     if job.status != JobStatus.IMAGE_BUILDING:
         raise Exception("Job is not in IMAGE_BUILDING state")
 
+    if builder_id is not None or attempt_id is not None:
+        _require_image_build_owner(job, builder_id, attempt_id)
+
     job.status = JobStatus.VRAM_ESTIMATION_PENDING
+    if image_tag is not None:
+        job.image_tag = image_tag
+    _clear_image_build_lease(job)
 
     db.commit()
     db.refresh(job)
@@ -109,7 +127,7 @@ def get_not_runnable_jobs(db: Session):
     ]
 
 
-def claim_job_for_building(db: Session) -> dict | None:
+def claim_job_for_building(db: Session, builder_id: str) -> dict | None:
     """Atomically claim the oldest NOT_RUNNABLE job for image building.
 
     Sets the job's status to IMAGE_BUILDING so that no other builder thread
@@ -117,14 +135,28 @@ def claim_job_for_building(db: Session) -> dict | None:
     ``_format_job_response`` with flag ``"image_building"``) or ``None`` when
     no unbuilt job is available.
 
-    SQLite serializes write transactions, so a simple query-then-update inside
-    a single commit is safe. For PostgreSQL, ``with_for_update(skip_locked=True)``
-    can be added later.
+    The row lock is essential here: separate builder threads (and separate
+    builder containers) can make this request concurrently.  Without it, two
+    transactions can both read the same NOT_RUNNABLE job before either commits
+    the IMAGE_BUILDING transition.
+
+    PostgreSQL honours ``skip_locked`` and therefore lets another claimant move
+    on to the next pending job instead of waiting on this one.  SQLite ignores
+    ``FOR UPDATE`` but remains supported for the single-process test/dev setup.
     """
     job = (
         db.query(Job)
-        .filter(Job.status == JobStatus.NOT_RUNNABLE)
+        .filter(
+            Job.status == JobStatus.NOT_RUNNABLE,
+            or_(
+                Job.image_build_excluded_builder_id.is_(None),
+                Job.image_build_excluded_builder_id != builder_id,
+                Job.image_build_excluded_until.is_(None),
+                Job.image_build_excluded_until <= datetime.now(timezone.utc),
+            ),
+        )
         .order_by(Job.created_at)
+        .with_for_update(skip_locked=True)
         .first()
     )
 
@@ -132,20 +164,52 @@ def claim_job_for_building(db: Session) -> dict | None:
         return None
 
     job.status = JobStatus.IMAGE_BUILDING
+    job.image_builder_id = builder_id
+    job.image_build_attempt_id = str(uuid.uuid4())
+    job.image_build_started_at = datetime.now(timezone.utc)
+    job.image_build_excluded_builder_id = None
+    job.image_build_excluded_until = None
+    job.image_tag = None
     db.commit()
     db.refresh(job)
 
     return _format_job_response(job, flag="image_building")
 
 
-def release_job_to_not_runnable(db: Session, job_id: str) -> Job:
+def _require_image_build_owner(
+    job: Job, builder_id: str | None, attempt_id: str | None
+) -> None:
+    """Reject stale image-builder callbacks using the claim's fencing token."""
+    if not builder_id or not attempt_id:
+        raise Exception("Image builder ID and build attempt ID are required")
+    if (
+        job.image_builder_id != builder_id
+        or job.image_build_attempt_id != attempt_id
+    ):
+        raise Exception("Stale or unowned image build attempt")
+
+
+def _clear_image_build_lease(job: Job) -> None:
+    job.image_builder_id = None
+    job.image_build_attempt_id = None
+    job.image_build_started_at = None
+
+
+def release_job_to_not_runnable(
+    db: Session, job_id: str, builder_id: str, attempt_id: str
+) -> Job:
     """Release a job that is currently IMAGE_BUILDING back to NOT_RUNNABLE.
 
     Used when a builder encounters a system-level failure and the job should be
     retried by another builder thread/instance. Raises an exception if the job
     is not found or is not in the IMAGE_BUILDING state.
     """
-    job = db.query(Job).filter(Job.id == job_id).first()
+    job = (
+        db.query(Job)
+        .filter(Job.id == job_id)
+        .with_for_update()
+        .first()
+    )
 
     if not job:
         raise Exception("Job not found")
@@ -155,7 +219,10 @@ def release_job_to_not_runnable(db: Session, job_id: str) -> Job:
             f"Job is not in IMAGE_BUILDING state (current: {job.status.value})"
         )
 
+    _require_image_build_owner(job, builder_id, attempt_id)
+
     job.status = JobStatus.NOT_RUNNABLE
+    _clear_image_build_lease(job)
     db.commit()
     db.refresh(job)
 
@@ -211,6 +278,9 @@ def _format_job_response(job: Job, flag: str) -> dict:
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "device": job.device,
+        "image_tag": job.image_tag,
+        "image_builder_id": job.image_builder_id,
+        "image_build_attempt_id": job.image_build_attempt_id,
     }
 
 
@@ -394,7 +464,14 @@ def set_to_completed(db: Session, job_id: str):
 TERMINAL_STATUSES = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.RETRY_NEEDED}
 
 
-def mark_job_failed(db: Session, job_id: str, failure_type: str, failure_reason: str | None = None):
+def mark_job_failed(
+    db: Session,
+    job_id: str,
+    failure_type: str,
+    failure_reason: str | None = None,
+    builder_id: str | None = None,
+    attempt_id: str | None = None,
+):
     """Record a job failure reported by the Docker Image Builder or a Worker.
 
     - failure_type == "user"   -> status FAILED (build or training code error)
@@ -402,7 +479,12 @@ def mark_job_failed(db: Session, job_id: str, failure_type: str, failure_reason:
 
     Jobs already in a terminal state are left untouched.
     """
-    job = db.query(Job).filter(Job.id == job_id).first()
+    job = (
+        db.query(Job)
+        .filter(Job.id == job_id)
+        .with_for_update()
+        .first()
+    )
 
     if not job:
         raise Exception("Job not found")
@@ -410,10 +492,16 @@ def mark_job_failed(db: Session, job_id: str, failure_type: str, failure_reason:
     if job.status in TERMINAL_STATUSES:
         raise Exception(f"Job is already in terminal state {job.status.value}")
 
+    if job.status == JobStatus.IMAGE_BUILDING:
+        _require_image_build_owner(job, builder_id, attempt_id)
+
     was_in_progress = job.status == JobStatus.IN_PROGRESS
     job.status = JobStatus.FAILED if failure_type == "user" else JobStatus.RETRY_NEEDED
     if failure_reason:
         job.failure_reason = failure_reason[:2000]
+
+    if job.status in TERMINAL_STATUSES:
+        _clear_image_build_lease(job)
 
     if was_in_progress and job.started_at is not None:
         started_at = job.started_at
@@ -460,6 +548,7 @@ def get_user_jobs(db: Session, user_id: str):
             "gpu_hour": job.gpu_hour,
             "device": job.device,
             "failure_reason": job.failure_reason,
+            "image_tag": job.image_tag,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
         }
@@ -505,6 +594,7 @@ def get_user_job_by_id(db: Session, user_id: str, job_id: str):
         "gpu_hour": job.gpu_hour,
         "device": job.device,
         "failure_reason": job.failure_reason,
+        "image_tag": job.image_tag,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
     }
