@@ -1,4 +1,7 @@
 import { api, getToken, type ApiError } from './api';
+import { downloadJobOutputFromApi } from './jobDownload';
+
+export { buildJobOutputFilename } from './jobDownload';
 
 export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed' | 'Retrying';
 
@@ -281,32 +284,11 @@ const toLogLine = (entry: StreamLogEntry): LogLine => ({
   timestamp: new Date(entry.ts).toISOString(),
 });
 
-const mergeWithStored = (stored: LogLine[], history: LogLine[]): LogLine[] => {
-  if (stored.length === 0) return history;
-
-  const storedTexts = stored.map((line) => line.text);
-  const historyTexts = history.map((line) => line.text);
-  const maxK = Math.min(storedTexts.length, historyTexts.length);
-
-  let overlap = 0;
-  for (let k = maxK; k > 0; k -= 1) {
-    if (
-      historyTexts.slice(0, k).join('\n') ===
-      storedTexts.slice(storedTexts.length - k).join('\n')
-    ) {
-      overlap = k;
-      break;
-    }
-  }
-
-  return history.slice(overlap);
-};
-
 export const streamJobLogs = (
   id: string,
   options: StreamJobLogsOptions,
 ): (() => void) => {
-  const wsBaseUrl = API_BASE_URL.replace(/^http/, 'ws');
+  const wsBaseUrl = API_BASE_URL.replace(/^http/, 'ws').replace(/\/+$/, '');
   const token = getToken() ?? '';
 
   let ws: WebSocket | null = null;
@@ -314,7 +296,6 @@ export const streamJobLogs = (
   let finished = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let lastStreamId: string | null = null;
-  let storedLogs: LogLine[] = [];
 
   const connect = () => {
     if (disposed || finished) return;
@@ -322,7 +303,9 @@ export const streamJobLogs = (
     const params = new URLSearchParams({ token });
     if (lastStreamId) params.set('after', lastStreamId);
 
-    ws = new WebSocket(`${wsBaseUrl}/jobs/${id}/logs/stream?${params.toString()}`);
+    ws = new WebSocket(
+      `${wsBaseUrl}/jobs/${encodeURIComponent(id)}/logs/stream?${params.toString()}`,
+    );
 
     ws.onmessage = (event) => {
       try {
@@ -340,9 +323,7 @@ export const streamJobLogs = (
           if (message.lines.length > 0) {
             lastStreamId = message.lines[message.lines.length - 1].id;
           }
-          mergeWithStored(storedLogs, history).forEach((line) =>
-            options.onLog(line),
-          );
+          history.forEach((line) => options.onLog(line));
         } else if (message.type === 'log' && message.line != null) {
           if (message.id) lastStreamId = message.id;
           options.onLog(
@@ -370,20 +351,26 @@ export const streamJobLogs = (
     ws.onerror = () => ws?.close();
   };
 
-  const start = async () => {
-    // Show previous logs already persisted in the object store first,
-    // then connect for realtime lines.
-    storedLogs = await fetchJobLogs(id);
-    if (disposed) return;
-    storedLogs.forEach((line) => options.onLog(line));
-    connect();
-  };
-
-  start();
+  // Redis stream history is sent in the socket's initial message. Connecting
+  // immediately keeps a slow/unavailable object store from delaying live logs.
+  // Finished jobs still load their complete build.log through fetchJobLogs().
+  connect();
 
   return () => {
     disposed = true;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (ws) ws.close();
   };
+};
+
+export const downloadJobOutput = async (
+  id: string,
+  jobName?: string,
+): Promise<void> => {
+  await downloadJobOutputFromApi({
+    apiBaseUrl: API_BASE_URL,
+    id,
+    jobName,
+    token: getToken(),
+  });
 };

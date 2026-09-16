@@ -1,6 +1,7 @@
 """Unit tests for executor.py (job lifecycle on the worker)."""
 import os
 import subprocess
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -382,6 +383,7 @@ class TestRunContainer:
         store = MagicMock()
         store.download.return_value = None
         monitor = MagicMock()
+        executor.api.send_logs.return_value = True
         with (
             patch.object(executor_module.subprocess, "Popen",
                          return_value=self._popen(["epoch 1\n"], 0)),
@@ -391,6 +393,7 @@ class TestRunContainer:
                                     monitor, 0.0)
         mock_final.assert_called_once()
         assert mock_final.call_args[0][5] is True
+        executor.api.send_logs.assert_called_once_with("j", ["epoch 1"])
 
     def test_nonzero_exit_is_user_failure(self, executor):
         store = MagicMock()
@@ -521,6 +524,15 @@ class TestFlushAndAppendLogs:
             executor._flush_log_push("j", force=True)
             executor.api.send_logs.assert_called_once()
 
+    def test_failed_push_keeps_lines_for_retry(self, executor):
+        state = executor._get_job_log_state("j")
+        state.log_push_buffer = ["a", "b"]
+        executor.api.send_logs.return_value = False
+
+        executor._flush_log_push("j", force=True)
+
+        assert state.log_push_buffer == ["a", "b"]
+
     def test_append_empty_noop(self, executor):
         store = MagicMock()
         executor._append_build_log("j", store, [])
@@ -592,6 +604,11 @@ class TestProcessJob:
             executor.process_job({"id": "j1", "flag": "bogus"})
         mock_train.assert_not_called()
 
+    def test_unsafe_job_id_releases_reserved_capacity(self, executor):
+        assert executor.try_begin_job("../bad", 1.0) is True
+        executor.process_job({"id": "../bad", "flag": "training"})
+        assert executor.active_jobs_count == 0
+
 
 class TestResumePersisted:
     def test_no_state_returns_false(self, executor):
@@ -635,6 +652,7 @@ class TestResumePersisted:
         ):
             assert executor.resume_persisted_job_if_any() is False
         mock_clear.assert_called_once()
+        executor.api.mark_job_failed.assert_called_once()
 
     def test_success_resumes(self, executor):
         executor.api.resume_job = MagicMock(
@@ -783,6 +801,21 @@ class TestConcurrentExecution:
         assert not executor.is_job_active("j1")
         executor.api.mark_job_failed.assert_called_once()
 
+    def test_resume_scan_blocks_new_capacity_claims(self, executor):
+        assert executor.try_begin_resume_scan() is True
+        assert executor.try_begin_resume_scan() is False
+        assert executor.try_begin_job("new", 1.0) is False
+        executor.end_resume_scan()
+        assert executor.try_begin_job("new", 1.0) is True
+
+    def test_unregistered_resume_reservation_temporarily_blocks_polling(self, executor):
+        assert executor.begin_resume("restored") is True
+        assert executor.active_jobs_count == int(
+            executor_module.runtime_config.get("max_concurrent_jobs")
+        )
+        executor._register_job("restored", 2.0)
+        assert executor.active_jobs_count == 1
+
     def test_success_resumes_releases_capacity(self, executor):
         """successful resume must release the capacity slot."""
         executor.api.resume_job = MagicMock(
@@ -884,6 +917,35 @@ class TestConcurrentExecution:
                 result = executor.resume_persisted_job_if_any()
         assert result is True
         assert mock_retry.call_count == 2
+
+    def test_persisted_jobs_resume_concurrently(self, executor):
+        barrier = threading.Barrier(2)
+
+        def wait_for_other_resume(*_args, **_kwargs):
+            barrier.wait(timeout=1.0)
+
+        with patch.object(executor_module, "load_running_jobs",
+                          return_value=[
+                              {"job_id": "j1", "saved_at": 0.0},
+                              {"job_id": "j2", "saved_at": 0.0},
+                          ]):
+            executor.api.resume_job = MagicMock(
+                side_effect=[
+                    {"resume_command": "r1", "command": "c1"},
+                    {"resume_command": "r2", "command": "c2"},
+                ]
+            )
+            with (
+                patch.object(executor_module, "get_gpu_info",
+                             return_value=("A100", 1, 1, 1, 1)),
+                patch.object(JobExecutor, "pull_docker_image", return_value=True),
+                patch.object(JobExecutor, "handle_retry",
+                             side_effect=wait_for_other_resume),
+            ):
+                result = executor.resume_persisted_job_if_any()
+
+        assert result is True
+        assert barrier.n_waiting == 0
 
     def test_has_unresumed_job_true_after_partial_resume(self, executor):
         executor._register_job("j1", 2.0)

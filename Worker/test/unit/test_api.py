@@ -134,12 +134,12 @@ class TestSendLogs:
 
     def test_posts_lines(self, client):
         with patch.object(api.requests, "post", return_value=_resp({})) as mock_post:
-            client.send_logs("j1", ["a"])
+            assert client.send_logs("j1", ["a"]) is True
         assert mock_post.call_args[1]["json"] == {"lines": ["a"]}
 
     def test_exception_swallowed(self, client):
         with patch.object(api.requests, "post", side_effect=Exception("down")):
-            assert client.send_logs("j1", ["a"]) is None
+            assert client.send_logs("j1", ["a"]) is False
 
 
 class TestSaveVramEstimation:

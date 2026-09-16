@@ -1,11 +1,13 @@
 import os
+import re
 import uuid
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from app.db.database import SessionLocal
-from app.services import job_service, log_service
+from app.services import job_service, log_service, output_service
 from app.utils.file_utils import save_to_object_store
 from app.utils.auth import SECRET_KEY, ALGORITHM
 from app.schemas.job_schema import Job_status_to_vram_estimation_pending, JobIDRequest,VramEstimationReport, JobFailureReport, JobResumeRequest
@@ -17,6 +19,17 @@ from app.api.deps import get_current_active_user
 
 
 router = APIRouter(tags=["jobs"])
+
+
+class _TemporaryFileResponse(FileResponse):
+    """FileResponse that also cleans up when a client disconnects mid-send."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            output_service.cleanup_archive(str(self.path))
+
 
 def get_db():
     db = SessionLocal()
@@ -101,7 +114,9 @@ async def ingest_job_logs(job_id: str, request: LogLinesRequest):
         await log_service.publish_log_lines(job_id, request.lines)
         return {"ok": True}
     except Exception as e:
-        return {"error": str(e)}
+        # Producers rely on the HTTP status to decide whether a batch was
+        # accepted. Returning 200 here silently discarded live log lines.
+        raise HTTPException(status_code=503, detail="Log stream unavailable") from e
 
 
 @router.post("/update_job_to_vram_estimation_pending")
@@ -377,6 +392,48 @@ def get_my_jobs_gpu_hours(
         return {"error": str(e)}
 
 
+@router.get("/{job_id}/output/download")
+def download_job_output(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Download a zip of the job's submitted upload plus all output-store files.
+
+    The archive contains ``submitted/<upload-basename>`` (the original zip
+    from the uploads bucket) and ``outputs/<rel-path>`` for every object
+    stored under ``<job_id>/`` in the outputs bucket.
+    """
+    if not output_service.is_safe_job_id(job_id):
+        raise HTTPException(status_code=400, detail=f"Invalid job_id {job_id!r}")
+
+    job = job_service.get_user_job_by_id(db, current_user.user_id, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    try:
+        archive_path = output_service.build_job_output_zip(
+            job_id, job.get("object_key")
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    raw_name = (job.get("name") or job_id).strip() or job_id
+    slug = re.sub(r"\s+", "_", raw_name.strip().lower())
+    slug = re.sub(r"[^a-z0-9._-]", "_", slug)[:100] or str(job_id)
+    filename = f"{slug}-output.zip"
+
+    return _TemporaryFileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=filename,
+    )
+
+
 @router.get("/{job_id}/logs")
 def get_job_logs(
     job_id: str,
@@ -439,8 +496,12 @@ async def job_logs_stream(websocket: WebSocket, job_id: str):
                 last_id = message["id"]
                 await websocket.send_json({"type": "log", **message})
 
+            # This long-lived session may already have the Job in its identity
+            # map.  Force the status query to refresh it so terminal updates
+            # made by the worker are observed on the existing WebSocket.
             job = (
                 db.query(Job)
+                .populate_existing()
                 .filter(Job.id == job_id, Job.user_id == user.user_id)
                 .first()
             )

@@ -46,14 +46,25 @@ def job_loop(executor: JobExecutor, api: SchedulerAPI, stop_event: threading.Eve
                 active_threads = [t for t in active_threads if t.is_alive()]
                 max_jobs = int(runtime_config.get("max_concurrent_jobs") or 2)
                 if executor.active_jobs_count < max_jobs:
-                    if executor.has_unresumed_job():
-                        resuming = getattr(executor, "_resuming", None)
-                        if not isinstance(resuming, set) or not resuming:
-                            executor._resuming.add("__resume__")
-                            threading.Thread(
+                    if (
+                        executor.has_unresumed_job()
+                        and executor.try_begin_resume_scan()
+                    ):
+                        try:
+                            resume_thread = threading.Thread(
                                 target=executor.resume_persisted_job_if_any,
+                                kwargs={"scan_reserved": True},
                                 daemon=True, name="resume",
-                            ).start()
+                            )
+                            resume_thread.start()
+                        except Exception:
+                            executor.end_resume_scan()
+                            raise
+                        active_threads.append(resume_thread)
+                        # Persisted jobs have already been assigned to this
+                        # worker.  Let the reserved resume scan claim its slots
+                        # before asking the scheduler for new work.
+                        continue
                     gpu_type, total_vram, free_vram, _, _ = get_gpu_info()
                     effective_free = executor.get_effective_free_vram(free_vram, total_vram)
                     job = api.pull_job(gpu_type, effective_free)
@@ -64,7 +75,15 @@ def job_loop(executor: JobExecutor, api: SchedulerAPI, stop_event: threading.Eve
                                 target=executor.process_job, args=(job,),
                                 name=f"job-{job_id}", daemon=True,
                             )
-                            t.start()
+                            try:
+                                t.start()
+                            except Exception as e:
+                                executor._unregister_job(job_id)
+                                api.mark_job_failed(
+                                    job_id, "system",
+                                    f"Worker failed to start job thread: {e}",
+                                )
+                                raise
                             active_threads.append(t)
                         else:
                             stop_event.wait(runtime_config.get("job_poll_interval"))

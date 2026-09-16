@@ -108,10 +108,10 @@ class SchedulerAPI:
             logger.error("Failed to check resume eligibility for job %s: %s", job_id, e)
             raise
 
-    def send_logs(self, job_id: str, lines: list[str]):
+    def send_logs(self, job_id: str, lines: list[str]) -> bool:
         """Stream training log lines to the scheduler for realtime UI display."""
         if not lines:
-            return
+            return True
         try:
             safe_job_id = quote(str(job_id), safe="")
             resp = requests.post(
@@ -120,8 +120,10 @@ class SchedulerAPI:
                 timeout=5,
             )
             resp.raise_for_status()
+            return True
         except Exception as e:
             logger.debug("Failed to stream logs for job %s: %s", job_id, e)
+            return False
 
     def save_vram_estimation(self, job_id: str, report: dict):
         try:

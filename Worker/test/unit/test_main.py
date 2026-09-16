@@ -72,6 +72,7 @@ class TestJobLoop:
     def test_pulls_and_processes(self):
         executor = MagicMock()
         executor.active_jobs_count = 0
+        executor.has_unresumed_job.return_value = False
         api = MagicMock()
         api.pull_job.return_value = {"id": "j1"}
         stop_event = MagicMock()
@@ -88,6 +89,7 @@ class TestJobLoop:
     def test_no_job_no_process(self):
         executor = MagicMock()
         executor.active_jobs_count = 0
+        executor.has_unresumed_job.return_value = False
         api = MagicMock()
         api.pull_job.return_value = None
         stop_event = MagicMock()
@@ -104,6 +106,7 @@ class TestJobLoop:
     def test_paused_skips_polling(self):
         executor = MagicMock()
         executor.active_jobs_count = 0
+        executor.has_unresumed_job.return_value = False
         api = MagicMock()
         stop_event = MagicMock()
         stop_event.is_set.side_effect = [False, True]
@@ -157,6 +160,7 @@ class TestJobLoop:
     def test_effective_vram_passed_to_pull(self):
         executor = MagicMock()
         executor.active_jobs_count = 0
+        executor.has_unresumed_job.return_value = False
         executor.get_effective_free_vram.return_value = 7.0
         api = MagicMock()
         api.pull_job.return_value = None
@@ -193,6 +197,50 @@ class TestJobLoop:
             if c.kwargs.get("target") is executor.resume_persisted_job_if_any
         ]
         assert len(resume_threads) >= 1
+
+    def test_failed_resume_thread_start_releases_scan(self):
+        executor = MagicMock()
+        executor.active_jobs_count = 0
+        executor.has_unresumed_job.return_value = True
+        executor.try_begin_resume_scan.return_value = True
+        api = MagicMock()
+        stop_event = MagicMock()
+        stop_event.is_set.side_effect = [False, True]
+        failed_thread = MagicMock()
+        failed_thread.start.side_effect = RuntimeError("cannot start")
+
+        with (
+            patch.object(main, "is_paused", return_value=False),
+            patch.object(main.runtime_config, "get", return_value=2),
+            patch.object(main.threading, "Thread", return_value=failed_thread),
+        ):
+            main.job_loop(executor, api, stop_event)
+
+        executor.end_resume_scan.assert_called_once()
+
+    def test_failed_job_thread_start_releases_job(self):
+        executor = MagicMock()
+        executor.active_jobs_count = 0
+        executor.has_unresumed_job.return_value = False
+        executor.try_begin_job.return_value = True
+        api = MagicMock()
+        api.pull_job.return_value = {"id": "j1"}
+        stop_event = MagicMock()
+        stop_event.is_set.side_effect = [False, True]
+        failed_thread = MagicMock()
+        failed_thread.start.side_effect = RuntimeError("cannot start")
+
+        with (
+            patch.object(main, "get_gpu_info",
+                         return_value=("A100", 80.0, 40.0, 2, 10.0)),
+            patch.object(main, "is_paused", return_value=False),
+            patch.object(main.runtime_config, "get", return_value=2),
+            patch.object(main.threading, "Thread", return_value=failed_thread),
+        ):
+            main.job_loop(executor, api, stop_event)
+
+        executor._unregister_job.assert_called_once_with("j1")
+        api.mark_job_failed.assert_called_once()
 
     def test_reserves_capacity_before_worker_thread_registers(self):
         """job_loop must count a pulled job immediately, not only once the
@@ -249,7 +297,7 @@ class TestJobLoop:
                 self.calls = 0
                 self._lk = threading.Lock()
 
-            def resume_persisted_job_if_any(self):
+            def resume_persisted_job_if_any(self, scan_reserved=False):
                 with self._lk:
                     self.calls += 1
                 # Model a slow resume that only registers once it is underway.

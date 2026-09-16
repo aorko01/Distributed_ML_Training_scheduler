@@ -355,6 +355,15 @@ class TestJobsRoutes:
         ):
             assert client.post("/logs/j1", json={"lines": ["a"]}).json() == {"ok": True}
 
+    def test_ingest_logs_reports_stream_failure(self, db):
+        client = self._client(db)
+        with patch.object(
+            jobs_route.log_service, "publish_log_lines",
+            new=AsyncMock(side_effect=RuntimeError("redis down")),
+        ):
+            response = client.post("/logs/j1", json={"lines": ["a"]})
+        assert response.status_code == 503
+
     def test_authed_endpoints(self, db):
         user = make_user(db)
         job = make_job(db, user.user_id, status=JobStatus.RUNNABLE)

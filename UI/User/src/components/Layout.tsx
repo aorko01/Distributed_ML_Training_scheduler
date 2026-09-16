@@ -47,32 +47,38 @@ const Layout: React.FC = () => {
 
       <main className="main-content">
         <header className="top-header" style={{ display: 'flex', gap: '1.5rem' }}>
-          <NavLink 
-            to="/profile" 
-            style={({ isActive }) => ({
-              color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
-              textDecoration: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              fontWeight: 500,
-              fontSize: '0.875rem'
-            })}
-          >
-            <User size={18} />
-            Profile
-          </NavLink>
-          <button 
-            onClick={handleLogout}
-            style={{ 
-              background: 'none', border: 'none', cursor: 'pointer', 
-              color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem',
-              fontWeight: 500, fontSize: '0.875rem'
-            }}
-          >
-            <LogOut size={18} />
-            Logout
-          </button>
+          <div className="command-status" aria-label="System console status">
+            <span className="command-status-dot" aria-hidden="true" />
+            Command Console
+          </div>
+          <div className="header-actions">
+            <NavLink
+              to="/profile"
+              style={({ isActive }) => ({
+                color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                textDecoration: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                fontWeight: 500,
+                fontSize: '0.875rem'
+              })}
+            >
+              <User size={18} />
+              Profile
+            </NavLink>
+            <button
+              onClick={handleLogout}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem',
+                fontWeight: 500, fontSize: '0.875rem'
+              }}
+            >
+              <LogOut size={18} />
+              Logout
+            </button>
+          </div>
         </header>
         <div className="page-content">
           <Outlet />

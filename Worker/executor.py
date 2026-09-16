@@ -59,10 +59,17 @@ class JobExecutor:
         except Exception as e:
             logger.error("Failed to connect to Docker daemon: %s", e)
 
+        # docker-py's API client owns a requests Session, which is not safe to
+        # mutate from several job threads at once.  Keep SDK operations short
+        # and serialized; the long-running containers themselves use the CLI
+        # and still execute concurrently.
+        self._docker_client_lock = threading.Lock()
+
         self._active_jobs_lock = threading.Lock()
         self._active_jobs: dict[str, dict] = {}
         self._pending: set[str] = set()
         self._resuming: set[str] = set()
+        self._resume_scan_active = False
 
         self._job_logs_lock = threading.Lock()
         self._job_logs: dict[str, _JobLogState] = {}
@@ -70,9 +77,13 @@ class JobExecutor:
     @property
     def active_jobs_count(self) -> int:
         with self._active_jobs_lock:
-            if self._pending:
+            # Unstarted job/resume reservations have priority over pulling new
+            # work. Reporting the worker as full closes the window where the
+            # polling thread could claim a slot before the reserved thread has
+            # registered its job and VRAM requirement.
+            if self._resume_scan_active or self._pending or self._resuming:
                 return int(runtime_config.get("max_concurrent_jobs") or 2)
-            return len(self._active_jobs)
+            return len(self._active_jobs) + len(self._resuming)
 
     def is_job_active(self, job_id: str) -> bool:
         with self._active_jobs_lock:
@@ -84,7 +95,13 @@ class JobExecutor:
 
     def begin_resume(self, job_id: str) -> bool:
         with self._active_jobs_lock:
-            if job_id in self._active_jobs or job_id in self._resuming:
+            max_jobs = int(runtime_config.get("max_concurrent_jobs") or 2)
+            occupied = len(self._active_jobs) + len(self._resuming)
+            if (
+                occupied >= max_jobs
+                or job_id in self._active_jobs
+                or job_id in self._resuming
+            ):
                 return False
             self._resuming.add(job_id)
             return True
@@ -92,6 +109,18 @@ class JobExecutor:
     def end_resume(self, job_id: str):
         with self._active_jobs_lock:
             self._resuming.discard(job_id)
+
+    def try_begin_resume_scan(self) -> bool:
+        """Reserve the single persisted-job scan allowed at a time."""
+        with self._active_jobs_lock:
+            if self._resume_scan_active:
+                return False
+            self._resume_scan_active = True
+            return True
+
+    def end_resume_scan(self):
+        with self._active_jobs_lock:
+            self._resume_scan_active = False
 
     def get_effective_free_vram(self, free_vram: float, total_vram: float = 0.0) -> float:
         """Compute free VRAM accounting for active jobs whose allocations may
@@ -122,9 +151,11 @@ class JobExecutor:
             single = load_running_job()
             if single:
                 persisted = [single]
+        with self._active_jobs_lock:
+            claimed = set(self._active_jobs) | set(self._resuming)
         for item in persisted:
             jid = item.get("job_id") if isinstance(item, dict) else None
-            if jid and not self.is_job_active(jid) and jid not in self._resuming:
+            if jid and jid not in claimed:
                 return True
         return False
 
@@ -149,7 +180,8 @@ class JobExecutor:
     def pull_docker_image(self, image_name: str) -> bool:
         logger.info("Pulling Docker image: %s", image_name)
         try:
-            self.docker_client.images.pull(image_name)
+            with self._docker_client_lock:
+                self.docker_client.images.pull(image_name)
             logger.info("Successfully pulled image: %s", image_name)
             return True
         except Exception as e:
@@ -159,7 +191,8 @@ class JobExecutor:
     def _image_workdir(self, image_name: str) -> str | None:
         """Return the image's configured WORKDIR, or None if it can't be read."""
         try:
-            image = self.docker_client.images.get(image_name)
+            with self._docker_client_lock:
+                image = self.docker_client.images.get(image_name)
             return (image.attrs.get("Config", {}) or {}).get("WorkingDir") or None
         except Exception as e:
             logger.debug("Failed to read WORKDIR for %s: %s", image_name, e)
@@ -540,6 +573,7 @@ class JobExecutor:
                 line = line.rstrip("\r\n")
                 if job_log is not None:
                     job_log.job_log_buffer.append(line)
+                    job_log.log_push_buffer.append(line)
                 self._flush_log_push(job_id)
                 logger.info("[job %s] %s", job_id, line)
 
@@ -644,8 +678,11 @@ class JobExecutor:
             return
         lines = state.log_push_buffer
         state.log_push_buffer = []
-        self.api.send_logs(job_id, lines)
         state.last_log_push = now
+        if not self.api.send_logs(job_id, lines):
+            # Preserve ordering when a transient scheduler/Redis failure makes
+            # a push fail.  A later periodic or final flush will retry it.
+            state.log_push_buffer = lines + state.log_push_buffer
 
     def _append_build_log(
         self, job_id: str, store: ObjectStore, log_buffer: list[str], force: bool = False
@@ -695,6 +732,9 @@ class JobExecutor:
                 self.api.mark_job_failed(job_id, "user", f"Invalid job_id: {job_id!r}")
             except Exception:
                 pass
+            # The polling loop reserves capacity before starting this method.
+            # An early validation return must release that reservation.
+            self._unregister_job(job_id)
             return
         image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
         vram_required = job.get("vram_required")
@@ -725,10 +765,56 @@ class JobExecutor:
                     self.api.mark_job_failed(job_id, "system", f"Unknown job flag: {flag}")
                 except Exception:
                     pass
+        except Exception as e:
+            logger.exception("Unhandled error while processing job %s", job_id)
+            self.api.mark_job_failed(job_id, "system", f"Worker execution error: {e}")
+            if flag in ("training", "retry"):
+                clear_running_job(job_id)
         finally:
+            self._drop_job_log_state(job_id)
             self._unregister_job(job_id)
 
-    def resume_persisted_job_if_any(self) -> bool:
+    def _resume_reserved_job(self, job_id: str) -> bool:
+        """Resume one persisted job whose capacity slot is already reserved."""
+        activated = False
+        try:
+            gpu_type, _, _, _, _ = get_gpu_info()
+            job = self.api.resume_job(job_id, gpu_type)
+            if job is None:
+                logger.info("Job %s is no longer in progress on this worker; "
+                            "dropping local resume state.", job_id)
+                clear_running_job(job_id)
+                return False
+
+            self._register_job(job_id, job.get("vram_required"))
+            activated = True
+            self._finalize_job_log_state(job_id)
+            image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+            logger.info("Resuming persisted job %s after worker restart.", job_id)
+            record_event("info", f"Resuming persisted job {job_id} after worker restart")
+
+            if not self.pull_docker_image(image_name):
+                logger.error("Aborting resume of job %s: image pull failed.", job_id)
+                self.api.mark_job_failed(
+                    job_id, "system",
+                    f"Failed to pull Docker image {image_name} while resuming",
+                )
+                clear_running_job(job_id)
+                return False
+
+            self.handle_retry(job_id, image_name, job.get("resume_command"),
+                              job.get("command"))
+            return True
+        except Exception:
+            logger.exception("Failed to resume persisted job %s", job_id)
+            return False
+        finally:
+            self._drop_job_log_state(job_id)
+            if activated:
+                self._unregister_job(job_id)
+            self.end_resume(job_id)
+
+    def resume_persisted_job_if_any(self, scan_reserved: bool = False) -> bool:
         """Pick up jobs this worker was running before it died, if the
         scheduler still has them IN_PROGRESS on this worker.
 
@@ -741,74 +827,95 @@ class JobExecutor:
         possible without blocking the polling loop for the duration of
         a long resume operation.
         """
-        max_jobs = int(runtime_config.get("max_concurrent_jobs") or 2)
-        persisted = []
+        if not scan_reserved and not self.try_begin_resume_scan():
+            return False
+
+        scan_held = True
         try:
-            persisted = load_running_jobs()
-        except Exception:
-            pass
-        if not persisted:
-            single = load_running_job()
-            if single:
-                persisted = [single]
+            persisted = []
+            try:
+                persisted = load_running_jobs()
+            except Exception:
+                pass
+            if not persisted:
+                single = load_running_job()
+                if single:
+                    persisted = [single]
 
-        any_resumed = False
-        for item in persisted:
-            if self.active_jobs_count >= max_jobs:
-                break
-            if not isinstance(item, dict):
-                continue
-            job_id = item.get("job_id")
-            if not job_id:
-                has_valid = any(
-                    isinstance(other, dict) and other.get("job_id")
-                    for other in persisted
-                )
-                if has_valid:
+            reserved_job_ids: list[str] = []
+            for item in persisted:
+                if not isinstance(item, dict):
                     continue
-                clear_running_job()
-                continue
-            if self.is_job_active(job_id):
-                continue
-            try:
-                gpu_type, _, _, _, _ = get_gpu_info()
-                job = self.api.resume_job(job_id, gpu_type)
-            except Exception as e:
-                logger.warning("Could not contact scheduler to resume job %s; "
-                               "will retry later.", job_id)
-                continue
-
-            if job is None:
-                logger.info("Job %s is no longer in progress on this worker; "
-                            "dropping local resume state.", job_id)
-                clear_running_job(job_id)
-                continue
-
-            self._register_job(job_id, job.get("vram_required"))
-            self._finalize_job_log_state(job_id)
-            image_name = f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
-            logger.info("Resuming persisted job %s after worker restart.", job_id)
-            record_event("info", f"Resuming persisted job {job_id} after worker restart")
-
-            try:
-                if not self.pull_docker_image(image_name):
-                    logger.error("Aborting resume of job %s: image pull failed.", job_id)
+                job_id = item.get("job_id")
+                if not job_id:
+                    has_valid = any(
+                        isinstance(other, dict) and other.get("job_id")
+                        for other in persisted
+                    )
+                    if not has_valid:
+                        clear_running_job()
+                    continue
+                if "/" in str(job_id) or "\\" in str(job_id) or ".." in str(job_id):
+                    logger.warning("Dropping unsafe persisted job_id %r", job_id)
                     clear_running_job(job_id)
                     continue
 
-                self.handle_retry(job_id, image_name, job.get("resume_command"),
-                                  job.get("command"))
-                any_resumed = True
-            except Exception:
-                continue
-            finally:
-                self._unregister_job(job_id)
-                self.end_resume(job_id)
-        return any_resumed
+                # Capacity checking and reservation must be one operation;
+                # otherwise the polling thread can claim the same last slot.
+                if self.begin_resume(job_id):
+                    reserved_job_ids.append(job_id)
+
+            # All currently available slots are visible in _resuming now. Once
+            # they register (or fail), polling can safely use any capacity left.
+            self.end_resume_scan()
+            scan_held = False
+
+            if not reserved_job_ids:
+                return False
+
+            results: list[bool] = []
+            results_lock = threading.Lock()
+
+            def resume_one(job_id: str):
+                result = self._resume_reserved_job(job_id)
+                with results_lock:
+                    results.append(result)
+
+            resume_threads: list[threading.Thread] = []
+            for job_id in reserved_job_ids:
+                thread = threading.Thread(
+                    target=resume_one,
+                    args=(job_id,),
+                    name=f"resume-job-{job_id}",
+                    daemon=True,
+                )
+                try:
+                    thread.start()
+                except Exception:
+                    logger.exception("Failed to start resume thread for job %s", job_id)
+                    self.end_resume(job_id)
+                    continue
+                resume_threads.append(thread)
+
+            for thread in resume_threads:
+                thread.join()
+
+            return any(results)
+        finally:
+            if scan_held:
+                self.end_resume_scan()
 
     def try_begin_job(self, job_id: str, vram_required: float | None = None) -> bool:
         with self._active_jobs_lock:
-            if job_id in self._active_jobs or job_id in self._pending:
+            max_jobs = int(runtime_config.get("max_concurrent_jobs") or 2)
+            occupied = len(self._active_jobs) + len(self._resuming)
+            if (
+                self._resume_scan_active
+                or occupied >= max_jobs
+                or job_id in self._active_jobs
+                or job_id in self._pending
+                or job_id in self._resuming
+            ):
                 return False
             self._active_jobs[job_id] = {
                 "started_at": time.time(),
@@ -820,6 +927,7 @@ class JobExecutor:
     def _register_job(self, job_id: str, vram_required: float | None = None):
         """Track a job as currently being executed."""
         with self._active_jobs_lock:
+            self._resuming.discard(job_id)
             if job_id in self._active_jobs:
                 self._pending.discard(job_id)
                 return
