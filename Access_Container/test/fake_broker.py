@@ -18,7 +18,8 @@ class FakeBroker:
         self.socket = socket
         self.token = token
         self.cwd = cwd
-        self.environment = environment or {'PATH': '/usr/bin:/bin', 'TERM': 'xterm-256color', 'FAKE_WORKLOAD': 'yes'}
+        self.environment = environment or {'PATH': '/usr/bin:/bin', 'TERM': 'xterm-256color',
+                                            'FAKE_WORKLOAD': 'yes', 'PS1': 'fake-broker> '}
         self.children = set()
         self.tasks = set()
         self.server = None
@@ -66,6 +67,10 @@ class FakeBroker:
             def child_setup():
                 os.setsid()
                 fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+                # Ignored signals survive exec; runner settings must not make
+                # the interactive shell's foreground jobs immune to Control-C.
+                for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM):
+                    signal.signal(sig, signal.SIG_DFL)
             child = subprocess.Popen(['/bin/sh', '-i'], stdin=slave, stdout=slave, stderr=slave,
                                      cwd=self.cwd, env=self.environment, preexec_fn=child_setup)
             self.children.add(child)
@@ -123,17 +128,37 @@ class FakeBroker:
         except (EOFError, OSError, ProtocolError, TimeoutError):
             pass
         finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            if child:
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await asyncio.to_thread(child.wait)
-                self.children.discard(child)
-            for descriptor in (master, slave):
-                if descriptor is not None:
-                    os.close(descriptor)
-            await close_writer(writer)
+            async def cleanup():
+                for task in tasks:
+                    task.cancel()
+                if child:
+                    groups = {child.pid}
+                    if master is not None:
+                        try:
+                            foreground = os.tcgetpgrp(master)
+                            if foreground > 0:
+                                groups.add(foreground)
+                        except OSError:
+                            pass
+                    # Job control puts foreground jobs in a separate group.
+                    for group in groups:
+                        try:
+                            os.killpg(group, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                await asyncio.gather(*tasks, return_exceptions=True)
+                if child:
+                    await asyncio.to_thread(child.wait)
+                    self.children.discard(child)
+                for descriptor in (master, slave):
+                    if descriptor is not None:
+                        os.close(descriptor)
+                await close_writer(writer)
+
+            # stop() can cancel a handler already cleaning up after EOF.
+            cleaning = asyncio.create_task(cleanup())
+            try:
+                await asyncio.shield(cleaning)
+            except asyncio.CancelledError:
+                await cleaning
+                raise

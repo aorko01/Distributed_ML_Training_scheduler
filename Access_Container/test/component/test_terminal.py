@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import replace
 import hmac
 import os
+import signal
 from pathlib import Path
 import pytest
 from interactive_access.config import Config, read_secret
@@ -100,6 +101,38 @@ async def test_cleanup(endpoint, failure):
     await close_writer(writer)
 
 
+async def test_broker_stop_during_disconnect_cleanup(endpoint, monkeypatch):
+    import fake_broker
+
+    service, broker, _, port, _ = endpoint
+    cleaning = asyncio.Event()
+    finish = asyncio.Event()
+
+    class AsyncioProxy:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def to_thread(self, function, *args, **kwargs):
+            cleaning.set()
+            await finish.wait()
+            return await asyncio.to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr(fake_broker, 'asyncio', AsyncioProxy())
+    reader, writer = await open_terminal(port)
+    await close_writer(writer)
+    try:
+        async with asyncio.timeout(3):
+            await cleaning.wait()
+            stopping = asyncio.create_task(broker.stop())
+            await asyncio.sleep(0)  # Cancel the handler while reaping is pending.
+            finish.set()
+            await stopping
+        assert not broker.children
+        await wait_cleanup(service, broker)
+    finally:
+        finish.set()
+
+
 async def test_capacity_and_open_timeout(endpoint):
     service, broker, _, port, _ = endpoint
     reader, writer = await open_terminal(port)
@@ -138,9 +171,15 @@ async def test_auth_readiness_replay_and_arbitrary_fields(endpoint):
     assert not broker.children
 
 
-async def test_large_output_backpressure_and_control_c(endpoint):
+@pytest.mark.parametrize('ignore_sigint', [False, True])
+async def test_large_output_backpressure_and_control_c(endpoint, ignore_sigint):
     service, broker, _, port, _ = endpoint
-    reader, writer = await open_terminal(port)
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN) if ignore_sigint else None
+    try:
+        reader, writer = await open_terminal(port)
+    finally:
+        if ignore_sigint:
+            signal.signal(signal.SIGINT, previous)
     await write_record(writer, Type.STDIN, b'yes terminal_output\n')
     # Wait for the foreground job's output, rather than its echoed command,
     # before sending Control-C; under load it may not have started in .1s.
@@ -148,6 +187,9 @@ async def test_large_output_backpressure_and_control_c(endpoint):
     await asyncio.sleep(.1)  # Deliberately slow consumer; no application queue.
     assert writer.transport.get_write_buffer_size() <= 65536
     await write_record(writer, Type.STDIN, b'\x03')
+    # The shell can flush queued input while handling SIGINT. Wait until it
+    # accepts commands again before submitting the confirmation command.
+    await output_until(reader, b'fake-broker> ')
     await write_record(writer, Type.STDIN, b'printf "control_%s\\n" ok\n')
     await output_until(reader, b'control_ok')
     await close_writer(writer)
