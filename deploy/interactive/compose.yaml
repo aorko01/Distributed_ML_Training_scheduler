@@ -48,6 +48,7 @@ services:
     image: dml-interactive-management:local
     build: Headscale_Management
     environment: *management-env
+    extra_hosts: ["${HM_HEADSCALE_HOST_OVERRIDE:-headscale-host.internal}:${HM_HEADSCALE_HOST_IP:-host-gateway}"]
     volumes: *management-mounts
     networks: [control]
     healthcheck:
@@ -60,6 +61,7 @@ services:
     image: dml-interactive-management:local
     command: [python, -m, headscale_management.database]
     environment: *management-env
+    extra_hosts: ["${HM_HEADSCALE_HOST_OVERRIDE:-headscale-host.internal}:${HM_HEADSCALE_HOST_IP:-host-gateway}"]
     volumes: *management-mounts
     networks: [control]
     restart: 'no'

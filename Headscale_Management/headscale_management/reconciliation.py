@@ -19,14 +19,35 @@ def verify_policy(actual, required_file):
     for rule in required.get("grants", []):
         if rule not in policy.get("grants", []):
             raise ControlUnavailable("required interactive network grant absent")
-    # Other rules may exist for existing devices, but none may broaden this
-    # controlled role boundary. Ambiguous wildcard policies fail closed.
-    tags = {"tag:interactive-gateway", "tag:interactive-endpoint", "*"}
+    # Only selectors known to exclude the controlled service identities may
+    # occur in extra rules. Raw IPs, CIDRs and host aliases can select future
+    # interactive addresses and cannot be accepted by a string/tag check.
+    roles = {"tag:interactive-gateway", "tag:interactive-endpoint"}
+    def username(value):
+        return isinstance(value, str) and "@" in value and not any(c in value for c in (":", "*", " ", "\n"))
+    def ordinary(value, acl_destination=False):
+        if not isinstance(value, str):
+            return False
+        if acl_destination:
+            value = value.rsplit(":", 1)[0]
+        if value == "autogroup:member":
+            # Headscale 0.29.3 explicitly excludes tagged nodes from member.
+            return True
+        if value.startswith("tag:"):
+            return value not in roles and "*" not in value
+        if value.startswith("group:"):
+            members = policy.get("groups", {}).get(value, [])
+            return bool(members) and all(username(member) for member in members)
+        return username(value)
     for kind in ("grants", "acls"):
         for rule in policy.get(kind, []):
-            values = set(rule.get("src", [])) | {v.rsplit(":", 1)[0] if v.startswith("tag:") and v.count(":") > 1 else v for v in rule.get("dst", [])}
-            if (tags & values or any(v.startswith("autogroup:") for v in values)) and rule not in required.get(kind, []):
-                raise ControlUnavailable("interactive network policy is too broad")
+            if rule in required.get(kind, []):
+                continue
+            if (not rule.get("src") or not rule.get("dst")
+                    or not all(ordinary(value) for value in rule["src"])
+                    or not all(ordinary(value, kind == "acls") for value in rule["dst"])):
+                raise ControlUnavailable("interactive network policy is too broad or ambiguous")
+
 
 
 class Reconciler:

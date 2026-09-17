@@ -1,0 +1,41 @@
+# Merge these routes into the existing Caddyfile; preserve its TLS issuer.
+# This host uses sslh on public :443 and Caddy's HTTPS listener on :8443.
+{
+	https_port 8443
+	cert_issuer acme {
+		dir https://acme-v02.api.letsencrypt.org/directory
+	}
+}
+
+scheduler.example.invalid:8443 {
+	handle /v1/connect/* {
+		reverse_proxy 127.0.0.1:8030
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8000
+	}
+}
+
+headscale.example.invalid:8443 {
+	# sslh forwards public connections from loopback. Do not authorize admin
+	# access on this listener merely because remote_ip is 127.0.0.1.
+	@admin path /api/* /swagger*
+	handle @admin {
+		respond 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
+}
+
+https://headscale.example.invalid:8444 {
+	# Replace this with the persistent dml-control network's gateway address.
+	bind 172.19.0.1
+	@management path /api/v1/* /health
+	handle @management {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond 404
+	}
+}

@@ -33,6 +33,10 @@ before remote cleanup, and tombstones continue removing late matching nodes.
 Cleanup never bulk-deletes users/nodes/keys. Readiness requires schema, secrets,
 administrative reads and the required policy; it does not depend on gateway startup.
 Successful probes re-read membership/policy so outages cannot publish new READY.
+Unrelated ordinary-user/group/tag rules may remain. `autogroup:member` excludes
+tagged service nodes in the pinned release. Extra wildcard, raw-address/CIDR or
+host-alias rules are rejected because they could select future interactive IPs;
+use explicit disjoint identity selectors instead.
 
 Ticket signing uses Ed25519 with a fixed EdDSA algorithm and `kid`. To rotate,
 publish new/current and old/retiring public keys to management and gateway, switch

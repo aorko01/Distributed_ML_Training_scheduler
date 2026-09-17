@@ -29,3 +29,22 @@ async def test_driver_cannot_bypass_gateway(controller, records):
                 _, writer = await asyncio.open_connection(target, 9000)
                 writer.close()
                 await writer.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_nodes_keep_connectivity_without_access_to_service_roles(controller, records):
+    ips = {}
+    for name in ("sentinel", "legacy"):
+        ips[name] = (await controller.agent(name, "status", method="GET"))["TailscaleIPs"][0]
+        listener = await controller.agent(name, "listeners", method="GET")
+        assert listener["ports"] == listener["tcp_ports"] == [9000, 9001]
+    async def ordinary_pair():
+        forward = await controller.agent("legacy", "tcp", {"ip": ips["sentinel"], "port": 9000})
+        reverse = await controller.agent("sentinel", "tcp", {"ip": ips["legacy"], "port": 9000})
+        return forward.get("prefix") == "S:" and reverse.get("prefix") == "L:"
+    from conftest import wait
+    await wait(ordinary_pair)
+    endpoint = records["a"]["membership"]["ips"][0]
+    assert not (await controller.agent("legacy", "tcp", {"ip": endpoint, "port": 9000}))["connected"]
+    assert not (await controller.agent("a", "tcp", {"ip": ips["sentinel"], "port": 9000}))["connected"]
+    await wait(ordinary_pair)

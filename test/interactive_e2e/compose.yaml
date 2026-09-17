@@ -67,7 +67,7 @@ services:
       - management-state:/state
       - ${FIXTURE_STATE}/secrets:/secrets:ro
       - ${FIXTURE_STATE}/certs:/certs:ro
-      - ./policy.hujson:/policy.hujson:ro
+      - ../../deploy/interactive/required-policy.json:/policy.hujson:ro
   management:
     image: ${MANAGEMENT_IMAGE:?}
     build: ../../Headscale_Management
@@ -77,7 +77,7 @@ services:
       - management-state:/state
       - ${FIXTURE_STATE}/secrets:/secrets:ro
       - ${FIXTURE_STATE}/certs:/certs:ro
-      - ./policy.hujson:/policy.hujson:ro
+      - ../../deploy/interactive/required-policy.json:/policy.hujson:ro
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health/ready',timeout=4)"]
       interval: 2s
@@ -164,8 +164,30 @@ services:
     volumes: [fresh-socket:/var/run/tailscale]
   sentinel:
     <<: *sidecar
-    networks: [transport]
-    volumes: [sentinel-state:/state, '${FIXTURE_STATE}/certs:/certs:ro']
+    networks: [transport, fixture]
+    volumes: [sentinel-state:/state, sentinel-socket:/var/run/tailscale, '${FIXTURE_STATE}/certs:/certs:ro']
+  sentinel-agent:
+    <<: *agent
+    network_mode: service:sentinel
+    volumes: [sentinel-socket:/var/run/tailscale]
+  sentinel-echo:
+    <<: *fixture
+    network_mode: service:sentinel
+    command: [python, fixtures/echo_endpoint.py]
+    environment: {ECHO_PREFIX: 'S:'}
+  legacy:
+    <<: *sidecar
+    networks: [transport, fixture]
+    volumes: [legacy-state:/state, legacy-socket:/var/run/tailscale, '${FIXTURE_STATE}/certs:/certs:ro']
+  legacy-agent:
+    <<: *agent
+    network_mode: service:legacy
+    volumes: [legacy-socket:/var/run/tailscale]
+  legacy-echo:
+    <<: *fixture
+    network_mode: service:legacy
+    command: [python, fixtures/echo_endpoint.py]
+    environment: {ECHO_PREFIX: 'L:'}
   gateway-agent:
     <<: *agent
     network_mode: service:tailscale
@@ -196,3 +218,6 @@ volumes:
   fresh-state: {}
   fresh-socket: {}
   sentinel-state: {}
+  sentinel-socket: {}
+  legacy-state: {}
+  legacy-socket: {}

@@ -69,7 +69,8 @@ def controller():
 def records(controller):
     async def prepare():
         await wait(lambda: controller.request("fixture/live", method="GET"))
-        await controller.agent("gateway-agent", "serve")
+        for name in ("gateway-agent", "sentinel", "legacy"):
+            await controller.agent(name, "serve")
         result = {}
         for name, user in (("a", "user-a"), ("b", "user-b")):
             result[name] = await controller.request("fixture/prepare", {"resource": "resource-" + name, "generation": "g1", "agent": name, "owner": user})

@@ -112,7 +112,7 @@ async def internal(request: Request):
 @app.post("/fixture/agent")
 async def endpoint_action(request: Request):
     body = await request.json()
-    if body["name"] not in ("a", "b", "replacement", "gateway-agent", "fresh") or body["path"] not in ("tcp", "listeners", "join", "status", "offline", "online", "serve"):
+    if body["name"] not in ("a", "b", "replacement", "gateway-agent", "fresh", "sentinel", "legacy") or body["path"] not in ("tcp", "listeners", "join", "status", "offline", "online", "serve"):
         raise HTTPException(403, "denied")
     return await agent(body["name"], body["path"], body.get("body"), body.get("method", "POST"))
 

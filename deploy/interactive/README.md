@@ -11,8 +11,8 @@ CPU/memory bounds and rotating logs keep gateway traffic bounded on this host.
 1. Validate CI, shell checks, disposable restart and real network E2E first.
 2. Locate the actual Linux push hook and its checkout. The repository Actions
    deploy job targets an external macOS script, which is not evidence that it
-   updates this host. No Linux hook has yet been identified in inspected systemd,
-   cron, user configuration or repository Git hook paths.
+   updates this host. The user reports the push trigger runs on another machine; verify that external
+   script actually updates this Linux checkout and calls its updated `restart.sh`.
 3. Back up and migrate existing Scheduler Postgres storage deliberately with
    `POSTGRES_BACKUP_DIR=<protected-absolute-directory> bash deploy/migrate-postgres-storage.sh`.
    This separate one-time operation stops API/DB, takes a SQL backup and copies
@@ -50,9 +50,12 @@ CPU/memory bounds and rotating logs keep gateway traffic bounded on this host.
    provision a narrow private host proxy. Never broaden admin exposure globally.
 9. Merge the gateway location into the existing trusted HTTPS proxy. Mapping is
    on tailscale's shared namespace at `127.0.0.1:8030`, never on gateway itself.
-   SOCKS and LocalAPI have no published port. The supplied nginx example shows
-   upgrades/timeouts. For Caddy, place `handle /v1/connect/* { reverse_proxy
-   127.0.0.1:8030 }` before the existing Scheduler fallback. Preserve its virtual
+   SOCKS and LocalAPI have no published port. The supplied `Caddyfile.example` shows the gateway route before the Scheduler
+   fallback, public Headscale control routing and a separate admin TLS listener
+   bound to the private bridge. Caddy handles WebSocket upgrades automatically.
+   On this host sslh owns public :443 and forwards TLS to Caddy :8443; do not use
+   loopback source as an admin allowlist on that public listener. Use the optional
+   management-only hostname/IP override for the private listener. Preserve its virtual
    host/certificate settings. Verify actual WSS with an issued ticket; container
    health alone is not public ingress evidence.
 10. Set `REQUIRE_INTERACTIVE=1` in the real push-hook environment, then invoke

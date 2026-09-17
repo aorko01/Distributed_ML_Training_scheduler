@@ -31,7 +31,8 @@ to this unique project. These hooks are not production authentication modes.
 
 Suite covers real enrollment/key reuse/key expiry, exact concurrent binary A/B
 routing, owner/path/signature/audience/replay rejection, bridge bypass denial,
-peer/reverse/port policy, generation replacement, local and live revocation,
+peer/reverse/port policy, preserved ordinary-node connectivity with role isolation,
+generation replacement, local and live revocation,
 exact-ID cleanup isolation with unrelated sentinel, offline endpoints, management
 and Headscale outages and durable replay after restart. Before tests the harness
 performs repeated migrate/bootstrap/app recreation on persistent volumes and

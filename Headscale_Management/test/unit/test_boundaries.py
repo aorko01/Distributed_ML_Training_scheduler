@@ -90,3 +90,22 @@ def test_cleanup_failure_retries_and_late_node_is_removed(system):
     system.now[0] += 6
     asyncio.run(reconciler.once())
     assert all(node["key_id"] != "2" for node in system.headscale.records)
+
+
+@pytest.mark.parametrize("kind", ["grants", "acls"])
+def test_ordinary_member_policy_preserves_legacy_connectivity(system, kind):
+    import json
+    policy = json.loads(Path(system.settings.required_policy_file).read_text())
+    policy.setdefault(kind, []).append({"src": ["autogroup:member"],
+        "dst": ["autogroup:member:*" if kind == "acls" else "autogroup:member"],
+        **({"action": "accept"} if kind == "acls" else {"ip": ["*"]})})
+    verify_policy(policy, system.settings.required_policy_file)
+
+
+@pytest.mark.parametrize("selector", ["*", "100.64.0.0/10", "fd7a:115c:a1e0::/48", "all-nodes", "autogroup:tagged"])
+def test_ambiguous_alias_or_address_rule_cannot_broaden_role_policy(system, selector):
+    import json
+    policy = json.loads(Path(system.settings.required_policy_file).read_text())
+    policy["grants"].append({"src": [selector], "dst": [selector], "ip": ["*"]})
+    with pytest.raises(ControlUnavailable):
+        verify_policy(policy, system.settings.required_policy_file)

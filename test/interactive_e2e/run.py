@@ -105,14 +105,16 @@ def main():
                 if time.monotonic() >= deadline:
                     raise RuntimeError("disposable Headscale startup deadline exceeded")
                 time.sleep(0.25)
-            sentinel_key = json.loads(compose("exec", "-T", "headscale", "headscale", "preauthkeys", "create",
-                "--tags", "tag:interactive-endpoint", "--expiration", "1h", "--output", "json").stdout)
-            value = sentinel_key["key"]
-            sensitive.append(value)
-            (state / "certs/sentinel.auth").write_text(value)
-            compose("up", "--detach", "--wait", "--wait-timeout", "30", "sentinel")
-            compose("exec", "-T", "sentinel", "tailscale", "up", "--login-server=https://headscale:8080",
-                    "--auth-key=file:/certs/sentinel.auth", "--hostname=sentinel", "--accept-dns=false", "--timeout=20s")
+            ordinary_user = json.loads(compose("exec", "-T", "headscale", "headscale", "users", "create", "fixture", "--output", "json").stdout)
+            for name in ("sentinel", "legacy"):
+                key = json.loads(compose("exec", "-T", "headscale", "headscale", "preauthkeys", "create",
+                    "--user", str(ordinary_user["id"]), "--expiration", "1h", "--output", "json").stdout)
+                value = key["key"]
+                sensitive.append(value)
+                (state / ("certs/" + name + ".auth")).write_text(value)
+                compose("up", "--detach", "--wait", "--wait-timeout", "30", name)
+                compose("exec", "-T", name, "tailscale", "up", "--login-server=https://headscale:8080",
+                    "--auth-key=file:/certs/" + name + ".auth", "--hostname=" + name, "--accept-dns=false", "--timeout=20s")
             compose("run", "--rm", "--no-deps", "migrate")
             compose("up", "--detach", "--wait", "--wait-timeout", "60", "management", "tailscale")
             compose("run", "--rm", "--no-deps", "bootstrap", timeout=110)
@@ -140,7 +142,8 @@ def main():
                 raise RuntimeError("gateway retained stale sidecar namespace")
             print("Disposable redeployment: persistent identity and current gateway namespace verified", flush=True)
             compose("up", "--detach", "controller", "a", "a-agent", "a-echo", "b", "b-agent", "b-echo",
-                    "replacement", "replacement-agent", "replacement-echo", "fresh", "fresh-agent", "gateway-agent", "gateway-canary")
+                    "replacement", "replacement-agent", "replacement-echo", "fresh", "fresh-agent", "gateway-agent", "gateway-canary",
+                    "sentinel-agent", "sentinel-echo", "legacy-agent", "legacy-echo")
             command = ["run", "--rm", "--no-deps", "driver", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "test_enrollment.py", "test_gateway.py", "test_isolation.py", "test_lifecycle.py", "test_faults.py", "--junitxml=/results/junit.xml"]
             if args.deliberate_failure:
                 command += ["--deliberate-failure", "-k", "deliberate_failure"]

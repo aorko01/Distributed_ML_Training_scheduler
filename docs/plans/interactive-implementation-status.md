@@ -9,16 +9,16 @@ changed by the disposable validation.
 - M1 passed with real pinned Headscale 0.29.3 and Tailscale 1.102.3. Exact key/node
   association, role tags, userspace SOCKS, TCP Serve and policy denial with working
   positive controls are recorded in `test/interactive_e2e/compatibility-evidence.json`.
-- M2–M4 are implemented. Management units: 25 passed; gateway units: 31 passed.
+- M2–M4 are implemented. Management units: 32 passed locally (policy-preservation follow-up); gateway units: 31 passed.
   Tests cover durable identity/fencing, atomic claims, expiry, cleanup, rotation,
   routing admission and bounded relay authorization/cancellation.
 - Restart orchestration: 13 fake-command tests passed. ShellCheck and shell syntax
   passed. Production Compose resolves with placeholder settings. Disposable repeated
   migrations/bootstrap/app recreation preserve gateway identity; sidecar replacement
   recreates the gateway against the current namespace.
-- The final full real-network suite passed all 14 tests, including outages,
+- The final full real-network suite passed all 15 tests locally, including outages,
   replacement/revocation, durable replay and unrelated sentinel survival. Evidence
-  is in `artifacts/interactive-complete-validation/` (local, ignored by Git).
+  is in `artifacts/interactive-caddy-policy-validation/` (local, ignored by Git).
 - The intentional E2E assertion failure returned nonzero; its verifier confirmed
   retained sanitized diagnostics/JUnit and no surviving project containers.
 - M6 operational documentation and future integration contracts are implemented in
@@ -33,11 +33,11 @@ changed by the disposable validation.
 
 ## Remaining gates
 
-- Before production: resolve the verified administrative endpoint, provision the
-  required policy separately without replacing existing-device rules, protect stable
-  service secrets/environment, deliberately back up/migrate Scheduler Postgres
-  storage, create the private control network and validate reverse-proxy WSS.
-- Identify the actual Linux post-push hook and ensure it invokes this checkout with
+- Before production: validate the Caddy/policy follow-up in GitHub Actions, apply
+  the separately validated host proxy/policy candidates, provision the admin key
+  and protected environment, deliberately migrate Scheduler Postgres storage and
+  validate reverse-proxy WSS. See `host-cutover-proposal.md`.
+- Verify the external-machine post-push hook invokes this Linux checkout with
   `REQUIRE_INTERACTIVE=1`. The existing Actions deployment targets an external macOS
   script and does not establish this host's hook.
 
@@ -46,7 +46,11 @@ changed by the disposable validation.
 Installed Headscale advertises `https://headscale.zulfiker.xyz` and listens on
 `127.0.0.1:8080`. A Docker-container HTTPS health probe failed with a TLS internal
 alert. Its file policy path is empty. `/etc/distributed-ml/interactive.env` is absent.
-No Linux push hook was identified in the inspected systemd/cron/user hook locations.
+The user reports the push-to-main trigger runs on another machine; its invocation
+of this Linux checkout remains unverified. The private `dml-control` network and
+stable offline secrets have now been provisioned. A root-only Postgres SQL backup
+completed without stopping containers. Installed Caddy/Headscale configuration and
+Scheduler database storage are still unchanged.
 These are unresolved operational prerequisites, not reasons to weaken TLS or reset
 state. `restart.sh` rejects missing configuration/storage before changing services.
 
