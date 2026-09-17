@@ -1,8 +1,8 @@
 # Interactive infrastructure implementation status
 
-The implementation follows `plan.md`, milestones M1–M6. Production cutover is a
-separate operational gate; existing Headscale and Scheduler state have not been
-changed by the disposable validation.
+The implementation follows `plan.md`, milestones M1–M6. The authorized production cutover is now applied and verified on this VM.
+Existing Headscale nodes and Scheduler data were preserved. External automatic
+push deployment remains a separate, pending operational gate.
 
 ## Evidence
 
@@ -24,35 +24,35 @@ changed by the disposable validation.
 - M6 operational documentation and future integration contracts are implemented in
   `docs/interactive-access-contract.md` and the service/deployment READMEs.
 
-- GitHub-hosted [Actions run 35172507482](https://github.com/aorko01/Distributed_ML_Training_scheduler/actions/runs/35172507482)
-  validated implementation commit `f230a102ff4582d4fde97ab024040b80b2a4dac5`
+- GitHub-hosted [Actions run 35174338416](https://github.com/aorko01/Distributed_ML_Training_scheduler/actions/runs/35174338416)
+  validated implementation commit `5442dbf90a2e86fa073039fb0071e7c26f1bb776`
   and passed every unit job (all five components, Python 3.11/3.12) and the Ubuntu
   network job, including the full suite, deliberate-failure verifier, cleanup and
   sanitized artifact upload. This was a feature-branch push, not an actual fork PR.
   The credential-dependent builder registry job and production deploy were skipped.
 
-## Remaining gates
+## Host cutover evidence and remaining gate
 
-- Before production: validate the Caddy/policy follow-up in GitHub Actions, apply
-  the separately validated host proxy/policy candidates, provision the admin key
-  and protected environment, deliberately migrate Scheduler Postgres storage and
-  validate reverse-proxy WSS. See `host-cutover-proposal.md`.
-- Verify the external-machine post-push hook invokes this Linux checkout with
-  `REQUIRE_INTERACTIVE=1`. The existing Actions deployment targets an external macOS
-  script and does not establish this host's hook.
+Caddy now serves trusted public coordination and Gateway WSS on existing public
+443. Administrative HTTPS is restricted to the private Docker bridge. Required
+policy is applied without deleting existing nodes. Protected secrets/environment
+and persistent Postgres storage are provisioned, with original storage and
+consistent backups retained. Two real production deployments passed readiness,
+preserving Gateway node 163 and all 99 baseline Headscale node IDs.
 
-## Host inspection
+The operator-only `test/interactive_e2e/host_smoke.py` passed real enrollment,
+Gateway probe readiness, public Caddy WSS with an API-issued ticket, exact binary
+relay, replay denial and exact temporary-node cleanup. It is separate from portable
+CI and its controller credential is mounted only during this explicit operator check.
+See `host-cutover-proposal.md` for applied configuration and evidence.
 
-Installed Headscale advertises `https://headscale.zulfiker.xyz` and listens on
-`127.0.0.1:8080`. A Docker-container HTTPS health probe failed with a TLS internal
-alert. Its file policy path is empty. `/etc/distributed-ml/interactive.env` is absent.
-The user reports the push-to-main trigger runs on another machine; its invocation
-of this Linux checkout remains unverified. The private `dml-control` network and
-stable offline secrets have now been provisioned. A root-only Postgres SQL backup
-completed without stopping containers. Installed Caddy/Headscale configuration and
-Scheduler database storage are still unchanged.
-These are unresolved operational prerequisites, not reasons to weaken TLS or reset
-state. `restart.sh` rejects missing configuration/storage before changing services.
+The user supplied the external macOS deployment script. A reviewed replacement is
+prepared at `deploy/external-deploy.sh.example`; install it on that machine so the
+Scheduler checkout explicitly follows main and runs the protected deployment with
+`sudo -n env REQUIRE_INTERACTIVE=1`. Publishing to main and observing the actual
+external deployment remain pending. The existing builder Docker Hub gate still
+runs only on its original main/manual events; its review-branch skip is expected,
+and registry E2E success has not been claimed for this changeset.
 
 Native SSH, terminal framing/UI, HTTP applications, interactive scheduling, HA and
 cross-machine/NAT/forced-DERP validation remain future work as specified in the plan.
