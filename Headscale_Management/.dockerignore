@@ -1,0 +1,5 @@
+*
+!requirements.txt
+!headscale_management/
+!headscale_management/**
+**/__pycache__

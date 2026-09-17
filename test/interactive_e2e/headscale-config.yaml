@@ -1,0 +1,49 @@
+server_url: https://headscale:8080
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: false
+noise:
+  private_key_path: /var/lib/headscale/noise.key
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: fixture
+    region_name: Private fixture
+    verify_clients: true
+    stun_listen_addr: 0.0.0.0:3478
+    private_key_path: /var/lib/headscale/derp.key
+    automatically_add_embedded_derp_region: true
+  urls: []
+  paths: []
+  auto_update_enabled: false
+disable_check_updates: true
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+tls_cert_path: /certs/server.crt
+tls_key_path: /certs/server.key
+policy:
+  mode: file
+  path: /etc/headscale/policy.hujson
+dns:
+  magic_dns: false
+  base_domain: fixture.invalid
+  override_local_dns: false
+  nameservers:
+    global: []
+    split: {}
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: '0770'
+log:
+  level: warn
+  format: json
+logtail:
+  enabled: false

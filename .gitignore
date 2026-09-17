@@ -43,3 +43,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Disposable interactive fixture output and local state
+artifacts/
+.pytest_cache/
+*.sqlite
+*.sqlite-*
+*.pre-migration
