@@ -20,7 +20,8 @@ CPU/memory bounds and rotating logs keep gateway traffic bounded on this host.
    volume. Set matching `POSTGRES_DATA_VOLUME` in Scheduler deployment environment
    if another stable name is used. Do not attach an empty volume as a migration.
    Ordinary `restart.sh` fails before builds on missing/mismatched storage and
-   uses `--no-recreate` for db/redis.
+   uses `--no-recreate` for db/redis, with direct bounded Postgres/Redis probes
+   for retained containers that predate the newly configured Docker healthchecks.
 4. Create explicitly managed private `dml-control` network. Management has no
    published ports. Future Scheduler can attach to this stable network; no
    `scheduler_default` lifecycle dependency is introduced.

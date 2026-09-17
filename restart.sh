@@ -73,6 +73,19 @@ fi
 # Keep database, Redis, and application volumes; never tear down the whole network.
 echo 'Updating Scheduler...'
 "${scheduler[@]}" up --detach --no-recreate --wait --wait-timeout "$wait_timeout" db redis
+# Retained containers may predate the newly configured Docker healthchecks.
+# Probe the actual services before replacing API, including that first cutover.
+infrastructure_deadline=$((SECONDS + wait_timeout))
+# Expand Postgres variables inside the container, not in the deployment shell.
+# shellcheck disable=SC2016
+until "${scheduler[@]}" exec -T db sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null &&
+      "${scheduler[@]}" exec -T redis redis-cli ping >/dev/null; do
+    if (( SECONDS >= infrastructure_deadline )); then
+        echo 'Scheduler database/Redis readiness timed out.' >&2
+        exit 1
+    fi
+    sleep 2
+done
 "${scheduler[@]}" up --detach --no-deps --force-recreate --wait --wait-timeout "$wait_timeout" api
 scheduler_binding="$("${scheduler[@]}" port api 8000)"
 scheduler_port="${scheduler_binding##*:}"

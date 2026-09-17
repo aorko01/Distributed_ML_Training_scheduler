@@ -70,9 +70,13 @@ def test_migration_bootstrap_and_health_failures_remain_failures(deployment, fai
     assert result.returncode == 7 and "partially updated" in result.stderr
 
 
-def test_absent_enabled_manifest_and_env_fail_before_build(deployment):
+@pytest.mark.parametrize("missing", ["manifest", "environment"])
+def test_absent_enabled_manifest_and_env_fail_before_build(deployment, missing):
     checkout, _, env = deployment
-    (checkout / "deploy/interactive/compose.yaml").unlink()
+    if missing == "manifest":
+        (checkout / "deploy/interactive/compose.yaml").unlink()
+    else:
+        Path(env["INTERACTIVE_ENV_FILE"]).unlink()
     result, commands = execute(deployment)
     assert result.returncode != 0 and not any("build" in cmd for cmd in commands)
 
@@ -102,3 +106,13 @@ def test_lock_serializes_concurrent_invocations(deployment):
     docker_info = [i for i, cmd in enumerate(commands) if cmd == ["info"]]
     last_first_ps = next(i for i, cmd in enumerate(commands) if cmd[-1] == "ps" and "scheduler" in cmd)
     assert len(docker_info) == 2 and docker_info[1] > last_first_ps
+
+
+@pytest.mark.parametrize("failure", ["exec -T db", "exec -T redis"])
+def test_retained_infrastructure_is_probed_before_api_replacement(deployment, failure):
+    deployment[2]["FAKE_FAIL"] = failure
+    deployment[2]["RESTART_WAIT_TIMEOUT"] = "1"
+    result, commands = execute(deployment)
+    assert result.returncode != 0 and "readiness timed out" in result.stderr
+    assert not any("api" in cmd and "--force-recreate" in cmd for cmd in commands)
+    assert not any("stop" in cmd for cmd in commands)

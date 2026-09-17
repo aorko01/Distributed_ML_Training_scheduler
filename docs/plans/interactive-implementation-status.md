@@ -12,7 +12,7 @@ changed by the disposable validation.
 - M2–M4 are implemented. Management units: 25 passed; gateway units: 31 passed.
   Tests cover durable identity/fencing, atomic claims, expiry, cleanup, rotation,
   routing admission and bounded relay authorization/cancellation.
-- Restart orchestration: 10 fake-command tests passed. ShellCheck and shell syntax
+- Restart orchestration: 13 fake-command tests passed. ShellCheck and shell syntax
   passed. Production Compose resolves with placeholder settings. Disposable repeated
   migrations/bootstrap/app recreation preserve gateway identity; sidecar replacement
   recreates the gateway against the current namespace.
@@ -24,11 +24,16 @@ changed by the disposable validation.
 - M6 operational documentation and future integration contracts are implemented in
   `docs/interactive-access-contract.md` and the service/deployment READMEs.
 
+- GitHub-hosted [Actions run 35172170451](https://github.com/aorko01/Distributed_ML_Training_scheduler/actions/runs/35172170451)
+  passed every unit job (all five components, Python 3.11/3.12) and the Ubuntu
+  network job, including the full suite, deliberate-failure verifier, cleanup and
+  sanitized artifact upload. This was a feature-branch push, not an actual fork PR.
+  The credential-dependent builder registry job and production deploy were skipped.
+
 ## Remaining gates
 
-- Inspect actual GitHub-hosted Actions results
-  for both Python unit versions, existing components and real network E2E. Local
-  results alone do not establish CI compatibility or an actual fork-PR run.
+- The subsequent direct readiness probes for retained database/Redis containers
+  passed 13 local restart tests; inspect the follow-up Actions run as well.
 - Before production: resolve the verified administrative endpoint, provision the
   required policy separately without replacing existing-device rules, protect stable
   service secrets/environment, deliberately back up/migrate Scheduler Postgres
