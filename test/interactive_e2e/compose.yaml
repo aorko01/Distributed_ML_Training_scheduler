@@ -1,0 +1,198 @@
+x-sidecar: &sidecar
+  image: tailscale/tailscale:v1.102.3@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+  entrypoint: [tailscaled]
+  command: [--tun=userspace-networking, --state=/state/tailscaled.state, --socket=/var/run/tailscale/tailscaled.sock, --socks5-server=127.0.0.1:1055]
+  environment:
+    SSL_CERT_FILE: /certs/server.crt
+    TS_NO_LOGS_NO_SUPPORT: 'true'
+  healthcheck:
+    test: [CMD-SHELL, 'test -S /var/run/tailscale/tailscaled.sock']
+    interval: 1s
+    timeout: 2s
+    retries: 30
+x-fixture: &fixture
+  image: ${FIXTURE_IMAGE:?}
+  build:
+    context: ../..
+    dockerfile: test/interactive_e2e/fixtures/Dockerfile
+x-agent: &agent
+  <<: *fixture
+  command: [uvicorn, fixtures.agent:app, --host, 0.0.0.0, --port, '8081', --no-access-log]
+  environment:
+    FIXTURE_SECRET: ${FIXTURE_SECRET:?}
+x-management-env: &management-env
+  HM_DATABASE_URL: sqlite:////state/management.sqlite
+  HM_HEADSCALE_URL: https://headscale:8080
+  HM_LOGIN_SERVER: https://headscale:8080
+  HM_HEADSCALE_KEY_FILE: /secrets/headscale
+  HM_CONTROLLER_SECRET_FILE: /secrets/controller
+  HM_GATEWAY_SECRET_FILE: /secrets/gateway
+  HM_BOOTSTRAP_SECRET_FILE: /secrets/bootstrap
+  HM_ENCRYPTION_KEY_FILE: /secrets/encryption
+  HM_SIGNING_KEY_FILE: /secrets/signing.pem
+  HM_VERIFICATION_KEYS_FILE: /secrets/public.json
+  HM_REQUIRED_POLICY_FILE: /policy.hujson
+  HM_CA_FILE: /certs/server.crt
+  HM_RECONCILE_INTERVAL: '1'
+  HM_ENROLLMENT_TTL: '30'
+  HM_SESSION_LEASE: '6'
+  HM_RESOURCE_LEASE: '30'
+  HM_OBSERVATION_TTL: '6'
+x-gateway-env: &gateway-env
+  GW_MANAGEMENT_URL: http://management:8020
+  HM_GATEWAY_SECRET_FILE: /secrets/gateway
+  HM_BOOTSTRAP_SECRET_FILE: /secrets/bootstrap
+  GW_VERIFICATION_KEYS_FILE: /secrets/public.json
+  GW_ALLOW_CLI: '1'
+  GW_ORIGINS: https://client.example
+  GW_PROBE_INTERVAL: '1'
+  GW_RENEWAL_INTERVAL: '1'
+
+services:
+  headscale:
+    image: headscale/headscale:0.29.3@sha256:0e7f1c6e4ce6c2a2a001103ecd3fa645a045adf30ac8a5234fe037b43000cd72
+    command: [serve]
+    networks: [transport]
+    volumes:
+      - ./headscale-config.yaml:/etc/headscale/config.yaml:ro
+      - ./policy.hujson:/etc/headscale/policy.hujson:ro
+      - ${FIXTURE_STATE:?}/certs:/certs:ro
+      - headscale-state:/var/lib/headscale
+  migrate:
+    image: ${MANAGEMENT_IMAGE:?}
+    command: [python, -m, headscale_management.database]
+    environment: *management-env
+    networks: [control]
+    volumes:
+      - management-state:/state
+      - ${FIXTURE_STATE}/secrets:/secrets:ro
+      - ${FIXTURE_STATE}/certs:/certs:ro
+      - ./policy.hujson:/policy.hujson:ro
+  management:
+    image: ${MANAGEMENT_IMAGE:?}
+    build: ../../Headscale_Management
+    environment: *management-env
+    networks: [control, transport]
+    volumes:
+      - management-state:/state
+      - ${FIXTURE_STATE}/secrets:/secrets:ro
+      - ${FIXTURE_STATE}/certs:/certs:ro
+      - ./policy.hujson:/policy.hujson:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health/ready',timeout=4)"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  tailscale:
+    <<: *sidecar
+    networks: [transport, control, ingress, fixture]
+    volumes: [gateway-state:/state, gateway-socket:/var/run/tailscale, '${FIXTURE_STATE}/certs:/certs:ro']
+  bootstrap:
+    image: ${GATEWAY_IMAGE:?}
+    user: '0:10001'
+    command: [python, -m, interactive_gateway.bootstrap]
+    network_mode: service:tailscale
+    environment: *gateway-env
+    volumes: [gateway-socket:/var/run/tailscale, bootstrap-state:/bootstrap, '${FIXTURE_STATE}/secrets/gateway:/secrets/gateway:ro', '${FIXTURE_STATE}/secrets/bootstrap:/secrets/bootstrap:ro', '${FIXTURE_STATE}/secrets/public.json:/secrets/public.json:ro']
+  gateway:
+    image: ${GATEWAY_IMAGE:?}
+    build: ../../Gateway
+    network_mode: service:tailscale
+    environment: *gateway-env
+    volumes: [gateway-socket:/var/run/tailscale, bootstrap-state:/bootstrap, '${FIXTURE_STATE}/secrets/gateway:/secrets/gateway:ro', '${FIXTURE_STATE}/secrets/public.json:/secrets/public.json:ro']
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8030/health/ready',timeout=4)"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  controller:
+    <<: *fixture
+    networks: [control, ingress, fixture]
+    volumes: ['${FIXTURE_STATE}/secrets/controller:/secrets/controller:ro', '${FIXTURE_STATE}/secrets/gateway:/secrets/gateway:ro', '${FIXTURE_STATE}/secrets/bootstrap:/secrets/bootstrap:ro', '${FIXTURE_STATE}/secrets/fixture:/secrets/fixture:ro', '${FIXTURE_STATE}/secrets/user-a:/secrets/user-a:ro', '${FIXTURE_STATE}/secrets/user-b:/secrets/user-b:ro']
+  driver:
+    <<: *fixture
+    user: '${FIXTURE_UID:-1000}:${FIXTURE_GID:-1000}'
+    command: [python, -m, pytest, -q, --junitxml=/results/junit.xml]
+    networks: [ingress]
+    volumes: ['${FIXTURE_STATE}/driver-secrets:/secrets:ro', '${FIXTURE_RESULTS:?}:/results']
+  a:
+    <<: *sidecar
+    networks: [transport, fixture]
+    volumes: [a-state:/state, a-socket:/var/run/tailscale, '${FIXTURE_STATE}/certs:/certs:ro']
+  a-agent:
+    <<: *agent
+    network_mode: service:a
+    volumes: [a-socket:/var/run/tailscale]
+  a-echo:
+    <<: *fixture
+    network_mode: service:a
+    command: [python, fixtures/echo_endpoint.py]
+    environment: {ECHO_PREFIX: 'A:'}
+  b:
+    <<: *sidecar
+    networks: [transport, fixture]
+    volumes: [b-state:/state, b-socket:/var/run/tailscale, '${FIXTURE_STATE}/certs:/certs:ro']
+  b-agent:
+    <<: *agent
+    network_mode: service:b
+    volumes: [b-socket:/var/run/tailscale]
+  b-echo:
+    <<: *fixture
+    network_mode: service:b
+    command: [python, fixtures/echo_endpoint.py]
+    environment: {ECHO_PREFIX: 'B:'}
+  replacement:
+    <<: *sidecar
+    networks: [transport, fixture]
+    volumes: [replacement-state:/state, replacement-socket:/var/run/tailscale, '${FIXTURE_STATE}/certs:/certs:ro']
+  replacement-agent:
+    <<: *agent
+    network_mode: service:replacement
+    volumes: [replacement-socket:/var/run/tailscale]
+  replacement-echo:
+    <<: *fixture
+    network_mode: service:replacement
+    command: [python, fixtures/echo_endpoint.py]
+    environment: {ECHO_PREFIX: 'NEW-A:'}
+  fresh:
+    <<: *sidecar
+    networks: [transport, fixture]
+    volumes: [fresh-state:/state, fresh-socket:/var/run/tailscale, '${FIXTURE_STATE}/certs:/certs:ro']
+  fresh-agent:
+    <<: *agent
+    network_mode: service:fresh
+    volumes: [fresh-socket:/var/run/tailscale]
+  sentinel:
+    <<: *sidecar
+    networks: [transport]
+    volumes: [sentinel-state:/state, '${FIXTURE_STATE}/certs:/certs:ro']
+  gateway-agent:
+    <<: *agent
+    network_mode: service:tailscale
+    volumes: [gateway-socket:/var/run/tailscale]
+  gateway-canary:
+    <<: *fixture
+    network_mode: service:tailscale
+    command: [python, fixtures/echo_endpoint.py]
+    environment: {ECHO_PREFIX: 'G:'}
+
+networks:
+  ingress: {}
+  control: {}
+  transport: {}
+  fixture: {}
+volumes:
+  headscale-state: {}
+  management-state: {}
+  gateway-state: {}
+  gateway-socket: {}
+  bootstrap-state: {}
+  a-state: {}
+  a-socket: {}
+  b-state: {}
+  b-socket: {}
+  replacement-state: {}
+  replacement-socket: {}
+  fresh-state: {}
+  fresh-socket: {}
+  sentinel-state: {}

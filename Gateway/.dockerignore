@@ -1,0 +1,5 @@
+*
+!requirements.txt
+!interactive_gateway/
+!interactive_gateway/**
+**/__pycache__

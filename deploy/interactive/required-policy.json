@@ -1,0 +1,5 @@
+{
+  "grants": [
+    {"src": ["tag:interactive-gateway"], "dst": ["tag:interactive-endpoint"], "ip": ["tcp:9000"]}
+  ]
+}

@@ -8,27 +8,45 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
       POSTGRES_DB: ${POSTGRES_DB:-app}
     ports:
-      - "${DB_PORT:-5432}:5432"
-
+    - ${DB_PORT:-5432}:5432
+    volumes:
+    - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
   redis:
     image: redis:7
     container_name: app-redis
     restart: always
     ports:
-      - "6379:6379"
-
+    - 6379:6379
+    healthcheck:
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      interval: 5s
+      timeout: 3s
+      retries: 12
   api:
     build: .
     container_name: app-api
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "${API_PORT:-8000}:8000"
+    - ${API_PORT:-8000}:8000
     volumes:
-      - ./app:/app/app
-      - ./uploads:/app/uploads
-      - ./output:/app/output
+    - ./app:/app/app
+    - ./uploads:/app/uploads
+    - ./output:/app/output
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-app}
@@ -47,9 +65,13 @@ services:
     container_name: app-pgadmin
     restart: always
     depends_on:
-      - db
+    - db
     ports:
-      - "5050:80"
+    - 5050:80
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin
+volumes:
+  postgres-data:
+    external: true
+    name: ${POSTGRES_DATA_VOLUME:-scheduler-postgres-data}

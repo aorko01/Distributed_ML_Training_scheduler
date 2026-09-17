@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: ["main", "master", "codex/interactive-*"]
 
   pull_request:
     branches: ["main", "master"]
@@ -29,6 +29,8 @@ jobs:
           - Scheduler
           - Docker_Image_Builder
           - Worker
+          - Headscale_Management
+          - Gateway
 
     defaults:
       run:
@@ -59,7 +61,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio httpx
+          if [ -f requirements-test.txt ]; then
+            pip install -r requirements-test.txt
+          else
+            pip install pytest pytest-asyncio httpx
+          fi
 
       - name: Run unit tests
         run: |
@@ -133,12 +139,63 @@ jobs:
   # ------------------------------------------------------------
   # DEPLOY
   # ------------------------------------------------------------
+  interactive-network-e2e:
+    name: Interactive real Headscale/Tailscale e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      E2E_PROJECT: interactive-${{ github.run_id }}-${{ github.run_attempt }}
+      E2E_FAILURE_PROJECT: interactive-${{ github.run_id }}-${{ github.run_attempt }}-failure
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: test/interactive_e2e/requirements.txt
+      - name: Install pinned harness requirements
+        run: pip install -r test/interactive_e2e/requirements.txt
+      - name: Check portable Docker prerequisites
+        run: |
+          docker version
+          docker compose version
+      - name: Validate restart command contract
+        run: |
+          bash -n restart.sh deploy/migrate-postgres-storage.sh
+          shellcheck restart.sh deploy/migrate-postgres-storage.sh
+          python -m pytest test/interactive_e2e/test_restart_unit.py -q
+      - name: Run complete real network suite
+        run: python test/interactive_e2e/run.py --project "$E2E_PROJECT"
+      - name: Verify deliberate failure, diagnostics and cleanup
+        run: |
+          if python test/interactive_e2e/run.py --project "$E2E_FAILURE_PROJECT" --deliberate-failure; then
+            echo '::error::A deliberately failing test returned success.'
+            exit 1
+          fi
+          python test/interactive_e2e/verify_failure.py "$E2E_FAILURE_PROJECT"
+      - name: Project-scoped cleanup fallback
+        if: always()
+        run: |
+          python test/interactive_e2e/run.py --project "$E2E_PROJECT" --cleanup
+          python test/interactive_e2e/run.py --project "$E2E_FAILURE_PROJECT" --cleanup
+      - name: Upload sanitized diagnostics and JUnit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interactive-sanitized-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/interactive-*/
+          retention-days: 7
+          if-no-files-found: error
+
   deploy:
     name: Deploy Distributed ML System
 
     needs:
       - unit-tests
       - builder-dockerhub-real-e2e
+      - interactive-network-e2e
 
     # Only deploy for pushes to main/master, or a manual workflow run.
     # Pull requests will run CI but will NOT deploy.
