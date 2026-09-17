@@ -142,10 +142,13 @@ async def test_large_output_backpressure_and_control_c(endpoint):
     service, broker, _, port, _ = endpoint
     reader, writer = await open_terminal(port)
     await write_record(writer, Type.STDIN, b'yes terminal_output\n')
+    # Wait for the foreground job's output, rather than its echoed command,
+    # before sending Control-C; under load it may not have started in .1s.
+    await output_until(reader, b'\r\nterminal_output\r\n')
     await asyncio.sleep(.1)  # Deliberately slow consumer; no application queue.
     assert writer.transport.get_write_buffer_size() <= 65536
     await write_record(writer, Type.STDIN, b'\x03')
-    await write_record(writer, Type.STDIN, b'printf "control_ok\\n"\n')
+    await write_record(writer, Type.STDIN, b'printf "control_%s\\n" ok\n')
     await output_until(reader, b'control_ok')
     await close_writer(writer)
     await wait_cleanup(service, broker)

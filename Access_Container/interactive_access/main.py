@@ -40,7 +40,8 @@ class Service:
                 status = 404
             body = b'{"status":"ok"}' if status == 200 else b'{"status":"unavailable"}'
             writer.write(f'HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n'.encode() + body)
-            await asyncio.wait_for(writer.drain(), self.config.write_timeout)
+            async with asyncio.timeout(self.config.write_timeout):
+                await writer.drain()
         except (OSError, TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
             pass
         finally:

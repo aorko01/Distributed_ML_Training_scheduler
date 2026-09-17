@@ -129,4 +129,5 @@ async def read_record(reader):
 
 async def write_record(writer, kind, payload=b'', timeout=5):
     writer.write(encode(kind, payload))
-    await asyncio.wait_for(writer.drain(), timeout)
+    async with asyncio.timeout(timeout):
+        await writer.drain()

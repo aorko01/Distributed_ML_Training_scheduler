@@ -9,7 +9,8 @@ async def close_writer(writer):
     if writer:
         writer.close()
         try:
-            await asyncio.wait_for(writer.wait_closed(), 1)
+            async with asyncio.timeout(1):
+                await writer.wait_closed()
         except (OSError, TimeoutError):
             pass
 

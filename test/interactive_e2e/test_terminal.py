@@ -107,13 +107,17 @@ async def test_terminal_pty_security_faults_and_revocation(controller, records):
                 with pytest.raises(ConnectionClosed):
                     while True:
                         await terminal.ws.recv()
-            await reaped(controller)
+            if action != 'offline':
+                await reaped(controller)
         finally:
             if action == 'offline':
                 await controller.agent('terminal', 'online')
             elif action.startswith('stop-'):
                 await fault(action.replace('stop-', 'start-'))
             await terminal.ws.close()
+        if action == 'offline':
+            # The gateway's TCP close reaches Serve only after transport returns.
+            await reaped(controller)
         await wait(lambda: controller.ticket(resource=RESOURCE))
 
     terminal, issued = await shell(controller)

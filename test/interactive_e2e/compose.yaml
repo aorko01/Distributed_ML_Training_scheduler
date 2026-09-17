@@ -209,14 +209,14 @@ services:
   terminal-broker:
     <<: *fixture
     network_mode: none
-    command: [python, fixtures/terminal_broker.py]
+    command: [python, -m, fixtures.terminal_broker]
     volumes: [terminal-broker:/run/dml-interactive/terminal, '${FIXTURE_STATE}/secrets/broker:/secrets/broker:ro']
   terminal-access:
     image: ${ACCESS_IMAGE:?}
     build: ../../Access_Container
     network_mode: service:terminal
     read_only: true
-    tmpfs: [/tmp:size=1m,noexec,nosuid]
+    tmpfs: ['/tmp:size=1m,noexec,nosuid']
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 64

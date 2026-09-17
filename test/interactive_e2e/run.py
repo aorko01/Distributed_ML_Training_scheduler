@@ -182,6 +182,10 @@ def main():
                         seen.add(record["id"])
                         action = allowed[record["action"]]
                         result = compose(*action, timeout=45, check=False)
+                        if result.returncode == 0 and record["action"] == "restart-access":
+                            # Restart returns before the Access listener is ready.
+                            result = compose("up", "--detach", "--no-deps", "--wait", "--wait-timeout", "30",
+                                             "terminal-access", timeout=45, check=False)
                         response = {"id": record["id"], "ok": result.returncode == 0}
                         temporary = results / "fault-response.tmp"
                         temporary.write_text(json.dumps(response))

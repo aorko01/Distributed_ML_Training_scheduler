@@ -6,6 +6,8 @@ import pytest
 from interactive_access.protocol import Parser, Type, encode, ProtocolError, dimensions, json_bytes, MAX_PAYLOAD
 from interactive_access.config import Config, read_secret
 from interactive_access.session import Capacity
+from interactive_access.protocol import write_record
+from interactive_access.broker_client import close_writer
 
 
 def test_split_and_coalesced():
@@ -44,6 +46,30 @@ def test_invalid_dimensions(value):
 def test_duplicate_keys():
     with pytest.raises(ProtocolError):
         dimensions(b'{"rows":1,"rows":2,"columns":80}')
+
+
+@pytest.mark.parametrize('action', ['write', 'close'])
+async def test_stream_completion_does_not_swallow_shutdown_cancellation(action):
+    class Writer:
+        def write(self, data):
+            pass
+
+        def close(self):
+            pass
+
+        async def complete(self):
+            # Complete the I/O in the same event-loop turn as cancellation.
+            asyncio.get_running_loop().call_soon(operation.cancel)
+            await asyncio.sleep(0)
+
+        drain = complete
+        wait_closed = complete
+
+    writer = Writer()
+    operation = asyncio.create_task(write_record(writer, Type.STDIN, b'test') if action == 'write'
+                                    else close_writer(writer))
+    with pytest.raises(asyncio.CancelledError):
+        await operation
 
 
 async def test_capacity_race_and_exact_release():

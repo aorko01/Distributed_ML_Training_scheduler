@@ -6,6 +6,7 @@ import time
 from uuid import uuid4
 
 import jwt
+import httpx
 import pytest
 from websockets.exceptions import ConnectionClosed
 
@@ -28,6 +29,28 @@ async def fault(action):
                 return True
         return False
     await wait(complete, timeout=45)
+
+
+@pytest.mark.asyncio
+async def test_fixture_leases_resume_after_management_connection_error(monkeypatch):
+    from fixtures import controller as fixture_controller
+
+    monkeypatch.setattr(fixture_controller, "resources", {"resource-a": {"generation": "g1"}})
+    renewed = asyncio.Event()
+    attempts = 0
+
+    async def management(method, path, body):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("disposable management offline")
+        renewed.set()
+
+    monkeypatch.setattr(fixture_controller, "management", management)
+    async with fixture_controller.lifespan(fixture_controller.app):
+        async with asyncio.timeout(5):
+            await renewed.wait()
+    assert attempts >= 2
 
 
 @pytest.mark.asyncio

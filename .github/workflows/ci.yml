@@ -78,7 +78,7 @@ jobs:
         run: |
           python -m pytest test/unit/ -q
           if [ "${{ matrix.component }}" = Access_Container ]; then
-            python -m pytest test/component/ -q
+            timeout --kill-after=10s 120s python -m pytest test/component/ -vv -o faulthandler_timeout=30
           fi
 
   # ------------------------------------------------------------

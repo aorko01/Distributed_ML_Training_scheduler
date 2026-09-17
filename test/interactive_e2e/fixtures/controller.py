@@ -42,7 +42,8 @@ async def lifespan(app):
             for resource_id, record in list(resources.items()):
                 try:
                     await management("POST", "resources/" + resource_id + "/lease", {"generation": record["generation"]})
-                except HTTPException:
+                except (HTTPException, httpx.TransportError):
+                    # Keep renewing after the deliberate management outages.
                     pass
             await asyncio.sleep(2)
     task = asyncio.create_task(leases())
