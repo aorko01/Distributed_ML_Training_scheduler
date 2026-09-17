@@ -156,8 +156,9 @@ def build(client, item, cancel):
             shutil.copytree(project, root / 'project')
             shutil.rmtree(extracted)
             source = item['base_image']
-            # Defense in depth: same operator allowlist as Scheduler.
-            if source not in ('pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime', 'pytorch/pytorch:2.5.1-cuda11.8-cudnn9-runtime'):
+            # Defense in depth: same operator allowlist as Scheduler (legacy ids
+            # resolve upstream; here only full official PyTorch runtime tags).
+            if not re.fullmatch(r'pytorch/pytorch:[\d.]+-cuda[\d.]+-cudnn[\d.]+-runtime', source or ''):
                 raise BuildFailure('system')
         elif item['origin'] == 'EXISTING_JOB':
             source = item['source_image_tag']

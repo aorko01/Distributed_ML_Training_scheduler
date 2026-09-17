@@ -4,10 +4,29 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Operator-owned identifiers, not arbitrary FROM strings. Keep UI and builder aligned
 # by returning the resolved mapping in authenticated internal claims.
+# Legacy short ids are kept for backwards compatibility; new submissions may use
+# any official PyTorch runtime tag (same set offered by GET /docker/pytorch-tags).
 BASE_IMAGES = {
     'pytorch-2.5.1-cuda12.4': 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime',
     'pytorch-2.5.1-cuda11.8': 'pytorch/pytorch:2.5.1-cuda11.8-cudnn9-runtime',
 }
+RUNTIME_REF_RE = re.compile(r'^pytorch/pytorch:[\d.]+-cuda[\d.]+-cudnn[\d.]+-runtime$')
+
+
+def resolve_base_image(value: str | None) -> str | None:
+    """Resolve a client-supplied base image to its full Docker reference.
+
+    Accepts legacy BASE_IMAGES ids as well as any official PyTorch runtime tag
+    so the interactive form can offer the full PyTorch/CUDA matrix just like
+    batch job submission. Returns None for anything else.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    if value in BASE_IMAGES:
+        return BASE_IMAGES[value]
+    if RUNTIME_REF_RE.fullmatch(value):
+        return value
+    return None
 DIGEST_RE = re.compile(r'^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}$')
 TAG_RE = re.compile(r'^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$')
 

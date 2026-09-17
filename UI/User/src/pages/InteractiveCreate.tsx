@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { interactive, type Choice, type SourceJob, type Creation } from '../services/interactive';
+import { interactive, type SourceJob, type Creation } from '../services/interactive';
+import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
 
 export default function InteractiveCreate() {
   const [source, setSource] = useState<'upload' | 'job'>('upload');
   const [name, setName] = useState('');
-  const [bases, setBases] = useState<Choice[]>([]);
+  const [versions, setVersions] = useState<PytorchVersion[]>([]);
   const [jobs, setJobs] = useState<SourceJob[]>([]);
-  const [base, setBase] = useState('');
+  const [selectedPyTorch, setSelectedPyTorch] = useState('');
+  const [selectedCuda, setSelectedCuda] = useState<CudaVariant | null>(null);
   const [job, setJob] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(true);
@@ -17,22 +19,44 @@ export default function InteractiveCreate() {
   const submittingRef = useRef(false);
   const key = useRef<string | null>(null);
   const navigate = useNavigate();
+  const base = selectedCuda?.tag ?? '';
   useEffect(() => { key.current = null; }, [source, name, base, job, file]);
   useEffect(() => {
     let active = true;
-    setLoading(true); setError(''); setBases([]); setJobs([]);
-    const load = source === 'upload' ? interactive.bases() : interactive.sources();
-    load.then(values => {
-      if (!active) return;
+    setLoading(true); setError(''); setVersions([]); setJobs([]);
+    const load = async () => {
       if (source === 'upload') {
-        const choices = values as Choice[]; setBases(choices); setBase(choices[0]?.id ?? '');
+        const data = await fetchPytorchVersions();
+        if (!active) return;
+        setVersions(data);
+        if (data.length > 0) {
+          setSelectedPyTorch(data[0].version);
+          setSelectedCuda(data[0].cudaVersions[0] ?? null);
+        }
       } else {
-        const choices = values as SourceJob[]; setJobs(choices); setJob(choices[0]?.id ?? '');
+        const choices = await interactive.sources();
+        if (!active) return;
+        setJobs(choices); setJob(choices[0]?.id ?? '');
       }
-    }).catch(err => { if (active) setError(err instanceof Error ? err.message : 'Could not load choices'); })
+    };
+    load().catch(err => { if (active) setError(err instanceof Error ? err.message : 'Could not load choices'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [source, reload]);
+
+  const handlePyTorchChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const pt = e.target.value;
+    setSelectedPyTorch(pt);
+    const versionData = versions.find(v => v.version === pt);
+    if (versionData && versionData.cudaVersions.length > 0) {
+      setSelectedCuda(versionData.cudaVersions[0]);
+    } else {
+      setSelectedCuda(null);
+    }
+  };
+
+  const availableCudas = versions.find(v => v.version === selectedPyTorch)?.cudaVersions || [];
+
   async function submit(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submittingRef.current) return;
@@ -57,10 +81,23 @@ export default function InteractiveCreate() {
         <div className="form-group"><label className="form-label" htmlFor="workspace-name">Workspace name</label>
           <input id="workspace-name" className="form-input" value={name} onChange={e => setName(e.target.value)} maxLength={120} required /></div>
         {source === 'upload' ? <>
-          <div className="form-group"><label className="form-label" htmlFor="base">PyTorch/CUDA base image</label>
-            <select id="base" className="form-select" value={base} onChange={e => setBase(e.target.value)} disabled={loading} required>
-              {bases.map(value => <option key={value.id} value={value.id}>{value.label}</option>)}
-            </select></div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+            <div className="form-group"><label className="form-label" htmlFor="pytorch-version">PyTorch Version</label>
+              <select id="pytorch-version" className="form-select" value={selectedPyTorch} onChange={handlePyTorchChange} disabled={loading || versions.length === 0} required>
+                {loading && <option>Loading versions...</option>}
+                {!loading && versions.length === 0 && !error && <option>No versions available</option>}
+                {versions.map(v => <option key={v.version} value={v.version}>{v.version}</option>)}
+              </select></div>
+            <div className="form-group"><label className="form-label" htmlFor="cuda-version">CUDA / cuDNN Version</label>
+              <select id="cuda-version" className="form-select" value={selectedCuda?.tag ?? ''} onChange={e => {
+                const variant = availableCudas.find(v => v.tag === e.target.value);
+                setSelectedCuda(variant ?? null);
+              }} disabled={loading || availableCudas.length === 0} required>
+                {loading && <option>Loading CUDA versions...</option>}
+                {!loading && availableCudas.length === 0 && !error && <option>No CUDA variants</option>}
+                {availableCudas.map(c => <option key={c.tag} value={c.tag}>CUDA {c.cuda} / cuDNN {c.cudnn}</option>)}
+              </select></div>
+          </div>
           <div className="form-group"><label className="form-label" htmlFor="archive">Workspace ZIP (requirements.txt required, up to 64 MiB)</label>
             <input id="archive" type="file" accept=".zip" required onChange={e => setFile(e.target.files?.[0] ?? null)} /></div>
         </> : <div className="form-group"><label className="form-label" htmlFor="source-job">Existing job</label>

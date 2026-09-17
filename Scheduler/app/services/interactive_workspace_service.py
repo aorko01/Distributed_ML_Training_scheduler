@@ -6,7 +6,7 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from app.models.interactive_workspace_model import InteractiveWorkspace as Workspace, InteractiveImageRevision as Revision, new_id
 from app.models.job_model import Job, JobStatus
-from app.schemas.interactive_workspace_schema import BASE_IMAGES
+from app.schemas.interactive_workspace_schema import resolve_base_image
 from app.utils.file_utils import save_to_object_store
 from app.utils.interactive_archive import validate_archive
 
@@ -60,7 +60,7 @@ def create(db, owner, key, name, source, value, data=None):
     workspace_id, revision_id = new_id(), new_id()
     values = {}
     if source == 'UPLOAD':
-        if value not in BASE_IMAGES:
+        if resolve_base_image(value) is None:
             raise HTTPException(422, 'Unsupported base image')
         try:
             validate_archive(data)
@@ -138,7 +138,7 @@ def claim(db, builder_id):
             return {'kind': 'interactive', 'id': rev.id, 'revision_id': rev.id, 'workspace_id': item.id,
                     'revision_number': rev.revision_number, 'origin': rev.origin, 'source_job_id': item.source_job_id,
                     'source_object_key': rev.source_object_key, 'source_image_tag': rev.source_image_tag,
-                    'base_image': BASE_IMAGES.get(rev.requested_base_image), 'builder_id': builder_id, 'attempt_id': attempt_id}
+                    'base_image': resolve_base_image(rev.requested_base_image), 'builder_id': builder_id, 'attempt_id': attempt_id}
     return None
 
 
