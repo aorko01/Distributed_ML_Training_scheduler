@@ -9,8 +9,8 @@ python test/interactive_e2e/run.py
 Requires Docker Compose/OpenSSL; no local Headscale/Tailscale installation, paid
 account, repository secret, registry login or production URL. Images are pinned
 by tag and manifest digest. Tested pair is Headscale 0.29.3/Tailscale 1.102.3;
-`compatibility-evidence.json` records actual M1 correlation/transport/policy proof.
-`compatibility.py` independently reproduces that disposable spike.
+The complete CI suite validates key/node association, real transport and policy with the same pinned pair.
+Image digests are in `compose.yaml` and the Dockerfiles.
 
 The driver connects only to ingress network (gateway/controller), with no Docker
 socket or tailnet interfaces. Management/control, coordination/private DERP and
@@ -61,25 +61,3 @@ push/PR/manual events, including forks, with contents:read and no secrets.
 Single-runner baseline does not prove forced DERP, cross-machine NAT or installed
 production Headscale/WSS configuration. Native SSH, browser terminal UI/framing,
 HTTP apps, interactive scheduling and HA remain separate future work.
-
-
-## Explicit installed-host check
-
-After production cutover, an operator can build the fixture image and run:
-
-```bash
-docker build -f test/interactive_e2e/fixtures/Dockerfile -t interactive-host-fixture .
-sudo python3 test/interactive_e2e/host_smoke.py \
-  --fixture-image interactive-host-fixture \
-  --public-url https://scheduler.example.com \
-  --origin https://scheduler.example.com
-```
-
-This opt-in check uses the installed private management API and protected controller
-file. It creates one isolated endpoint with a unique identity, confirms/registers
-and leases it, waits for the actual Gateway probe, requests a ticket, verifies
-public trusted WSS and exact binary echo, rejects replay, and revokes the exact
-endpoint before removing only its disposable project/state. It never mounts Docker
-into the driver. Keys, tickets and data are not printed. This is an operational
-check, never part of the secretless portable CI suite. Override `--management` or
-`--controller-file` if the operator's private placement differs.

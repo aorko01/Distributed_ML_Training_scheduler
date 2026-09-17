@@ -9,10 +9,12 @@ CPU/memory bounds and rotating logs keep gateway traffic bounded on this host.
 ## Provision before enabling the push hook
 
 1. Validate CI, shell checks, disposable restart and real network E2E first.
-2. Locate the actual Linux push hook and its checkout. The repository Actions
-   deploy job targets an external macOS script, which is not evidence that it
-   updates this host. The user reports the push trigger runs on another machine; verify that external
-   script actually updates this Linux checkout and calls its updated `restart.sh`.
+2. The repository Actions deploy job invokes
+   `$HOME/Desktop/github-deploy/deploy.sh` on the external macOS runner. Install
+   the repository's `run.sh` at that path and make it executable. Its Scheduler
+   SSH command fetches/checks out main, fast-forwards the checkout and invokes
+   `sudo -n env REQUIRE_INTERACTIVE=1 bash restart.sh` on this Linux VM. The
+   deployment identity needs noninteractive sudo to read the protected config.
 3. Back up and migrate existing Scheduler Postgres storage deliberately with
    `POSTGRES_BACKUP_DIR=<protected-absolute-directory> bash deploy/migrate-postgres-storage.sh`.
    This separate one-time operation stops API/DB, takes a SQL backup and copies

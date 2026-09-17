@@ -103,5 +103,4 @@ interactive scheduling, terminals, native SSH, HTTP apps, HA and cross-machine
 deployment validation remain future work. Portable single-runner tests do not
 prove arbitrary NAT connectivity or this host's existing Headscale setup.
 
-Pinned compatibility evidence and exact image digests are recorded separately in
-`test/interactive_e2e/compatibility-evidence.json` after a successful real spike.
+The real-network CI suite validates pinned Headscale 0.29.3/Tailscale 1.102.3. Exact image digests are recorded in `test/interactive_e2e/compose.yaml` and the service/fixture Dockerfiles.
