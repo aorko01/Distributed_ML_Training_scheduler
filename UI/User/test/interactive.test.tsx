@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import SubmitJob from '../src/pages/SubmitJob';
 import InteractiveDetails from '../src/pages/InteractiveDetails';
 import { interactive, creationRequest } from '../src/services/interactive';
+import { fetchPytorchVersions } from '../src/services/docker';
 import { submitJob } from '../src/services/jobs';
 
 vi.mock('../src/services/interactive', async importOriginal => {
@@ -18,6 +19,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(interactive.bases).mockResolvedValue([{ id: 'pytorch-2.5.1-cuda12.4', label: 'PyTorch CUDA 12.4' }]);
   vi.mocked(interactive.sources).mockResolvedValue([{ id: 'owned-job', name: 'My job' }]);
+  vi.mocked(fetchPytorchVersions).mockResolvedValue([{ version: '2.5.1', cudaVersions: [{ cuda: '12.4', cudnn: '9', tag: 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime' }] }]);
 });
 function creation() {
   return render(<MemoryRouter initialEntries={['/submit?mode=interactive']}><Routes>
@@ -34,13 +36,15 @@ function state(value: 'QUEUED' | 'BUILDING' | 'IMAGE_READY' | 'FAILED' | 'CANCEL
 
 it('switches source and submission mode without interactive scheduling fields', async () => {
   creation();
-  await screen.findByRole('option', { name: 'PyTorch CUDA 12.4' });
+  await screen.findByRole('option', { name: '2.5.1' });
+  await screen.findByRole('option', { name: 'CUDA 12.4 / cuDNN 9' });
   expect(screen.queryByText('Run Command')).toBeNull();
   expect(screen.queryByText('Priority')).toBeNull();
   fireEvent.change(screen.getByLabelText('Workspace source'), { target: { value: 'job' } });
   await screen.findByRole('option', { name: 'My job' });
   expect(screen.queryByLabelText('Workspace ZIP (requirements.txt required, up to 64 MiB)')).toBeNull();
-  expect(screen.queryByLabelText('PyTorch/CUDA base image')).toBeNull();
+  expect(screen.queryByLabelText('PyTorch Version')).toBeNull();
+  expect(screen.queryByLabelText('CUDA / cuDNN Version')).toBeNull();
   fireEvent.change(screen.getByLabelText('Create'), { target: { value: 'batch' } });
   await screen.findByText('Submit New Job');
   expect(screen.queryByLabelText('Workspace source')).toBeNull();
@@ -75,7 +79,7 @@ it('submits existing job and prevents double submit', async () => {
 it('keeps upload idempotency key stable after network failure', async () => {
   vi.mocked(interactive.create).mockRejectedValueOnce(new Error('Network unavailable')).mockResolvedValueOnce(state('QUEUED'));
   creation();
-  await screen.findByRole('option', { name: 'PyTorch CUDA 12.4' });
+  await screen.findByRole('option', { name: 'CUDA 12.4 / cuDNN 9' });
   fireEvent.change(screen.getByLabelText('Workspace name'), { target: { value: 'Upload' } });
   fireEvent.change(screen.getByLabelText('Workspace ZIP (requirements.txt required, up to 64 MiB)'), { target: { files: [new File(['zip'], 'workspace.zip')] } });
   fireEvent.submit(screen.getByRole('button', { name: 'Create workspace' }).closest('form')!);
@@ -85,6 +89,7 @@ it('keeps upload idempotency key stable after network failure', async () => {
   const calls = vi.mocked(interactive.create).mock.calls;
   expect(calls[0][1]).toBe(calls[1][1]);
   expect(calls[0][0].kind).toBe('upload');
+  expect(calls[0][0]).toEqual({ kind: 'upload', name: 'Upload', baseImageId: 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime', file: expect.any(File) });
 });
 
 it('renders empty owned-job list and API failure with retry', async () => {
@@ -94,11 +99,11 @@ it('renders empty owned-job list and API failure with retry', async () => {
   await screen.findByText('No jobs with an available image.');
   expect((screen.getByRole('button', { name: 'Create workspace' }) as HTMLButtonElement).disabled).toBe(true);
   cleanup();
-  vi.mocked(interactive.bases).mockRejectedValueOnce(new Error('Authentication failed')).mockResolvedValueOnce([{ id: 'base', label: 'Reloaded' }]);
+  vi.mocked(fetchPytorchVersions).mockRejectedValueOnce(new Error('Authentication failed')).mockResolvedValueOnce([{ version: '2.5.1', cudaVersions: [{ cuda: '12.4', cudnn: '9', tag: 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime' }] }]);
   creation();
   await screen.findByRole('alert');
   fireEvent.click(screen.getByRole('button', { name: 'Reload choices' }));
-  await screen.findByRole('option', { name: 'Reloaded' });
+  await screen.findByRole('option', { name: 'CUDA 12.4 / cuDNN 9' });
 });
 
 it.each(['QUEUED', 'BUILDING', 'IMAGE_READY', 'FAILED', 'CANCELLED'] as const)('renders %s without enabling runtime actions', async value => {
