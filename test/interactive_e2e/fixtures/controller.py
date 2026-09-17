@@ -7,7 +7,7 @@ import secrets
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
-PERMISSIONS = {"user-a": {"resource-a"}, "user-b": {"resource-b"}}
+PERMISSIONS = {"user-a": {"resource-a", "resource-terminal"}, "user-b": {"resource-b"}}
 resources = {}
 management_url = "http://management:8020/internal/v1/"
 
@@ -75,15 +75,15 @@ async def live():
 async def prepare(request: Request):
     body = await request.json()
     resource, generation, name, owner = (body[k] for k in ("resource", "generation", "agent", "owner"))
-    if resource not in PERMISSIONS.get(owner, set()) or name not in ("a", "b", "replacement"):
+    if resource not in PERMISSIONS.get(owner, set()) or name not in ("a", "b", "replacement", "terminal"):
         raise HTTPException(403, "denied")
     enrollment = await management("POST", "enrollments", {"role": "endpoint", "identity": resource, "generation": generation},
         headers={"Idempotency-Key": resource + "-" + generation})
     await agent(name, "join", enrollment)
     confirmed = await management("POST", "enrollments/" + enrollment["enrollment_id"] + "/confirm", {"generation": generation})
     registered = await management("PUT", "resources/" + resource + "/endpoint", {"owner": owner, "generation": generation,
-        "enrollment_id": enrollment["enrollment_id"], "service": "echo", "protocol": "tcp-stream-v1", "port": 9000})
-    resources[resource] = {"generation": generation, "agent": name, "enrollment_id": enrollment["enrollment_id"]}
+        "enrollment_id": enrollment["enrollment_id"], "service": "terminal" if name == "terminal" else "echo", "protocol": "tcp-stream-v1", "port": 9000})
+    resources[resource] = {"generation": generation, "agent": name, "enrollment_id": enrollment["enrollment_id"], "service": "terminal" if name == "terminal" else "echo"}
     return {"enrollment": enrollment, "membership": confirmed, "endpoint": registered}
 
 
@@ -95,7 +95,7 @@ async def grant(request: Request):
     if resource not in PERMISSIONS.get(user, set()):
         raise HTTPException(403, "denied")
     return await management("POST", "access-grants", {"user": user, "resource_id": resource,
-        "generation": body.get("generation", resources.get(resource, {}).get("generation")), "service": "echo",
+        "generation": body.get("generation", resources.get(resource, {}).get("generation")), "service": resources.get(resource, {}).get("service", "echo"),
         "gateway_id": "gateway-main", "authorized": True})
 
 
@@ -112,7 +112,7 @@ async def internal(request: Request):
 @app.post("/fixture/agent")
 async def endpoint_action(request: Request):
     body = await request.json()
-    if body["name"] not in ("a", "b", "replacement", "gateway-agent", "fresh", "sentinel", "legacy") or body["path"] not in ("tcp", "listeners", "join", "status", "offline", "online", "serve"):
+    if body["name"] not in ("a", "b", "replacement", "gateway-agent", "fresh", "sentinel", "legacy", "terminal") or body["path"] not in ("tcp", "listeners", "join", "status", "offline", "online", "serve", "pty-status"):
         raise HTTPException(403, "denied")
     return await agent(body["name"], body["path"], body.get("body"), body.get("method", "POST"))
 

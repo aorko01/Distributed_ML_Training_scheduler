@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
 import { submitJob } from '../services/jobs';
+import InteractiveCreate from './InteractiveCreate';
 import { UploadCloud, CheckCircle2, AlertTriangle } from 'lucide-react';
 
-const SubmitJob: React.FC = () => {
+const BatchForm: React.FC = () => {
   const [jobName, setJobName] = useState('');
   const [versions, setVersions] = useState<PytorchVersion[]>([]);
   const [loadingVersions, setLoadingVersions] = useState(true);
@@ -278,4 +279,12 @@ const SubmitJob: React.FC = () => {
   );
 };
 
+const SubmitJob: React.FC = () => {
+  const [params, setParams] = useSearchParams();
+  const mode = params.get('mode') === 'interactive' ? 'interactive' : 'batch';
+  return <><div className="card"><label className="form-label" htmlFor="submission-mode">Create</label>
+    <select id="submission-mode" className="form-select" value={mode} onChange={e => setParams({ mode: e.target.value })}>
+      <option value="batch">Batch job</option><option value="interactive">Interactive workspace</option>
+    </select></div>{mode === 'batch' ? <BatchForm /> : <InteractiveCreate />}</>;
+};
 export default SubmitJob;

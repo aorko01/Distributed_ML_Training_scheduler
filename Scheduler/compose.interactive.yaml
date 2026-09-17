@@ -1,0 +1,7 @@
+# Same random secret value as the remote builder, at a host-local path.
+services:
+  api:
+    environment:
+      INTERACTIVE_BUILDER_SECRET_FILE: /run/secrets/interactive-builder
+    volumes:
+      - ${INTERACTIVE_BUILDER_SECRET_HOST_FILE:?Set an absolute protected secret path}:/run/secrets/interactive-builder:ro

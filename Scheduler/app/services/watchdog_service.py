@@ -107,6 +107,8 @@ async def check_stalled_jobs() -> int:
 
         await _cleanup_stale_job_workers(db, running_ids)
         marked += await _requeue_stalled_image_builds(db, now)
+        from app.services.interactive_workspace_service import expire
+        marked += expire(db)
         return marked
     finally:
         db.close()

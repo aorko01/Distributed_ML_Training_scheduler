@@ -198,6 +198,40 @@ services:
     command: [python, fixtures/echo_endpoint.py]
     environment: {ECHO_PREFIX: 'G:'}
 
+  terminal:
+    <<: *sidecar
+    networks: [transport, fixture]
+    volumes: [terminal-state:/state, terminal-socket:/var/run/tailscale, '${FIXTURE_STATE}/certs:/certs:ro']
+  terminal-agent:
+    <<: *agent
+    network_mode: service:terminal
+    volumes: [terminal-socket:/var/run/tailscale, terminal-broker:/run/dml-interactive/terminal:ro]
+  terminal-broker:
+    <<: *fixture
+    network_mode: none
+    command: [python, fixtures/terminal_broker.py]
+    volumes: [terminal-broker:/run/dml-interactive/terminal, '${FIXTURE_STATE}/secrets/broker:/secrets/broker:ro']
+  terminal-access:
+    image: ${ACCESS_IMAGE:?}
+    build: ../../Access_Container
+    network_mode: service:terminal
+    read_only: true
+    tmpfs: [/tmp:size=1m,noexec,nosuid]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    environment:
+      ACCESS_RUNTIME_ID: terminal
+      ACCESS_BROKER_SOCKET: /run/dml-interactive/terminal/broker.sock
+      ACCESS_BROKER_TOKEN_FILE: /run/dml-interactive/terminal/token
+    volumes: [terminal-broker:/run/dml-interactive/terminal:ro]
+  terminal-canary:
+    <<: *fixture
+    network_mode: service:terminal
+    command: [python, fixtures/echo_endpoint.py]
+    environment: {ECHO_PORTS: '9001', ECHO_PREFIX: 'canary:'}
+
 networks:
   ingress: {}
   control: {}
@@ -221,3 +255,7 @@ volumes:
   sentinel-socket: {}
   legacy-state: {}
   legacy-socket: {}
+
+  terminal-state: {}
+  terminal-socket: {}
+  terminal-broker: {}

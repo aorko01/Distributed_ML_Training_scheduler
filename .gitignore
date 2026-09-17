@@ -50,3 +50,6 @@ artifacts/
 *.sqlite
 *.sqlite-*
 *.pre-migration
+
+# Local development verification environments
+.venv/

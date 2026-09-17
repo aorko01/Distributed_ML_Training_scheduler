@@ -8,6 +8,11 @@ on:
     branches: ["main", "master"]
 
   workflow_dispatch:
+    inputs:
+      interactive_registry:
+        description: Run large interactive PyTorch images against Docker Hub
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,6 +36,7 @@ jobs:
           - Worker
           - Headscale_Management
           - Gateway
+          - Access_Container
 
     defaults:
       run:
@@ -44,6 +50,7 @@ jobs:
       SCHEDULER_API_URL: "http://localhost:8000"
       OBJECT_STORE_URL: "http://localhost:8010"
       JWT_SECRET_KEY: "ci-test-secret-key"
+      PYTHON_DOTENV_DISABLED: "1"
 
     steps:
       - name: Check out repository
@@ -70,6 +77,9 @@ jobs:
       - name: Run unit tests
         run: |
           python -m pytest test/unit/ -q
+          if [ "${{ matrix.component }}" = Access_Container ]; then
+            python -m pytest test/component/ -q
+          fi
 
   # ------------------------------------------------------------
   # REAL DOCKER HUB E2E TEST
@@ -95,6 +105,7 @@ jobs:
       DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
       DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
       RUN_REAL_DOCKERHUB_E2E: "1"
+      RUN_INTERACTIVE_REGISTRY_E2E: ${{ inputs.interactive_registry && '1' || '0' }}
       SCHEDULER_API_URL: "http://localhost:8000"
       OBJECT_STORE_URL: "http://localhost:8010"
 
@@ -135,6 +146,9 @@ jobs:
             test/e2e/test_dockerhub_retry_e2e.py \
             -v \
             --run-real-dockerhub
+      - name: Run optional interactive immutable-digest registry suite
+        if: inputs.interactive_registry
+        run: python -m pytest test/e2e/test_interactive_registry_e2e.py -v --run-real-dockerhub
 
   # ------------------------------------------------------------
   # DEPLOY
@@ -189,6 +203,50 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  interactive-postgres:
+    name: Interactive additive PostgreSQL migration and concurrent claims
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: interactive_test
+          POSTGRES_PASSWORD: isolated_ci_password
+          POSTGRES_DB: interactive_test
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U interactive_test" --health-interval 5s --health-timeout 3s --health-retries 12
+    defaults:
+      run:
+        working-directory: Scheduler
+    env:
+      DATABASE_URL: postgresql://interactive_test:isolated_ci_password@localhost:5432/interactive_test
+      JWT_SECRET_KEY: isolated-ci-test-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python test/postgres/check_interactive.py
+
+  user-ui:
+    name: User UI build and interactive screens
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: UI/User
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: UI/User/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:interactive
+      - run: npm run build
+
   deploy:
     name: Deploy Distributed ML System
 
@@ -196,6 +254,8 @@ jobs:
       - unit-tests
       - builder-dockerhub-real-e2e
       - interactive-network-e2e
+      - user-ui
+      - interactive-postgres
 
     # Only deploy for pushes to main/master, or a manual workflow run.
     # Pull requests will run CI but will NOT deploy.

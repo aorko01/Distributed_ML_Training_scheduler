@@ -31,6 +31,9 @@ def run_migrations():
     (for development; production should use Alembic)."""
     from sqlalchemy import text
 
+    if engine.dialect.name != "postgresql":
+        return
+
     statements = [
         "ALTER TABLE workers ADD COLUMN IF NOT EXISTS gpus_in_use INTEGER",
         "ALTER TABLE workers ADD COLUMN IF NOT EXISTS total_disk FLOAT",
@@ -65,3 +68,12 @@ def run_migrations():
             "CREATE INDEX IF NOT EXISTS ix_jobs_image_builder_id "
             "ON jobs (image_builder_id)"
         ))
+
+    # New interactive tables have an explicit production migration; create_all
+    # alone cannot add composite constraints/triggers to an existing deployment.
+    if engine.dialect.name == "postgresql":
+        from pathlib import Path
+        migration = Path(__file__).resolve().parents[2] / "migrations" / "001_interactive_workspaces.sql"
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SELECT pg_advisory_xact_lock(764293810)")
+            conn.exec_driver_sql(migration.read_text())

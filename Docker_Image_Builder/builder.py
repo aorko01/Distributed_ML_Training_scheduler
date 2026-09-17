@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from config import logger, POLL_INTERVAL, MAX_CONCURRENT_BUILDS, SCHEDULER_QUEUE_URL
 from config import BUILDER_ID, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT
 from database import init_db
+import interactive_api
+import interactive_build
 from api import (
     download_job_archive, notify_scheduler_job_ready, notify_scheduler_job_failed,
     claim_job_for_building, release_job_to_not_runnable,
@@ -192,13 +194,37 @@ def worker_loop(
     its image, and reports the outcome. On system-level failures the job is
     released back to NOT_RUNNABLE so another thread/instance can retry it.
     """
+    interactive_registry = BuildLeaseRegistry()
+    prefer_interactive = False
     while stop_event is None or not stop_event.is_set():
         try:
             if registry is not None and not registry.scheduler_available():
                 _wait_for_retry(stop_event)
                 continue
 
-            job = claim_job_for_building(BUILDER_ID)
+            # Alternate queue preference per thread; neither queue can starve.
+            job = None
+            interactive_item = None
+            if interactive_api.enabled():
+                try:
+                    heartbeat = interactive_api.request('heartbeat', {
+                        'builder_id': BUILDER_ID, 'active_builds': []})
+                    interactive_registry.accept_heartbeat(heartbeat)
+                    if prefer_interactive:
+                        interactive_item = interactive_api.claim()
+                except Exception:
+                    pass
+            if interactive_item is None:
+                job = claim_job_for_building(BUILDER_ID)
+            if job is None and interactive_item is None and interactive_api.enabled():
+                try:
+                    interactive_item = interactive_api.claim()
+                except Exception:
+                    pass
+            prefer_interactive = not prefer_interactive
+            if interactive_item is not None:
+                run_interactive(client, interactive_item, interactive_registry, stop_event)
+                continue
 
             if job is None:
                 _wait_for_retry(stop_event)
@@ -304,6 +330,32 @@ def worker_loop(
         except Exception as e:
             logger.error("Unexpected error in worker loop: %s", e, exc_info=True)
             _wait_for_retry(stop_event)
+
+
+def run_interactive(client, item, registry, stop_event):
+    local_stop = threading.Event()
+    def renew():
+        while not local_stop.is_set():
+            if stop_event is not None and stop_event.is_set():
+                registry.cancel_all()
+                return
+            payload = [{'revision_id': row['job_id'], 'attempt_id': row['attempt_id']}
+                       for row in registry.heartbeat_payload()]
+            try:
+                body = interactive_api.request('heartbeat', {'builder_id': BUILDER_ID, 'active_builds': payload})
+                body['cancel_builds'] = [{'job_id': row['revision_id'], 'attempt_id': row['attempt_id']}
+                                       for row in body.get('cancel_builds', [])]
+                registry.accept_heartbeat(body)
+            except Exception:
+                pass
+            local_stop.wait(HEARTBEAT_INTERVAL)
+    thread = threading.Thread(target=renew, daemon=True)
+    thread.start()
+    try:
+        interactive_build.process(client, item, registry)
+    finally:
+        local_stop.set()
+        thread.join(timeout=2)
 
 
 def _worker_entry(

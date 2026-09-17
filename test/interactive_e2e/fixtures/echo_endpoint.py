@@ -17,7 +17,7 @@ async def echo(reader, writer):
 
 async def main():
     servers = [await asyncio.start_server(echo, "127.0.0.1", port)
-               for port in (9000, 9001)]
+               for port in map(int, os.getenv("ECHO_PORTS", "9000,9001").split(","))]
     await asyncio.gather(*(server.serve_forever() for server in servers))
 
 

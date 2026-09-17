@@ -40,7 +40,7 @@ def main():
     if args.cleanup:
         env = {**os.environ, "FIXTURE_STATE": "/tmp/interactive-cleanup-unused", "FIXTURE_RESULTS": "/tmp/interactive-cleanup-unused",
                "FIXTURE_SECRET": "cleanup-placeholder", "MANAGEMENT_IMAGE": args.project + "-management",
-               "GATEWAY_IMAGE": args.project + "-gateway", "FIXTURE_IMAGE": args.project + "-fixture"}
+               "GATEWAY_IMAGE": args.project + "-gateway", "ACCESS_IMAGE": args.project + "-access", "FIXTURE_IMAGE": args.project + "-fixture"}
         return subprocess.run(["docker", "compose", "--project-name", args.project, "--file", str(FIXTURE / "compose.yaml"),
                                "down", "--volumes", "--remove-orphans"], env=env, timeout=60).returncode
     results = ROOT / "artifacts" / args.project
@@ -52,12 +52,13 @@ def main():
         state.chmod(0o755)
         for name in ("certs", "secrets", "driver-secrets"):
             (state / name).mkdir()
-        for name in ("controller", "gateway", "bootstrap", "fixture", "user-a", "user-b"):
+        for name in ("controller", "gateway", "bootstrap", "fixture", "user-a", "user-b", "broker"):
             value = secrets.token_urlsafe(40)
             sensitive.append(value)
             (state / "secrets" / name).write_text(value)
             if name in ("fixture", "user-a", "user-b"):
                 (state / "driver-secrets" / name).write_text(value)
+        (state / "secrets/broker").chmod(0o600)
         encryption = Fernet.generate_key().decode()
         sensitive.append(encryption)
         (state / "secrets/encryption").write_text(encryption)
@@ -69,7 +70,7 @@ def main():
         (state / "secrets/public.json").write_text(json.dumps({"primary": {"pem": public}}))
         env = {**os.environ, "FIXTURE_UID": str(os.getuid()), "FIXTURE_GID": str(os.getgid()), "FIXTURE_STATE": str(state), "FIXTURE_RESULTS": str(results),
             "FIXTURE_SECRET": (state / "secrets/fixture").read_text(),
-            "MANAGEMENT_IMAGE": args.project + "-management", "GATEWAY_IMAGE": args.project + "-gateway", "FIXTURE_IMAGE": args.project + "-fixture"}
+            "MANAGEMENT_IMAGE": args.project + "-management", "GATEWAY_IMAGE": args.project + "-gateway", "ACCESS_IMAGE": args.project + "-access", "FIXTURE_IMAGE": args.project + "-fixture"}
         base = ["docker", "compose", "--project-name", args.project, "--file", str(FIXTURE / "compose.yaml")]
         def execute(command, timeout=90, check=True):
             result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=timeout)
@@ -92,7 +93,7 @@ def main():
             (state / "certs/server.key").chmod(0o644)
             compose("config", "--quiet")
             compose("pull", "headscale", "tailscale", timeout=120)
-            compose("build", "management", "gateway", "controller", timeout=240)
+            compose("build", "management", "gateway", "controller", "terminal-access", timeout=240)
             compose("up", "--detach", "headscale")
             deadline = time.monotonic() + 45
             while True:
@@ -143,8 +144,21 @@ def main():
             print("Disposable redeployment: persistent identity and current gateway namespace verified", flush=True)
             compose("up", "--detach", "controller", "a", "a-agent", "a-echo", "b", "b-agent", "b-echo",
                     "replacement", "replacement-agent", "replacement-echo", "fresh", "fresh-agent", "gateway-agent", "gateway-canary",
-                    "sentinel-agent", "sentinel-echo", "legacy-agent", "legacy-echo")
-            command = ["run", "--rm", "--no-deps", "driver", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "test_enrollment.py", "test_gateway.py", "test_isolation.py", "test_lifecycle.py", "test_faults.py", "--junitxml=/results/junit.xml"]
+                    "sentinel-agent", "sentinel-echo", "legacy-agent", "legacy-echo",
+                    "terminal", "terminal-agent", "terminal-broker", "terminal-canary")
+            compose("up", "--detach", "--wait", "--wait-timeout", "30", "terminal-access")
+            access_id = compose("ps", "--quiet", "terminal-access").stdout.strip()
+            access_config = json.loads(execute(["docker", "inspect", access_id]).stdout)[0]
+            if (access_config["Config"]["User"] != "10001:10001"
+                    or not access_config["HostConfig"]["ReadonlyRootfs"]
+                    or any(mount["Destination"] == "/var/run/docker.sock" for mount in access_config["Mounts"])):
+                raise RuntimeError("access image privilege/mount invariant failed")
+            compose("exec", "-T", "terminal-access", "python", "-c",
+                    "import shutil, importlib.util; from pathlib import Path; "
+                    "assert all(shutil.which(name) is None for name in ('docker','sshd','tailscale','tailscaled')); "
+                    "assert importlib.util.find_spec('docker') is None; "
+                    "assert not Path('/service/test').exists(); assert not Path('/workspace').exists()")
+            command = ["run", "--rm", "--no-deps", "driver", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "test_enrollment.py", "test_gateway.py", "test_isolation.py", "test_lifecycle.py", "test_faults.py", "test_terminal.py", "--junitxml=/results/junit.xml"]
             if args.deliberate_failure:
                 command += ["--deliberate-failure", "-k", "deliberate_failure"]
             stop_faults = threading.Event()
@@ -153,7 +167,10 @@ def main():
                 allowed = {"stop-management": ("stop", "--timeout", "5", "management"),
                            "start-management": ("up", "--detach", "--no-deps", "--wait", "--wait-timeout", "30", "management"),
                            "stop-headscale": ("stop", "--timeout", "5", "headscale"),
-                           "start-headscale": ("up", "--detach", "--no-deps", "headscale")}
+                           "start-headscale": ("up", "--detach", "--no-deps", "headscale"),
+                           "restart-access": ("restart", "--timeout", "5", "terminal-access"),
+                           "stop-gateway": ("stop", "--timeout", "5", "gateway"),
+                           "start-gateway": ("up", "--detach", "--no-deps", "--wait", "--wait-timeout", "30", "gateway")}
                 while not stop_faults.wait(0.1):
                     request = results / "fault-request.json"
                     if not request.exists():
@@ -174,7 +191,7 @@ def main():
             worker = threading.Thread(target=faults, daemon=True)
             worker.start()
             try:
-                test = compose(*command, timeout=300, check=False)
+                test = compose(*command, timeout=600, check=False)
             finally:
                 stop_faults.set()
                 worker.join(timeout=50)
@@ -195,7 +212,7 @@ def main():
             print("Interactive E2E failed: " + type(error).__name__ + "; see sanitized artifacts", flush=True)
             status = 1
         finally:
-            for filename, command in (("status.txt", ["ps", "--all"]), ("services.log", ["logs", "--no-color", "--tail", "100", "management", "gateway", "bootstrap", "controller"])):
+            for filename, command in (("status.txt", ["ps", "--all"]), ("services.log", ["logs", "--no-color", "--tail", "100", "management", "gateway", "bootstrap", "controller", "terminal-access", "terminal-broker"])):
                 try:
                     result = compose(*command, timeout=15, check=False)
                     (results / filename).write_text(safe_logs(result.stdout + result.stderr, sensitive))

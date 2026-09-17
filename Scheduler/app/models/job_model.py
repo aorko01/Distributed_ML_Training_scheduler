@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Float, Enum, JSON, ForeignKey
+from sqlalchemy import Column, String, DateTime, Float, Enum, JSON, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
 import uuid
 from app.db.database import Base
@@ -24,6 +24,7 @@ class JobPriority(enum.Enum):
 
 class Job(Base):
     __tablename__ = "jobs"
+    __table_args__ = (UniqueConstraint("id", "user_id", name="uq_jobs_id_user_id"),)
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)

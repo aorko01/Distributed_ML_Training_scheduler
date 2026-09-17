@@ -106,3 +106,13 @@ async def serve():
         if await process.wait():
             raise HTTPException(503, "fixture Serve failed")
     return {"state": "published"}
+
+
+@app.get("/pty-status")
+async def pty_status():
+    from pathlib import Path
+    try:
+        count = int(Path('/run/dml-interactive/terminal/children').read_text())
+    except (OSError, ValueError):
+        raise HTTPException(503, "broker fixture unavailable")
+    return {"children": count}

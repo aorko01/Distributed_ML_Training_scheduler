@@ -42,6 +42,9 @@ const Layout: React.FC = () => {
             <Server size={20} />
             Machines
           </NavLink>
+          <NavLink to="/interactive" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            <PlusCircle size={20} />Interactive workspaces
+          </NavLink>
         </nav>
       </aside>
 

@@ -39,6 +39,8 @@ import app.models.job_model  # noqa: E402,F401
 import app.models.worker_model  # noqa: E402,F401
 import app.models.resource_request_model  # noqa: E402,F401
 
+import app.models.interactive_workspace_model  # noqa: E402,F401
+
 TEST_ENGINE = create_engine(
     "sqlite://",
     connect_args={"check_same_thread": False},

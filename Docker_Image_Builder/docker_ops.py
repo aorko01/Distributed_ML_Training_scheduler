@@ -5,6 +5,7 @@ import tempfile
 import time
 import threading
 import queue
+from collections import deque
 import signal
 import subprocess
 from collections.abc import Callable
@@ -89,6 +90,12 @@ def docker_login(client: docker.DockerClient) -> bool:
         try:
             logger.info("Logging in to Docker Hub as %s ...", DOCKER_HUB_USERNAME)
             client.login(username=DOCKER_HUB_USERNAME, password=DOCKER_HUB_PASSWORD)
+            # interactive pull/push uses cancellable CLI processes on the builder
+            # host. Persist CLI auth in its private tmpfs config, never a layer.
+            if os.getenv("INTERACTIVE_BUILDER_SECRET_FILE"):
+                subprocess.run(["docker", "login", "--username", DOCKER_HUB_USERNAME, "--password-stdin"],
+                               input=DOCKER_HUB_PASSWORD, text=True, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=True, timeout=30)
             _logged_in = True
             return True
         except Exception as e:
@@ -312,12 +319,12 @@ def _run_cancellable_docker_build(
         bufsize=1,
         start_new_session=True,
     )
-    output_queue: queue.Queue[str | None] = queue.Queue()
+    output_queue: queue.Queue[str | None] = queue.Queue(maxsize=256)
 
     def _read_output() -> None:
         assert process.stdout is not None
         try:
-            for raw_line in process.stdout:
+            while raw_line := process.stdout.readline(8192):
                 output_queue.put(raw_line.rstrip("\r\n"))
         finally:
             output_queue.put(None)
@@ -329,7 +336,7 @@ def _run_cancellable_docker_build(
     )
     reader.start()
 
-    lines: list[str] = []
+    lines = deque(maxlen=4096)
     cancelled = False
     stream_closed = False
     while not stream_closed:
@@ -350,7 +357,7 @@ def _run_cancellable_docker_build(
     if process.poll() is None:
         process.wait()
     reader.join(timeout=1)
-    return process.returncode, lines, cancelled
+    return process.returncode, list(lines), cancelled
 
 
 def _remove_local_image(client: docker.DockerClient, image_tag: str) -> None:

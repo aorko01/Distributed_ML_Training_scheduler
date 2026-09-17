@@ -1,0 +1,10 @@
+# Overlay for the actual Ubuntu builder host, alongside docker-compose.yml.
+services:
+  image-builder:
+    environment:
+      INTERACTIVE_BUILDER_SECRET_FILE: /run/secrets/interactive-builder
+      DOCKER_CONFIG: /run/docker-config
+    volumes:
+      - ${INTERACTIVE_BUILDER_SECRET_HOST_FILE:?Set an absolute protected secret path}:/run/secrets/interactive-builder:ro
+    tmpfs:
+      - /run/docker-config:mode=0700,size=1m

@@ -7,4 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt -r management-requirements.tx
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
 COPY test/interactive_e2e /fixture
 COPY Gateway/interactive_gateway /fixture/interactive_gateway
+COPY Access_Container/interactive_access /fixture/interactive_access
+COPY Access_Container/test/fake_broker.py /fixture/fake_broker.py
+RUN mkdir -p /fake-workload && chmod 755 /fake-workload
 CMD ["python", "fixtures/controller.py"]
