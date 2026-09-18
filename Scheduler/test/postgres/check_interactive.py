@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, DBAPIError
 
@@ -21,7 +21,7 @@ def main():
         connection.execute(text(f'CREATE SCHEMA {schema}'))
     os.environ['DATABASE_URL'] = url.update_query_dict({'options': '-csearch_path=' + schema}).render_as_string(hide_password=False)
     try:
-        from app.db.database import Base, engine, run_migrations, SessionLocal
+        from app.db.database import Base, engine, legacy_tables, run_migrations, SessionLocal
         from app.models.user_model import User
         from app.models.job_model import Job
         import app.models.worker_model
@@ -30,11 +30,14 @@ def main():
         from app.services import interactive_workspace_service as service
         from app.schemas.interactive_workspace_schema import Ready
         # Simulate pre-interactive production schema (no composite job constraint).
-        Base.metadata.create_all(engine, tables=[t for t in Base.metadata.sorted_tables if not t.name.startswith('interactive_')])
+        Base.metadata.create_all(engine, tables=legacy_tables())
+        assert set(inspect(engine).get_table_names()) == {'users', 'jobs', 'workers', 'resource_requests'}, 'Migration-owned tables must not be created before upgrade'
         with engine.begin() as connection:
             connection.execute(text('ALTER TABLE jobs DROP CONSTRAINT uq_jobs_id_user_id'))
         run_migrations()
         run_migrations()  # Explicit additive migration must be rerunnable.
+        assert {'interactive_workspaces', 'interactive_image_revisions', 'interactive_runtimes', 'worker_assignments',
+                'workspace_save_operations', 'workspace_snapshot_artifacts', 'workspace_training_submissions'} <= set(inspect(engine).get_table_names()), 'Ordered migrations must create the full interactive schema'
         owner, workspace_id, revision_id = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
         with SessionLocal() as db:
             db.add(User(user_id=owner, username='test-user', email='test@example.com', name='Test', hashed_password='test'))

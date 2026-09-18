@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.db.database import Base, engine, run_migrations
+from app.db.database import Base, engine, legacy_tables, run_migrations
 
 from app.models import interactive_runtime_model
 from app.api.worker_execution_route import router as execution_router
@@ -72,10 +72,7 @@ app.add_middleware(
 )
 
 # Create all tables (for development; in production use Alembic migrations)
-Base.metadata.create_all(bind=engine, tables=[
-    table for table in Base.metadata.sorted_tables
-    if not table.name.startswith("interactive_") and table.name != "worker_assignments"
-])
+Base.metadata.create_all(bind=engine, tables=legacy_tables())
 run_migrations()
 # SQLite is used for model-based test/development schema creation only.
 if engine.dialect.name != "postgresql":

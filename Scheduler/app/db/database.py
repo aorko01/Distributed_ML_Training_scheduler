@@ -26,6 +26,20 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def legacy_tables():
+    """Select only the base schema that predates the ordered SQL migrations.
+
+    Do not sort all metadata here: migration-owned models may reference tables
+    that have not been imported or created yet.
+    """
+    from app.models.user_model import User
+    from app.models.job_model import Job
+    from app.models.worker_model import Worker
+    from app.models.resource_request_model import ResourceRequest
+
+    return [model.__table__ for model in (User, Job, Worker, ResourceRequest)]
+
+
 def run_migrations():
     """Apply lightweight additive schema migrations on startup
     (for development; production should use Alembic)."""
