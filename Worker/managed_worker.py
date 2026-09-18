@@ -3,6 +3,7 @@
 from contextlib import suppress
 import os
 import json
+import logging
 import signal
 import threading
 import time
@@ -16,6 +17,8 @@ from telemetry import is_paused, record_heartbeat
 import runtime_config
 from interactive.docker_ops import DockerOps
 from interactive.manager import Manager
+
+logger = logging.getLogger("managed_worker")
 
 
 class BatchAPI(SchedulerAPI):
@@ -295,6 +298,11 @@ class ManagedWorker:
         if not record:
             return
         assignment_id = record["assignment_id"]
+        logger.info(
+            "Claimed %s assignment %s",
+            record.get("kind", "unknown"),
+            assignment_id,
+        )
         if not self.coordinator.authoritative(assignment_id):
             self.coordinator.update(assignment_id, uncertain=True)
             return
@@ -421,8 +429,10 @@ def run():
             int(os.getenv("WORKER_API_PORT", "8600")),
         )
         while not coordinator.draining:
-            with suppress(Exception):
+            try:
                 worker.poll_once()
+            except Exception:
+                logger.exception("Worker polling failed")
             worker.stop_event.wait(min(1, runtime_config.get("job_poll_interval")))
     finally:
         worker.shutdown()

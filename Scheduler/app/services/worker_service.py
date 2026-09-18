@@ -169,23 +169,31 @@ async def get_all_workers(db: Session) -> list[dict]:
             from app.services.scheduling.types import utc, now
             from datetime import timedelta
             online = bool(worker.authenticated_heartbeat_at and utc(worker.authenticated_heartbeat_at) > now()-timedelta(seconds=15))
+        inventory = worker.inventory or {}
+
+        def metric(field, inventory_key=None):
+            value = getattr(worker, field)
+            if value is not None:
+                return value
+            return inventory.get(inventory_key or field)
+
         result.append(
             {
                 "worker_id": worker.worker_id,
-                "hostname": worker.hostname,
-                "ip_address": worker.ip_address,
+                "hostname": metric("hostname"),
+                "ip_address": metric("ip_address"),
                 "gpu_type": worker.gpu_type,
                 "num_gpus": worker.num_gpus,
                 "total_vram": worker.total_vram,
-                "gpus_in_use": worker.gpus_in_use,
-                "available_vram": worker.available_vram,
-                "gpu_load": worker.gpu_load,
-                "cpu_load": worker.cpu_load,
-                "mem_usage": worker.mem_usage,
-                "cpu_cores": worker.cpu_cores,
-                "total_ram": worker.total_ram,
-                "total_disk": worker.total_disk,
-                "available_disk": worker.available_disk,
+                "gpus_in_use": metric("gpus_in_use"),
+                "available_vram": metric("available_vram", "free_vram_gb"),
+                "gpu_load": metric("gpu_load"),
+                "cpu_load": metric("cpu_load"),
+                "mem_usage": metric("mem_usage"),
+                "cpu_cores": metric("cpu_cores"),
+                "total_ram": metric("total_ram"),
+                "total_disk": metric("total_disk"),
+                "available_disk": metric("available_disk"),
                 "status": "online" if online else "offline",
                 "running_jobs": int(running_jobs),
                 "first_seen": worker.first_seen.isoformat() if worker.first_seen else None,

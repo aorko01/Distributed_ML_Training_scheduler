@@ -1,5 +1,6 @@
 import os
 import socket
+import subprocess
 import uuid
 import shutil
 import platform
@@ -160,14 +161,57 @@ def get_mem_total_gb() -> float:
     except Exception:
         return 0.0
 
-def get_disk_info() -> tuple[float, float]:
-    """Total and free disk in GB on the filesystem hosting job outputs."""
+
+def get_docker_data_root() -> str | None:
+    """Return Docker's active data root, if the daemon can report it.
+
+    Docker installations may relocate their data directory with ``data-root``
+    or a system-specific storage configuration.  Asking the live daemon is
+    more reliable than assuming ``/var/lib/docker``.  An explicit environment
+    override remains useful for restricted/service environments.
+    """
+    configured = os.getenv("DOCKER_DATA_ROOT")
+    if configured:
+        return configured
+    docker = shutil.which("docker")
+    if not docker:
+        return None
     try:
-        usage = shutil.disk_usage(OUTPUT_DIR)
+        result = subprocess.run(
+            [docker, "info", "--format", "{{.DockerRootDir}}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    root = result.stdout.strip()
+    return root if root and os.path.isabs(root) else None
+
+
+def get_disk_info() -> tuple[float, float]:
+    """Total and free disk in GB on Docker's active filesystem.
+
+    Fall back to the output directory when Docker is unavailable or its
+    reported root cannot be inspected, so telemetry does not become zero just
+    because Docker is temporarily stopped.
+    """
+    storage_path = get_docker_data_root() or OUTPUT_DIR
+    try:
+        usage = shutil.disk_usage(storage_path)
         total = round(usage.total / (1024 ** 3), 1)
         free = round(usage.free / (1024 ** 3), 1)
         return total, free
     except Exception:
+        if storage_path != OUTPUT_DIR:
+            try:
+                usage = shutil.disk_usage(OUTPUT_DIR)
+                return round(usage.total / (1024 ** 3), 1), round(
+                    usage.free / (1024 ** 3), 1
+                )
+            except Exception:
+                pass
         return 0.0, 0.0
 
 def docker_available() -> bool:
@@ -231,15 +275,13 @@ def execution_inventory(coordinator,interactive_ready=False,quota_supported=Fals
     except Exception:
         pass
     records = [r for r in coordinator.records() if not r.get('released')]
-    try:
-        free_disk = shutil.disk_usage(os.getenv('DOCKER_DATA_ROOT','/var/lib/docker')).free/1024**3
-    except OSError:
-        free_disk = 0.0
-    _,_,free_vram,_,_ = get_gpu_info()
+    _, _, free_vram, _, gpu_load = get_gpu_info()
+    node_info = collect_node_info()
     return {'complete':complete,'observed_at':time.time(),'mode':coordinator.mode,
             'available_slots':max(0,available_slots-len(records)) if coordinator.mode in ('AVAILABLE','BATCH_ACTIVE') else 0,
             'local_assignments':[r['assignment_id'] for r in records],'free_vram_gb':float(free_vram),
-            'free_ram_gb':float(psutil.virtual_memory().available/1024**3),'free_disk_gb':float(free_disk),
+            'free_ram_gb':float(psutil.virtual_memory().available/1024**3),'free_disk_gb':float(node_info['available_disk']),
             'cpu_cores':os.cpu_count() or 0,'platform':'linux/arm64' if platform.machine() == 'aarch64' else 'linux/amd64',
             'nvidia_runtime':interactive_ready,'quota_supported':quota_supported,'interactive_ready':interactive_ready,
-            'gpus':gpus}
+            'gpus':gpus, 'gpu_load': gpu_load,
+            'gpus_in_use': count_gpus_in_use(), **node_info}

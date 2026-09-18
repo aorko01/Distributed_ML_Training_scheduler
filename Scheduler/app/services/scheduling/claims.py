@@ -272,6 +272,28 @@ def stop_runtime(runtime, code=None):
         )
 
 
+def _apply_inventory_metrics(worker, inventory):
+    """Mirror authenticated inventory into the legacy dashboard columns."""
+    values = inventory.model_dump()
+    mapping = {
+        "hostname": "hostname",
+        "ip_address": "ip_address",
+        "free_vram_gb": "available_vram",
+        "gpus_in_use": "gpus_in_use",
+        "gpu_load": "gpu_load",
+        "cpu_load": "cpu_load",
+        "mem_usage": "mem_usage",
+        "cpu_cores": "cpu_cores",
+        "total_ram": "total_ram",
+        "total_disk": "total_disk",
+        "available_disk": "available_disk",
+    }
+    for source, target in mapping.items():
+        value = values.get(source)
+        if value is not None:
+            setattr(worker, target, value)
+
+
 def register(db, worker_id, body):
     worker = db.query(Worker).filter_by(worker_id=worker_id).with_for_update().first()
     if not worker:
@@ -292,6 +314,7 @@ def register(db, worker_id, body):
         worker.heartbeat_sequence = 0
     worker.instance_id, worker.protocol_version = body.instance_id, 1
     worker.inventory, worker.gpu_type = body.inventory.model_dump(), body.gpu_type
+    _apply_inventory_metrics(worker, body.inventory)
     worker.execution_mode = body.inventory.mode
     worker.execution_reconciling = True
     worker.authenticated_heartbeat_at = now()
@@ -332,6 +355,7 @@ def heartbeat(db, worker_id, body, settings=None):
         body.inventory.model_dump(),
         body.inventory.mode,
     )
+    _apply_inventory_metrics(worker, body.inventory)
     active = live(db, worker_id)
     reports = {a.assignment_id: a for a in body.assignments}
     decisions = []

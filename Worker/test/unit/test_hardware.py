@@ -177,6 +177,22 @@ class TestTemperature:
 
 
 class TestDiskMemOs:
+    def test_docker_root_detected_from_live_daemon(self, monkeypatch):
+        monkeypatch.delenv("DOCKER_DATA_ROOT", raising=False)
+        result = MagicMock(stdout="/mnt/docker-data\n")
+        with (
+            patch.object(hardware.shutil, "which", return_value="/usr/bin/docker"),
+            patch.object(hardware.subprocess, "run", return_value=result) as run,
+        ):
+            assert hardware.get_docker_data_root() == "/mnt/docker-data"
+        run.assert_called_once_with(
+            ["/usr/bin/docker", "info", "--format", "{{.DockerRootDir}}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        )
+
     def test_mem_total(self):
         mem = SimpleNamespace(total=8 * 1024**3)
         with patch.object(hardware.psutil, "virtual_memory", return_value=mem):

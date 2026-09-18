@@ -37,6 +37,17 @@ class Inventory(Strict):
     free_ram_gb: Annotated[float, Field(ge=0, allow_inf_nan=False)]
     free_disk_gb: Annotated[float, Field(ge=0, allow_inf_nan=False)]
     cpu_cores: Annotated[int, Field(ge=0, le=4096)]
+    # Optional host telemetry keeps the protocol backwards compatible with
+    # Workers that predate the dashboard's legacy node fields.
+    hostname: str | None = None
+    ip_address: str | None = None
+    cpu_load: Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)] | None = None
+    mem_usage: Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)] | None = None
+    total_ram: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    total_disk: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    available_disk: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    gpu_load: Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)] | None = None
+    gpus_in_use: Annotated[int, Field(ge=0, le=64)] | None = None
     platform: Literal["linux/amd64", "linux/arm64"]
     nvidia_runtime: bool
     quota_supported: bool
