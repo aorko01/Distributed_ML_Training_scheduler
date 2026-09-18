@@ -55,3 +55,7 @@ artifacts/
 
 # Local development verification environments
 .venv/
+
+
+
+update.sh
