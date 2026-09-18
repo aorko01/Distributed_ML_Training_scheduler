@@ -10,13 +10,14 @@ import { submitJob } from '../src/services/jobs';
 
 vi.mock('../src/services/interactive', async importOriginal => {
   const original = await importOriginal<typeof import('../src/services/interactive')>();
-  return { ...original, interactive: { bases: vi.fn(), sources: vi.fn(), create: vi.fn(), detail: vi.fn(), logs: vi.fn(), cancel: vi.fn() } };
+  return { ...original, interactive: { bases: vi.fn(), sources: vi.fn(), create: vi.fn(), detail: vi.fn(), logs: vi.fn(), cancel: vi.fn(), runtime: vi.fn(), start: vi.fn(), stop: vi.fn(), connection: vi.fn() } };
 });
 vi.mock('../src/services/jobs', () => ({ submitJob: vi.fn() }));
 vi.mock('../src/services/docker', () => ({ fetchPytorchVersions: vi.fn().mockResolvedValue([{ version: '2.5.1', cudaVersions: [{ cuda: '12.4', cudnn: '9', tag: 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime' }] }]) }));
 afterEach(cleanup);
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(interactive.runtime).mockResolvedValue(null);
   vi.mocked(interactive.bases).mockResolvedValue([{ id: 'pytorch-2.5.1-cuda12.4', label: 'PyTorch CUDA 12.4' }]);
   vi.mocked(interactive.sources).mockResolvedValue([{ id: 'owned-job', name: 'My job' }]);
   vi.mocked(fetchPytorchVersions).mockResolvedValue([{ version: '2.5.1', cudaVersions: [{ cuda: '12.4', cudnn: '9', tag: 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime' }] }]);
@@ -114,7 +115,7 @@ it.each(['QUEUED', 'BUILDING', 'IMAGE_READY', 'FAILED', 'CANCELLED'] as const)('
   expect(screen.getByText(value === 'IMAGE_READY' ? 'Image ready' : value)).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getByRole('button', { name: 'Save as new revision' }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getByText('Runtime placement is not yet available. This image is not running.')).toBeTruthy();
+  expect(screen.getByText(/This runtime is temporary/)).toBeTruthy();
 });
 
 it('shows not-found and retries without cached workspace data', async () => {

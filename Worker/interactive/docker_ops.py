@@ -1,0 +1,350 @@
+"""Exact-ID Docker operations with cancellation fences around every mutation."""
+
+import base64
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import docker
+from docker.types import DeviceRequest, LogConfig
+from scheduler_protocol import protected_file
+
+LABEL = "dml.assignment"
+TAILSCALE = "tailscale/tailscale:v1.102.3@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680"
+
+
+class RuntimeFailure(Exception):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def labels(record, worker_id, component):
+    p = record["payload"]
+    common = {
+        "dml.component": component,
+        "dml.worker": worker_id,
+        LABEL: record["assignment_id"],
+    }
+    if record["kind"] != "interactive_access":
+        return {**common, "dml.job": p["id"]}
+    return {
+        **common,
+        "dml.runtime": p["runtime_id"],
+        "dml.workspace": p["workspace_id"],
+        "dml.revision": p["revision_id"],
+        "dml.generation": str(p["generation"]),
+        "dml.owner": p["owner_id"],
+    }
+
+
+class DockerOps:
+    def __init__(self, coordinator, worker_id, client=None):
+        self.coordinator, self.worker_id = coordinator, worker_id
+        self.client = client or docker.from_env(timeout=10)
+        self.pull_lock = __import__("threading").Lock()
+
+    def authority(self, record):
+        if not self.coordinator.authoritative(record["assignment_id"]):
+            raise RuntimeFailure("LEASE_LOST")
+
+    def preflight(self):
+        """An actual disposable size-limited container tests daemon quota support."""
+        image = os.getenv("INTERACTIVE_PREFLIGHT_IMAGE", "")
+        if not re.search(r"@sha256:[0-9a-f]{64}$", image):
+            return False
+        if not hasattr(os, "pidfd_open") or os.geteuid() != 0:
+            return False
+        try:
+            info = self.client.info()
+            if info.get("Driver") != "overlay2" or "nvidia" not in info.get(
+                "Runtimes", {}
+            ):
+                return False
+            # Operators pre-pull this tiny shell fixture. No production workload
+            # credentials/mounts or broad Docker cleanup are used by preflight.
+            c = self.client.containers.create(
+                image,
+                command=["-c", "exit 0"],
+                entrypoint="/bin/sh",
+                network_mode="none",
+                storage_opt={"size": "1G"},
+                labels={
+                    "dml.component": "quota-preflight",
+                    "dml.worker": self.worker_id,
+                },
+            )
+            try:
+                c.start()
+                return c.wait(timeout=10)["StatusCode"] == 0
+            finally:
+                c.remove(force=True)
+        except Exception:
+            return False
+
+    def pull(self, record):
+        ref = record["payload"]["image_digest_ref"]
+        if not re.fullmatch(r"[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}", ref):
+            raise RuntimeFailure("UNSUPPORTED_IMAGE")
+        allowed = [
+            x.strip().rstrip("/")
+            for x in os.getenv("INTERACTIVE_REGISTRY_PREFIXES", "").split(",")
+            if x.strip()
+        ]
+        if not any(ref.startswith(prefix + "/") for prefix in allowed):
+            raise RuntimeFailure("UNSUPPORTED_IMAGE")
+        self.authority(record)
+        with self.pull_lock:
+            # Tmpfs Docker config avoids credentials in arguments/env or journal.
+            root = Path("/run/dml-interactive-pulls")
+            root.mkdir(mode=0o700, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=root) as directory:
+                credentials = os.getenv("INTERACTIVE_REGISTRY_CREDENTIAL_FILE")
+                if credentials:
+                    value = json.loads(protected_file(credentials))
+                    if (
+                        not isinstance(value, dict)
+                        or set(value) != {"server", "username", "password"}
+                        or not all(isinstance(v, str) and v for v in value.values())
+                        or not re.fullmatch(r"[A-Za-z0-9.:-]+", value["server"])
+                        or ":" in value["username"]
+                    ):
+                        raise RuntimeFailure("PULL_FAILED")
+                    server = value["server"]
+                    if not ref.startswith(server + "/"):
+                        raise RuntimeFailure("PULL_FAILED")
+                    auth = base64.b64encode(
+                        (value["username"] + ":" + value["password"]).encode()
+                    ).decode()
+                    config = Path(directory) / "config.json"
+                    config.write_text(json.dumps({"auths": {server: {"auth": auth}}}))
+                    config.chmod(0o600)
+                try:
+                    proc = subprocess.Popen(
+                        [
+                            "docker",
+                            "--config",
+                            directory,
+                            "pull",
+                            "--platform",
+                            record["payload"]["launch_spec"]["platform"],
+                            ref,
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    deadline = __import__("time").monotonic() + int(
+                        os.getenv("INTERACTIVE_PULL_TIMEOUT_SECONDS", "1800")
+                    )
+                    while proc.poll() is None:
+                        if (
+                            not self.coordinator.authoritative(record["assignment_id"])
+                            or __import__("time").monotonic() >= deadline
+                        ):
+                            proc.kill()
+                            proc.wait(timeout=5)
+                            raise RuntimeFailure("PULL_FAILED")
+                        __import__("time").sleep(0.2)
+                    if proc.returncode:
+                        raise RuntimeFailure("PULL_FAILED")
+                except OSError:
+                    raise RuntimeFailure("PULL_FAILED") from None
+        self.authority(record)
+        image = self.client.images.get(ref)
+        attrs = image.attrs
+        spec = record["payload"]["launch_spec"]
+        config = attrs.get("Config", {})
+        if (
+            ref not in attrs.get("RepoDigests", [])
+            or attrs.get("Os") + "/" + attrs.get("Architecture") != spec["platform"]
+            or config.get("Volumes")
+        ):
+            raise RuntimeFailure("UNSUPPORTED_IMAGE")
+        user, workdir = (
+            config.get("User") or "",
+            config.get("WorkingDir") or "/workspace",
+        )
+        if (
+            not spec["allow_root"]
+            and (not user or user.split(":")[0] in ("0", "root"))
+            or len(user) > 128
+            or not workdir.startswith("/")
+            or len(workdir) > 1024
+        ):
+            raise RuntimeFailure("UNSUPPORTED_IMAGE")
+        return image.id, user, workdir
+
+    def create(self, record, component, image, **kwargs):
+        self.authority(record)
+        # Pull trusted service images by pinned digest explicitly; container
+        # create must never resolve an absent mutable tag as a fallback.
+        if component in ("sidecar", "access"):
+            self.client.images.pull(image)
+            self.authority(record)
+        c = self.client.containers.create(
+            image,
+            name="dml-" + record["assignment_id"] + "-" + component,
+            labels=labels(record, self.worker_id, component),
+            restart_policy={"Name": "no"},
+            log_config=LogConfig(
+                type="json-file", config={"max-size": "10m", "max-file": "2"}
+            ),
+            **kwargs
+        )
+        # Persist exact ID before start. If Stop raced the create, journal/labels
+        # identify the late object and cleanup can remove it immediately.
+        with self.coordinator.lock:
+            current = self.coordinator.get(record["assignment_id"])
+            current["containers"][component] = c.id
+            self.coordinator.persist(current)
+        try:
+            self.authority(record)
+            c.start()
+            self.authority(record)
+        except Exception:
+            self.remove_exact(record, c.id)
+            raise
+        return c
+
+    def workload(self, record, image_id, user, workdir):
+        from hardware import execution_inventory
+
+        inv = execution_inventory(
+            self.coordinator, interactive_ready=True, quota_supported=True
+        )
+        p, spec = record["payload"], record["payload"]["launch_spec"]
+        if (
+            not inv["complete"]
+            or any(g["busy"] or g["processes"] for g in inv["gpus"])
+            or p["gpu_uuid"] not in [g["uuid"] for g in inv["gpus"]]
+        ):
+            raise RuntimeFailure("GPU_BUSY")
+        if (
+            inv["free_disk_gb"] < spec["disk_gb"] + spec["pull_headroom_gb"]
+            or inv["free_ram_gb"] < spec["memory_gb"] + 1
+        ):
+            raise RuntimeFailure("DISK_FULL")
+        return self.create(
+            record,
+            "workload",
+            image_id,
+            entrypoint="/bin/sh",
+            command=[
+                "-c",
+                'trap "exit 0" TERM INT; while :; do sleep 3600 & wait $!; done',
+            ],
+            user=user,
+            working_dir=workdir,
+            healthcheck={"test": ["NONE"]},
+            init=True,
+            network_mode="none",
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+            pids_limit=spec["pids"],
+            nano_cpus=int(spec["cpu"] * 1e9),
+            mem_limit=int(spec["memory_gb"] * 1024**3),
+            memswap_limit=int(spec["memory_gb"] * 1024**3),
+            storage_opt={"size": str(spec["disk_gb"]) + "G"},
+            device_requests=[
+                DeviceRequest(device_ids=[p["gpu_uuid"]], capabilities=[["gpu"]])
+            ],
+        )
+
+    def unit(self, record, runtime_dir, endpoint_dir):
+        image = os.environ["INTERACTIVE_ACCESS_IMAGE"]
+        if not re.search(r"@sha256:[0-9a-f]{64}$", image):
+            raise RuntimeFailure("START_FAILED")
+        endpoint_mounts = {str(endpoint_dir): {"bind": "/state", "mode": "rw"}}
+        endpoint_env = {"TS_NO_LOGS_NO_SUPPORT": "true"}
+        ca = os.getenv("INTERACTIVE_HEADSCALE_CA_FILE")
+        if ca:
+            endpoint_mounts[ca] = {"bind": "/ca/headscale.pem", "mode": "ro"}
+            endpoint_env["SSL_CERT_FILE"] = "/ca/headscale.pem"
+        sidecar = self.create(
+            record,
+            "sidecar",
+            TAILSCALE,
+            entrypoint="tailscaled",
+            command=[
+                "--tun=userspace-networking",
+                "--state=/state/tailscaled.state",
+                "--socket=/state/tailscaled.sock",
+            ],
+            environment=endpoint_env,
+            volumes=endpoint_mounts,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+            mem_limit="512m",
+            nano_cpus=1000000000,
+            pids_limit=128,
+        )
+        access = self.create(
+            record,
+            "access",
+            image,
+            network_mode="container:" + sidecar.id,
+            user="10001:10001",
+            environment={
+                "ACCESS_RUNTIME_ID": record["assignment_id"],
+                "ACCESS_BROKER_SOCKET": str(runtime_dir / "broker.sock"),
+                "ACCESS_BROKER_TOKEN_FILE": str(runtime_dir / "broker.token"),
+            },
+            volumes={str(runtime_dir): {"bind": str(runtime_dir), "mode": "ro"}},
+            read_only=True,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+            mem_limit="256m",
+            nano_cpus=500000000,
+            pids_limit=64,
+        )
+        return sidecar, access
+
+    def remove_exact(self, record, container_id):
+        try:
+            c = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            return
+        expected = labels(record, self.worker_id, c.labels.get("dml.component"))
+        if any(c.labels.get(key) != value for key, value in expected.items()):
+            raise RuntimeFailure("LOCAL_CONFLICT")
+        c.remove(force=True, v=False)
+        try:
+            self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            return
+        raise RuntimeFailure("START_FAILED")
+
+    def cleanup(self, record):
+        # Exact assignment selectors recover create-before-journal crash windows.
+        objects = self.client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    LABEL + "=" + record["assignment_id"],
+                    "dml.worker=" + self.worker_id,
+                ]
+            },
+        )
+        for component in (
+            "access",
+            "sidecar",
+            "workload",
+            "batch",
+            "batch-seed",
+            "batch-cleanup",
+        ):
+            for c in objects:
+                if c.labels.get("dml.component") == component:
+                    self.remove_exact(record, c.id)
+        if self.client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    LABEL + "=" + record["assignment_id"],
+                    "dml.worker=" + self.worker_id,
+                ]
+            },
+        ):
+            raise RuntimeFailure("LOCAL_CONFLICT")

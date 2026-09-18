@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean
+from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, JSON
 from sqlalchemy.sql import func
 from app.db.database import Base
 import uuid
@@ -25,3 +25,12 @@ class Worker(Base):
     is_testing = Column(Boolean, nullable=True)
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_registered = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    protocol_version = Column(Integer)
+    instance_id = Column(String)
+    authenticated_heartbeat_at = Column(DateTime(timezone=True))
+    inventory = Column(JSON)
+    execution_mode = Column(String, nullable=False, default='RECONCILING')
+    execution_paused = Column(Boolean, nullable=False, default=False)
+    execution_draining = Column(Boolean, nullable=False, default=False)
+    execution_reconciling = Column(Boolean, nullable=False, default=True)
+    heartbeat_sequence = Column(Integer, nullable=False, default=0)

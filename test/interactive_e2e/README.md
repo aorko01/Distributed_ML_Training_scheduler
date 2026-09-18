@@ -61,3 +61,5 @@ push/PR/manual events, including forks, with contents:read and no secrets.
 Single-runner baseline does not prove forced DERP, cross-machine NAT or installed
 production Headscale/WSS configuration. Native SSH, browser terminal UI/framing,
 HTTP apps, interactive scheduling and HA remain separate future work.
+
+Production Worker runtime gates are documented separately in [runtime/README.md](runtime/README.md). The fake broker suite does not count as workload execution acceptance.

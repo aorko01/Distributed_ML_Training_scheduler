@@ -74,7 +74,7 @@ LOG_PUSH_INTERVAL = float(os.getenv("LOG_PUSH_INTERVAL", "1.0"))
 CONTAINER_AS_ROOT = os.getenv("CONTAINER_AS_ROOT", "0").lower() in ("1", "true", "yes")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-WORKER_ID_FILE = os.path.join(BASE_DIR, "worker_id.txt")
+WORKER_ID_FILE = os.getenv("WORKER_ID_FILE", os.path.join(BASE_DIR, "worker_id.txt"))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 VRAM_ESTIMATION_SCRIPT = os.path.join(BASE_DIR, "vram_estimation.py")
 

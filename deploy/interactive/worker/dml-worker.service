@@ -1,0 +1,26 @@
+[Unit]
+Description=Distributed ML Worker with exclusive interactive runtime accounting
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service dml-worker-lease-guard.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/dml/Worker
+EnvironmentFile=/etc/dml/worker.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHON_DOTENV_DISABLED=1
+ExecStart=/opt/dml/venv/bin/python /opt/dml/Worker/main.py
+ExecStopPost=/opt/dml/venv/bin/python -m interactive.cleanup
+Restart=always
+RestartSec=5
+TimeoutStopSec=35
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

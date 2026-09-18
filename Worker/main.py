@@ -16,9 +16,6 @@ def heartbeat_loop(api: SchedulerAPI, executor: JobExecutor, stop_event: threadi
     logger.info("Heartbeat thread started.")
     record_event("info", "Heartbeat thread started")
     while not stop_event.is_set():
-        if is_paused():
-            stop_event.wait(1.0)
-            continue
         try:
             gpu_type, total_vram, free_vram, _, gpu_load = get_gpu_info()
             reported_free = executor.get_effective_free_vram(free_vram, total_vram)
@@ -100,7 +97,7 @@ def job_loop(executor: JobExecutor, api: SchedulerAPI, stop_event: threading.Eve
             if t.is_alive():
                 t.join(timeout=1.0)
 
-def main():
+def legacy_main():
     worker_id = get_or_create_worker_id()
     logger.info("Worker starting. ID: %s", worker_id)
     record_event("info", f"Worker starting (id {worker_id})")
@@ -141,6 +138,10 @@ def main():
         stop_event.set()
         job_thread.join(timeout=5.0)
         heartbeat_thread.join(timeout=2.0)
+
+def main():
+    from managed_worker import run
+    run()
 
 if __name__ == "__main__":
     main()

@@ -41,6 +41,8 @@ import app.models.resource_request_model  # noqa: E402,F401
 
 import app.models.interactive_workspace_model  # noqa: E402,F401
 
+import app.models.interactive_runtime_model
+
 TEST_ENGINE = create_engine(
     "sqlite://",
     connect_args={"check_same_thread": False},

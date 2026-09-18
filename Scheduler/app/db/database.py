@@ -73,7 +73,8 @@ def run_migrations():
     # alone cannot add composite constraints/triggers to an existing deployment.
     if engine.dialect.name == "postgresql":
         from pathlib import Path
-        migration = Path(__file__).resolve().parents[2] / "migrations" / "001_interactive_workspaces.sql"
+        migrations = Path(__file__).resolve().parents[2] / "migrations"
         with engine.begin() as conn:
             conn.exec_driver_sql("SELECT pg_advisory_xact_lock(764293810)")
-            conn.exec_driver_sql(migration.read_text())
+            for migration in sorted(migrations.glob("*.sql")):
+                conn.exec_driver_sql(migration.read_text())

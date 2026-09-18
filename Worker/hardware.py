@@ -206,3 +206,40 @@ def collect_node_info() -> dict:
         "total_disk": total_disk,
         "available_disk": free_disk,
     }
+
+def execution_inventory(coordinator,interactive_ready=False,quota_supported=False,available_slots=2):
+    """Fresh physical GPU/process inventory, unknown data always fails closed."""
+    import time
+    import subprocess
+    import xml.etree.ElementTree as ET
+    complete = False
+    gpus = []
+    try:
+        raw = subprocess.run(['nvidia-smi','-q','-x'],capture_output=True,timeout=3,check=True).stdout
+        tree = ET.fromstring(raw)
+        for gpu in tree.findall('gpu'):
+            processes = []
+            for process in gpu.findall('processes/process_info'):
+                processes.append(int(process.findtext('pid')))
+            total = float(gpu.findtext('fb_memory_usage/total').split()[0])/1024
+            used = float(gpu.findtext('fb_memory_usage/used').split()[0])
+            utilization = float(gpu.findtext('utilization/gpu_util').split()[0])
+            busy = bool(processes) or used > float(os.getenv('INTERACTIVE_GPU_BASELINE_MB','64')) or utilization > float(os.getenv('INTERACTIVE_GPU_BUSY_PERCENT','1'))
+            gpus.append({'uuid':gpu.findtext('uuid'),'model':gpu.findtext('product_name'),'memory_gb':total,
+                         'busy':busy,'processes':processes})
+        complete = bool(gpus) and all(g['uuid'].startswith('GPU-') for g in gpus)
+    except Exception:
+        pass
+    records = [r for r in coordinator.records() if not r.get('released')]
+    try:
+        free_disk = shutil.disk_usage(os.getenv('DOCKER_DATA_ROOT','/var/lib/docker')).free/1024**3
+    except OSError:
+        free_disk = 0.0
+    _,_,free_vram,_,_ = get_gpu_info()
+    return {'complete':complete,'observed_at':time.time(),'mode':coordinator.mode,
+            'available_slots':max(0,available_slots-len(records)) if coordinator.mode in ('AVAILABLE','BATCH_ACTIVE') else 0,
+            'local_assignments':[r['assignment_id'] for r in records],'free_vram_gb':float(free_vram),
+            'free_ram_gb':float(psutil.virtual_memory().available/1024**3),'free_disk_gb':float(free_disk),
+            'cpu_cores':os.cpu_count() or 0,'platform':'linux/arm64' if platform.machine() == 'aarch64' else 'linux/amd64',
+            'nvidia_runtime':interactive_ready,'quota_supported':quota_supported,'interactive_ready':interactive_ready,
+            'gpus':gpus}

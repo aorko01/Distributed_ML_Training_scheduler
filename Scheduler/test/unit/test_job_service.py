@@ -199,183 +199,20 @@ class TestClaimAndReleaseForBuilding:
 
 
 
-class TestVramEstimationStrategy:
+class TestLegacyWorkerPlacement:
     @pytest.mark.asyncio()
-    async def test_highest_vram_worker_gets_pending_job(self, db, fake_redis):
-        user = make_user(db)
-        job = make_job(db, user.user_id, status=JobStatus.VRAM_ESTIMATION_PENDING)
-        make_worker(db, worker_id="w1")
-        fake_redis.hashes["worker:w1"] = {"available_vram": "20"}
-        fake_redis.hashes["worker:w2"] = {"available_vram": "10"}
-        with patch.object(job_service, "redis_client", fake_redis):
-            out = await job_service._check_vram_estimation_strategy(db, _request("w1"))
-        assert out is not None
-        assert out["flag"] == "vram_estimation"
-        assert out["id"] == job.id
-        assert fake_redis.store[f"job_worker:{job.id}"] == "w1"
+    async def test_pull_rejects_old_protocol(self, db):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            await job_service.get_next_job_for_worker(db, _request())
+        assert exc.value.status_code == 410
 
     @pytest.mark.asyncio()
-    async def test_lower_vram_worker_gets_nothing(self, db, fake_redis):
-        user = make_user(db)
-        make_job(db, user.user_id, status=JobStatus.VRAM_ESTIMATION_PENDING)
-        with patch.object(job_service, "redis_client", fake_redis):
-            fake_redis.hashes["worker:w1"] = {"available_vram": "5"}
-            fake_redis.hashes["worker:w2"] = {"available_vram": "20"}
-            out = await job_service._check_vram_estimation_strategy(
-                db, _request("w1", free_vram=5.0)
-            )
-        assert out is None
-
-    @pytest.mark.asyncio()
-    async def test_no_pending_job_returns_none(self, db, fake_redis):
-        with patch.object(job_service, "redis_client", fake_redis):
-            assert (
-                await job_service._check_vram_estimation_strategy(db, _request("w1"))
-                is None
-            )
-
-    @pytest.mark.asyncio()
-    async def test_is_highest_with_no_workers_is_true(self, fake_redis):
-        with patch.object(job_service, "redis_client", fake_redis):
-            assert await job_service._is_highest_vram_worker(1.0) is True
-
-    @pytest.mark.asyncio()
-    async def test_get_connected_vrams_skips_bad_values(self, fake_redis):
-        fake_redis.hashes["worker:a"] = {"available_vram": "not-a-float"}
-        fake_redis.hashes["worker:b"] = {"available_vram": "8"}
-        with patch.object(job_service, "redis_client", fake_redis):
-            assert await job_service._get_connected_workers_vram() == [8.0]
-
-
-class TestTrainingAndRetryStrategies:
-    @pytest.mark.asyncio()
-    async def test_training_picks_largest_fitting_vram(self, db, fake_redis):
-        user = make_user(db)
-        small = make_job(
-            db, user.user_id, status=JobStatus.RUNNABLE, vram_required=2.0
-        )
-        big = make_job(db, user.user_id, status=JobStatus.RUNNABLE, vram_required=8.0)
-        too_big = make_job(
-            db, user.user_id, status=JobStatus.RUNNABLE, vram_required=100.0
-        )
-        with patch.object(job_service, "redis_client", fake_redis):
-            out = await job_service._check_training_job_strategy(
-                db, _request(free_vram=20.0)
-            )
-        assert out["id"] == big.id
-        assert out["flag"] == "training"
-        db.refresh(big)
-        assert big.status == JobStatus.IN_PROGRESS
-        assert big.device == "NVIDIA A100"
-
-    @pytest.mark.asyncio()
-    async def test_training_respects_one_gb_buffer(self, db, fake_redis):
-        user = make_user(db)
-        # needs 10 + 1.0 buffer = 11 > 10 free -> must not be scheduled
-        make_job(db, user.user_id, status=JobStatus.RUNNABLE, vram_required=10.0)
-        with patch.object(job_service, "redis_client", fake_redis):
-            out = await job_service._check_training_job_strategy(
-                db, _request(free_vram=10.0)
-            )
-        assert out is None
-
-    @pytest.mark.asyncio()
-    async def test_training_allows_null_vram(self, db, fake_redis):
-        user = make_user(db)
-        job = make_job(db, user.user_id, status=JobStatus.RUNNABLE, vram_required=None)
-        with patch.object(job_service, "redis_client", fake_redis):
-            out = await job_service._check_training_job_strategy(
-                db, _request(free_vram=1.0)
-            )
-        assert out["id"] == job.id
-
-    @pytest.mark.asyncio()
-    async def test_retry_strategy(self, db, fake_redis):
-        user = make_user(db)
-        job = make_job(
-            db, user.user_id, status=JobStatus.RETRY_NEEDED, vram_required=2.0
-        )
-        with patch.object(job_service, "redis_client", fake_redis):
-            out = await job_service._check_retry_job_strategy(db, _request())
-        assert out["id"] == job.id
-        assert out["flag"] == "retry"
-
-
-class TestGetNextJobForWorker:
-    @pytest.mark.asyncio()
-    async def test_unknown_worker_raises(self, db, fake_redis):
-        with patch.object(job_service, "redis_client", fake_redis):
-            with pytest.raises(Exception, match="Worker not found"):
-                await job_service.get_next_job_for_worker(db, _request("ghost"))
-
-    @pytest.mark.asyncio()
-    async def test_testing_worker_gets_nothing(self, db, fake_redis):
-        user = make_user(db)
-        make_job(db, user.user_id, status=JobStatus.RUNNABLE)
-        make_worker(db, worker_id="w-test", is_testing=True)
-        with patch.object(job_service, "redis_client", fake_redis):
-            assert (
-                await job_service.get_next_job_for_worker(db, _request("w-test"))
-                is None
-            )
-
-    @pytest.mark.asyncio()
-    async def test_retry_preferred_over_training(self, db, fake_redis):
-        user = make_user(db)
-        make_job(db, user.user_id, status=JobStatus.RUNNABLE, vram_required=1.0)
-        retry = make_job(db, user.user_id, status=JobStatus.RETRY_NEEDED)
-        make_worker(db, worker_id="w1")
-        with patch.object(job_service, "redis_client", fake_redis):
-            out = await job_service.get_next_job_for_worker(db, _request("w1"))
-        assert out["id"] == retry.id
-
-    @pytest.mark.asyncio()
-    async def test_no_jobs_returns_none(self, db, fake_redis):
-        make_worker(db, worker_id="w1")
-        with patch.object(job_service, "redis_client", fake_redis):
-            assert await job_service.get_next_job_for_worker(db, _request("w1")) is None
-
-
-class TestGetJobForResume:
-    @pytest.mark.asyncio()
-    async def test_resume_success(self, db, fake_redis):
-        user = make_user(db)
-        job = make_job(
-            db, user.user_id, status=JobStatus.IN_PROGRESS, device="NVIDIA A100"
-        )
-        fake_redis.store[f"job_worker:{job.id}"] = "w1"
-        with patch.object(job_service, "redis_client", fake_redis):
-            out = await job_service.get_job_for_resume(db, job.id, "w1", "NVIDIA A100")
-        assert out is not None
-        assert out["flag"] == "retry"
-
-    @pytest.mark.asyncio()
-    async def test_resume_wrong_worker_returns_none(self, db, fake_redis):
-        user = make_user(db)
-        job = make_job(db, user.user_id, status=JobStatus.IN_PROGRESS)
-        fake_redis.store[f"job_worker:{job.id}"] = "other"
-        with patch.object(job_service, "redis_client", fake_redis):
-            assert await job_service.get_job_for_resume(db, job.id, "w1") is None
-
-    @pytest.mark.asyncio()
-    async def test_resume_device_mismatch_returns_none(self, db, fake_redis):
-        user = make_user(db)
-        job = make_job(
-            db, user.user_id, status=JobStatus.IN_PROGRESS, device="NVIDIA A100"
-        )
-        fake_redis.store[f"job_worker:{job.id}"] = "w1"
-        with patch.object(job_service, "redis_client", fake_redis):
-            assert (
-                await job_service.get_job_for_resume(db, job.id, "w1", "NVIDIA H100")
-                is None
-            )
-
-    @pytest.mark.asyncio()
-    async def test_resume_non_in_progress_returns_none(self, db, fake_redis):
-        user = make_user(db)
-        job = make_job(db, user.user_id, status=JobStatus.COMPLETED)
-        with patch.object(job_service, "redis_client", fake_redis):
-            assert await job_service.get_job_for_resume(db, job.id, "w1") is None
+    async def test_resume_rejects_old_protocol(self, db):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            await job_service.get_job_for_resume(db, 'job', 'worker')
+        assert exc.value.status_code == 410
 
 
 class TestCompletionAndFailure:

@@ -35,6 +35,9 @@ def register_or_update_worker_service(db: Session, worker_info):
     from sqlalchemy import func
     metrics = worker_info.model_dump()
     db_worker = db.query(Worker).filter(Worker.worker_id == worker_info.worker_id).first()
+    if db_worker and db_worker.protocol_version:
+        from fastapi import HTTPException
+        raise HTTPException(409, 'Authenticated Worker registration required')
     if db_worker:
         db_worker.last_registered = func.now()
         _apply_worker_metrics(db_worker, metrics)
@@ -53,6 +56,14 @@ def register_or_update_worker_service(db: Session, worker_info):
 
 async def process_heartbeat(Heartbeat: HeartbeatSchema):
     """Handles heartbeat from worker, updates Redis and DB metrics."""
+    protected_db = SessionLocal()
+    try:
+        protected = protected_db.query(Worker).filter_by(worker_id=Heartbeat.worker_id).first()
+        if protected and protected.protocol_version:
+            from fastapi import HTTPException
+            raise HTTPException(409, 'Authenticated Worker heartbeat required')
+    finally:
+        protected_db.close()
     key = f"worker:{Heartbeat.worker_id}"
 
     exists_in_redis = await redis_client.exists(key)
@@ -152,11 +163,12 @@ async def get_all_workers(db: Session) -> list[dict]:
     result = []
     for worker in workers:
         online = bool(await redis_client.exists(f"worker:{worker.worker_id}"))
-        running_jobs = (
-            db.query(func.count(Job.id))
-            .filter(Job.status == JobStatus.IN_PROGRESS, Job.device == worker.gpu_type)
-            .scalar()
-        )
+        from app.models.interactive_runtime_model import WorkerAssignment
+        running_jobs = db.query(func.count(WorkerAssignment.id)).filter_by(worker_id=worker.worker_id,released_at=None).scalar()
+        if worker.protocol_version:
+            from app.services.scheduling.types import utc, now
+            from datetime import timedelta
+            online = bool(worker.authenticated_heartbeat_at and utc(worker.authenticated_heartbeat_at) > now()-timedelta(seconds=15))
         result.append(
             {
                 "worker_id": worker.worker_id,

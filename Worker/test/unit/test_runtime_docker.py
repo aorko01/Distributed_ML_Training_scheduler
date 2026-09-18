@@ -1,0 +1,169 @@
+from unittest.mock import MagicMock, patch
+import base64
+import json
+import pytest
+from interactive.docker_ops import DockerOps, RuntimeFailure
+from test.unit.test_execution_coordinator import assignment
+
+
+def record():
+    r = assignment()
+    r.update(containers={})
+    r["payload"] = {
+        "image_digest_ref": "registry.example/test@sha256:" + "a" * 64,
+        "runtime_id": "runtime",
+        "workspace_id": "workspace",
+        "revision_id": "revision",
+        "owner_id": "owner",
+        "generation": 1,
+        "gpu_uuid": "GPU-assigned",
+        "launch_spec": {
+            "platform": "linux/amd64",
+            "allow_root": False,
+            "disk_gb": 20,
+            "pull_headroom_gb": 40,
+            "memory_gb": 8,
+            "cpu": 2,
+            "pids": 256,
+        },
+    }
+    return r
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"RepoDigests": ["wrong@sha256:" + "b" * 64]},
+        {"Architecture": "arm64"},
+        {
+            "Config": {
+                "Volumes": {"/workspace": {}},
+                "User": "1000",
+                "WorkingDir": "/workspace",
+            }
+        },
+        {"Config": {"User": "root", "WorkingDir": "/workspace"}},
+    ],
+)
+def test_image_digest_platform_volumes_and_user_rejected(change, monkeypatch, tmp_path):
+    r = record()
+    coordinator = MagicMock()
+    coordinator.authoritative.return_value = True
+    client = MagicMock()
+    attrs = {
+        "RepoDigests": [r["payload"]["image_digest_ref"]],
+        "Os": "linux",
+        "Architecture": "amd64",
+        "Config": {"User": "1000", "WorkingDir": "/workspace"},
+    }
+    client.images.get.return_value.attrs = {**attrs, **change}
+    monkeypatch.setenv("INTERACTIVE_REGISTRY_PREFIXES", "registry.example")
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.returncode = 0
+    with patch("interactive.docker_ops.subprocess.Popen", return_value=proc), patch(
+        "interactive.docker_ops.tempfile.TemporaryDirectory"
+    ) as directory, patch("interactive.docker_ops.Path.mkdir"):
+        directory.return_value.__enter__.return_value = str(tmp_path)
+        with pytest.raises(RuntimeFailure) as exc:
+            DockerOps(coordinator, "worker", client).pull(r)
+        assert exc.value.code == "UNSUPPORTED_IMAGE"
+    client.containers.create.assert_not_called()
+
+
+def test_workload_has_only_selected_gpu_and_no_mount_or_credentials(monkeypatch):
+    r = record()
+    coordinator = MagicMock()
+    coordinator.authoritative.return_value = True
+    ops = DockerOps(coordinator, "worker", MagicMock())
+    ops.create = MagicMock()
+    inv = {
+        "complete": True,
+        "gpus": [{"uuid": "GPU-assigned", "busy": False, "processes": []}],
+        "free_disk_gb": 200,
+        "free_ram_gb": 64,
+    }
+    monkeypatch.setattr("hardware.execution_inventory", lambda *args, **kwargs: inv)
+    ops.workload(r, "sha256:image", "1000", "/workspace")
+    kwargs = ops.create.call_args.kwargs
+    assert kwargs["network_mode"] == "none" and kwargs["working_dir"] == "/workspace"
+    assert kwargs["device_requests"][0]["DeviceIDs"] == ["GPU-assigned"]
+    assert kwargs["cap_drop"] == ["ALL"] and kwargs["init"]
+    assert (
+        "volumes" not in kwargs
+        and "environment" not in kwargs
+        and "ports" not in kwargs
+    )
+
+
+def test_busy_gpu_fails_before_create(monkeypatch):
+    r = record()
+    ops = DockerOps(MagicMock(), "worker", MagicMock())
+    ops.create = MagicMock()
+    monkeypatch.setattr(
+        "hardware.execution_inventory",
+        lambda *args, **kwargs: {
+            "complete": True,
+            "gpus": [{"uuid": "GPU-assigned", "busy": True, "processes": [12]}],
+        },
+    )
+    with pytest.raises(RuntimeFailure) as exc:
+        ops.workload(r, "id", "1000", "/workspace")
+    assert exc.value.code == "GPU_BUSY"
+    ops.create.assert_not_called()
+
+
+def test_private_pull_uses_protected_long_registry_token(monkeypatch, tmp_path):
+    r = record()
+    credential = tmp_path / "registry.json"
+    password = "long-registry-token-" * 40
+    credential.write_text(
+        json.dumps(
+            {
+                "server": "registry.example",
+                "username": "worker",
+                "password": password,
+            }
+        )
+    )
+    credential.chmod(0o600)
+    config_dir = tmp_path / "temporary-auth"
+    config_dir.mkdir()
+    monkeypatch.setenv("INTERACTIVE_REGISTRY_CREDENTIAL_FILE", str(credential))
+    monkeypatch.setenv("INTERACTIVE_REGISTRY_PREFIXES", "registry.example")
+    client = MagicMock()
+    client.images.get.return_value.attrs = {
+        "RepoDigests": [r["payload"]["image_digest_ref"]],
+        "Os": "linux",
+        "Architecture": "amd64",
+        "Config": {"User": "1000", "WorkingDir": "/workspace"},
+    }
+    coordinator = MagicMock()
+    coordinator.authoritative.return_value = True
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.returncode = 0
+
+    def launch(args, **kwargs):
+        assert password not in repr(args) + repr(kwargs)
+        config = json.loads((config_dir / "config.json").read_text())
+        assert (
+            base64.b64decode(config["auths"]["registry.example"]["auth"]).decode()
+            == "worker:" + password
+        )
+        return proc
+
+    with patch("interactive.docker_ops.subprocess.Popen", side_effect=launch), patch(
+        "interactive.docker_ops.tempfile.TemporaryDirectory"
+    ) as directory, patch("interactive.docker_ops.Path.mkdir"):
+        directory.return_value.__enter__.return_value = str(config_dir)
+        DockerOps(coordinator, "worker", client).pull(r)
+
+    credential.chmod(0o644)
+    with patch("interactive.docker_ops.subprocess.Popen") as launch, patch(
+        "interactive.docker_ops.tempfile.TemporaryDirectory"
+    ) as directory, patch("interactive.docker_ops.Path.mkdir"):
+        directory.return_value.__enter__.return_value = str(config_dir)
+        with pytest.raises(ValueError):
+            DockerOps(coordinator, "worker", client).pull(r)
+        launch.assert_not_called()

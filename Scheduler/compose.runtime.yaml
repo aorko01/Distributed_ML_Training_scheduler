@@ -1,0 +1,8 @@
+# Overlay the normal Scheduler Compose file, on the Scheduler host only.
+services:
+  api:
+    env_file: .env.runtime
+    volumes:
+      - ${WORKER_CREDENTIALS_HOST_FILE:?absolute Scheduler-host path}:/etc/dml/worker-credentials.json:ro
+      - ${CONTROLLER_SECRET_HOST_FILE:?absolute Scheduler-host path}:/etc/dml/controller.secret:ro
+      - ${MANAGEMENT_CA_HOST_FILE:?absolute Scheduler-host path}:/etc/dml/management-ca.pem:ro

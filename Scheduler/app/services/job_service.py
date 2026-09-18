@@ -63,6 +63,7 @@ def set_job_vram_estimation_pending(
 
 
 def set_job_runnable(db: Session, job_id: str):
+    _reject_managed_job(db, job_id)
     job = db.query(Job).filter(Job.id == job_id).first()
 
     if not job:
@@ -80,6 +81,7 @@ def set_job_runnable(db: Session, job_id: str):
 
 
 def save_vram_estimation(db: Session, job_id: str, vram_required: float, ram_required: float, step_time: float):
+    _reject_managed_job(db, job_id)
     job = db.query(Job).filter(Job.id == job_id).first()
 
     if not job:
@@ -284,160 +286,25 @@ def _format_job_response(job: Job, flag: str) -> dict:
     }
 
 
-async def _check_vram_estimation_strategy(db: Session, request: WorkerResource) -> dict | None:
-    """
-    Strategy 1: If pulling worker has highest VRAM among connected workers,
-    check for any job with VRAM_ESTIMATION_PENDING status.
-    """
-    is_highest = await _is_highest_vram_worker(request.free_vram)
-    if not is_highest:
-        return None
-
-    job = (
-        db.query(Job)
-        .filter(Job.status == JobStatus.VRAM_ESTIMATION_PENDING)
-        .order_by(Job.created_at)
-        .first()
-    )
-
-    if not job:
-        return None
-
-    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
-
-    return _format_job_response(job, flag="vram_estimation")
+async def get_job_for_resume(db, job_id, worker_id, device=None):
+    from fastapi import HTTPException
+    raise HTTPException(410, 'Use authenticated Worker assignment reconciliation')
 
 
-async def _check_training_job_strategy(db: Session, request: WorkerResource) -> dict | None:
-    """
-    Strategy 2: Find runnable training job where (vram_required + 1.0) <= available vram of pulling worker.
-    Selects the job with largest vram_required.
-    """
-    job = (
-        db.query(Job)
-        .filter(
-            Job.status == JobStatus.RUNNABLE,
-            or_(
-                Job.vram_required.is_(None),
-                (Job.vram_required + 1.0) <= request.free_vram,
-            ),
-        )
-        .order_by(Job.vram_required.desc().nullslast(), Job.created_at.asc())
-        .first()
-    )
-
-    if not job:
-        return None
-
-    job.status = JobStatus.IN_PROGRESS
-    job.started_at = datetime.now(timezone.utc)
-    job.device = request.gpu_type  # Save the device when worker pulls for running
-    db.commit()
-    db.refresh(job)
-
-    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
-
-    return _format_job_response(job, flag="training")
+async def get_next_job_for_worker(db, request):
+    from fastapi import HTTPException
+    raise HTTPException(410, 'Use authenticated Worker assignment claims')
 
 
-async def _check_retry_job_strategy(db: Session, request: WorkerResource) -> dict | None:
-    """
-    Strategy 3: Requeue a job that previously failed due to an infrastructure
-    issue (RETRY_NEEDED). It is only sent to a worker whose free VRAM fits the
-    job's estimated requirement, so the worker can restore the checkpoints from
-    the object store and resume with the resume command.
-    """
-    job = (
-        db.query(Job)
-        .filter(
-            Job.status == JobStatus.RETRY_NEEDED,
-            or_(
-                Job.vram_required.is_(None),
-                (Job.vram_required + 1.0) <= request.free_vram,
-            ),
-        )
-        .order_by(Job.created_at.asc())
-        .first()
-    )
-
-    if not job:
-        return None
-
-    job.status = JobStatus.IN_PROGRESS
-    job.started_at = datetime.now(timezone.utc)
-    job.device = request.gpu_type  # Save the device when worker pulls for running
-    db.commit()
-    db.refresh(job)
-
-    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, request.worker_id)
-
-    return _format_job_response(job, flag="retry")
-
-
-SCHEDULING_STRATEGIES = [
-    _check_vram_estimation_strategy,
-    _check_retry_job_strategy,
-    _check_training_job_strategy,
-]
-
-
-async def get_job_for_resume(db: Session, job_id: str, worker_id: str,
-                             device: str | None = None) -> dict | None:
-    """Return a job (shaped as a retry payload) if it is still IN_PROGRESS,
-    assigned to the given worker, and running on the same device (GPU type) as
-    the requesting worker, so a restarted worker can resume it before the stall
-    watchdog marks it RETRY_NEEDED.
-
-    Returns None when the job was already requeued, completed or failed, when it
-    is being run by a different worker, or when it is running on a different
-    device (which would let two devices run the same job).
-    """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if job is None or job.status != JobStatus.IN_PROGRESS:
-        return None
-
-    assigned = await redis_client.get(JOB_WORKER_KEY_PREFIX + job.id)
-    if assigned not in (None, worker_id):
-        return None
-
-    # Only resume when the job's recorded device matches this worker's device;
-    # otherwise the job may be running on another device entirely.
-    if job.device and device and job.device != device:
-        return None
-
-    # Re-assert the job->worker mapping so the stall watchdog keeps tracking
-    # this worker if the job stalls again after being resumed.
-    await redis_client.set(JOB_WORKER_KEY_PREFIX + job.id, worker_id)
-
-    return _format_job_response(job, flag="retry")
-
-
-async def get_next_job_for_worker(db: Session, request: WorkerResource):
-    """
-    Main entry point for pulling a job.
-    Executes scheduling strategies in order until a job is matched.
-    """
-    worker = db.query(Worker).filter(Worker.worker_id == request.worker_id).first()
-    if not worker:
-        raise Exception("Worker not found")
-
-    # Do not assign any job to a worker reserved for testing.
-    if worker.is_testing is True:
-        return None
-
-    for strategy in SCHEDULING_STRATEGIES:
-        if asyncio.iscoroutinefunction(strategy):
-            job_info = await strategy(db, request)
-        else:
-            job_info = strategy(db, request)
-
-        if job_info is not None:
-            return job_info
-
-    return None
+def _reject_managed_job(db, job_id):
+    from app.models.interactive_runtime_model import WorkerAssignment
+    from fastapi import HTTPException
+    if db.query(WorkerAssignment).filter_by(job_id=job_id).first():
+        raise HTTPException(409, 'Assignment-managed jobs require authenticated fenced results')
 
 
 def set_to_completed(db: Session, job_id: str):
+    _reject_managed_job(db, job_id)
     job = db.query(Job).filter(Job.id == job_id).first()
 
     if not job:
@@ -479,6 +346,7 @@ def mark_job_failed(
 
     Jobs already in a terminal state are left untouched.
     """
+    _reject_managed_job(db, job_id)
     job = (
         db.query(Job)
         .filter(Job.id == job_id)

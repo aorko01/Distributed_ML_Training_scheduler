@@ -1,4 +1,5 @@
 import threading
+import os
 from config import (
     HEARTBEAT_INTERVAL, JOB_POLL_INTERVAL, LOG_PUSH_INTERVAL,
     LOG_UPLOAD_INTERVAL, MAX_CONCURRENT_JOBS,
@@ -24,7 +25,10 @@ def set_many(pairs: dict):
         for key, value in pairs.items():
             if key in _values:
                 try:
-                    _values[key] = max(1.0, float(value))
+                    parsed = max(1.0, float(value))
+                    if key == 'heartbeat_interval' and parsed > (int(os.getenv('WORKER_ASSIGNMENT_LEASE_SECONDS','45'))-10)/2:
+                        raise ValueError('Heartbeat interval exceeds lease renewal margin')
+                    _values[key] = parsed
                 except (TypeError, ValueError):
                     pass
 

@@ -19,12 +19,21 @@ export interface Workspace {
   source_job_id: string | null;
   revision: Revision;
 }
+export interface Runtime {
+  id: string; workspace_id: string; revision_id: string; generation: number; profile_version: string;
+  state: 'QUEUED' | 'ASSIGNED' | 'PULLING' | 'STARTING' | 'CONNECTING' | 'READY' | 'STOPPING' | 'LOST' | 'STOPPED' | 'FAILED';
+  desired_state: 'RUNNING' | 'STOPPED'; failure_detail: string | null; lifetime_deadline: string | null;
+}
+export interface ConnectionGrant {
+  wss_url: string; ticket: string; expires_at: string; runtime_id: string; generation: number;
+  protocol: 'tcp-stream-v1'; terminal_protocol: 'terminal-stream-v1';
+}
 export interface Choice { id: string; label: string }
 export interface SourceJob { id: string; name: string }
 const base = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(base + '/interactive/workspaces' + path, {
+async function request<T>(path: string, init: RequestInit = {}, prefix = '/interactive/workspaces'): Promise<T> {
+  const response = await fetch(base + prefix + path, {
     ...init, headers: { Authorization: `Bearer ${getToken() ?? ''}`, ...init.headers },
   });
   const body = await response.json();
@@ -52,6 +61,11 @@ export function creationRequest(input: Creation, key: string): { path: string; i
 }
 
 export const interactive = {
+  runtime: (id: string) => request<Runtime | null>(`/${encodeURIComponent(id)}/runtime`),
+  start: (id: string, key: string) => request<Runtime>(`/${encodeURIComponent(id)}/runtimes`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: '{}' }),
+  stop: (id: string) => request<Runtime>(`/runtimes/${encodeURIComponent(id)}/stop`, { method: 'POST' }, '/interactive'),
+  connection: (id: string, signal?: AbortSignal) => request<ConnectionGrant>(`/runtimes/${encodeURIComponent(id)}/connection`, { method: 'POST', signal }, '/interactive'),
   bases: () => request<Choice[]>('/base-images'),
   sources: () => request<SourceJob[]>('/source-jobs'),
   list: () => request<Workspace[]>(''),

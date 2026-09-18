@@ -74,6 +74,18 @@ class JobExecutor:
         self._job_logs_lock = threading.Lock()
         self._job_logs: dict[str, _JobLogState] = {}
 
+    def _managed_launch_args(self, job_id, component='batch'):
+        if not hasattr(self, 'coordinator'):
+            return []
+        record = self.managed_assignment(job_id)
+        if not self.coordinator.authoritative(record['assignment_id']):
+            raise RuntimeError('Assignment lease lost')
+        from interactive.docker_ops import labels
+        result = ['--name', 'dml-'+record['assignment_id']+'-'+component]
+        for key, value in labels(record, self.worker_id, component).items():
+            result.extend(['--label', key+'='+value])
+        return result
+
     @property
     def active_jobs_count(self) -> int:
         with self._active_jobs_lock:
@@ -95,6 +107,8 @@ class JobExecutor:
 
     def begin_resume(self, job_id: str) -> bool:
         with self._active_jobs_lock:
+            if hasattr(self, 'coordinator') and not self.coordinator.may_request_work():
+                return False
             max_jobs = int(runtime_config.get("max_concurrent_jobs") or 2)
             occupied = len(self._active_jobs) + len(self._resuming)
             if (
@@ -113,6 +127,8 @@ class JobExecutor:
     def try_begin_resume_scan(self) -> bool:
         """Reserve the single persisted-job scan allowed at a time."""
         with self._active_jobs_lock:
+            if hasattr(self, 'coordinator'):
+                return False
             if self._resume_scan_active:
                 return False
             self._resume_scan_active = True
@@ -230,9 +246,13 @@ class JobExecutor:
             return CONTAINER_OUTPUT_MOUNT, set()
 
         seed_name = f"seed-{uuid.uuid4().hex[:12]}"
+        managed_args = self._managed_launch_args(os.path.basename(job_output_dir), 'batch-seed') if hasattr(self, 'coordinator') else []
+        if managed_args:
+            seed_name = managed_args[1]
+            managed_args = managed_args[2:]
         try:
             subprocess.run(
-                ["docker", "create", "--name", seed_name, image_name],
+                ["docker", "create", "--name", seed_name, *managed_args, image_name],
                 check=True, capture_output=True, text=True,
             )
             subprocess.run(
@@ -310,6 +330,7 @@ class JobExecutor:
             report_path = os.path.join(report_dir, "report.json")
             cmd = [
                 "docker", "run", "--rm", "--gpus", "all",
+                *self._managed_launch_args(job_id),
                 "-v", f"{_docker_host_path(VRAM_ESTIMATION_SCRIPT)}:/vram_estimation.py:ro",
                 "-v", f"{_docker_host_path(report_dir)}:/report",
                 "--entrypoint", "python", image_name,
@@ -551,6 +572,7 @@ class JobExecutor:
                               finalize: bool = True):
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
+                *self._managed_launch_args(job_id),
             *self._container_user_args(),
             "-v", f"{_docker_host_path(job_output_dir)}:{mount_target}",
             image_name,
@@ -616,6 +638,7 @@ class JobExecutor:
             subprocess.run(
                 [
                     "docker", "run", "--rm",
+                    *self._managed_launch_args(os.path.basename(job_output_dir), "batch-cleanup"),
                     "-v", f"{_docker_host_path(job_output_dir)}:/cleanup",
                     "alpine", "sh", "-c", "rm -rf /cleanup/* /cleanup/.[!.]* /cleanup/..?* 2>/dev/null; true",
                 ],
@@ -907,6 +930,8 @@ class JobExecutor:
 
     def try_begin_job(self, job_id: str, vram_required: float | None = None) -> bool:
         with self._active_jobs_lock:
+            if hasattr(self, 'coordinator') and not self.coordinator.may_request_work():
+                return False
             max_jobs = int(runtime_config.get("max_concurrent_jobs") or 2)
             occupied = len(self._active_jobs) + len(self._resuming)
             if (

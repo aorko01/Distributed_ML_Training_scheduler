@@ -9,7 +9,7 @@
     "lint": "oxlint",
     "test": "tsc --ignoreConfig --outDir node_modules/.tmp/download-tests --target ES2023 --module nodenext --moduleResolution nodenext --types node --erasableSyntaxOnly --rewriteRelativeImportExtensions true test/jobDownload.test.ts src/services/jobDownload.ts && node node_modules/.tmp/download-tests/test/jobDownload.test.js",
     "preview": "vite preview",
-    "test:interactive": "vitest run --config vitest.config.ts test/interactive.test.tsx"
+    "test:interactive": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",

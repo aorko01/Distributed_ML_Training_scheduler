@@ -1,0 +1,20 @@
+[Unit]
+Description=Independent Distributed ML runtime lease guard
+After=docker.service
+Requires=docker.service
+Before=dml-worker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/dml/Worker
+EnvironmentFile=/etc/dml/worker.env
+Environment=PYTHON_DOTENV_DISABLED=1
+ExecStart=/opt/dml/venv/bin/python -m interactive.cleanup --watch
+Restart=always
+RestartSec=1
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

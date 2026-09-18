@@ -120,3 +120,5 @@ Portable CI validates disposable APIs/real TCP and restart ordering, not this
 host's WSS/admin exposure or arbitrary cross-machine NAT. Production enablement
 requires the operational checks above. No production cutover has been claimed
 without those gates.
+
+For Scheduler assignment admission and the host-installed Ubuntu Worker/systemd rollout, see [interactive-runtime-operations.md](../../docs/interactive-runtime-operations.md). Keep runtime admission disabled until the actual host acceptance gates pass.

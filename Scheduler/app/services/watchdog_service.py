@@ -47,6 +47,9 @@ async def _last_image_build_heartbeat_ts(attempt_id: str) -> int | None:
 
 def _mark_retry_needed(db: SessionLocal, job: Job) -> None:
     """Requeue the job as RETRY_NEEDED (an infrastructure issue, not a user error)."""
+    from app.models.interactive_runtime_model import WorkerAssignment
+    if db.query(WorkerAssignment).filter_by(job_id=job.id).first():
+        return
     job.status = JobStatus.RETRY_NEEDED
     job.device = None
 

@@ -35,9 +35,10 @@ class TestHeartbeatLoop:
         assert payload["gpus_in_use"] == 1
         mock_record.assert_called_once_with(True)
 
-    def test_paused_skips_heartbeat(self):
+    def test_paused_continues_heartbeat(self):
         api = MagicMock()
         executor = MagicMock()
+        executor.get_effective_free_vram.return_value = 8.0
         stop_event = MagicMock()
         stop_event.is_set.side_effect = [False, True]
         with (
@@ -45,9 +46,9 @@ class TestHeartbeatLoop:
             patch.object(main, "record_heartbeat") as mock_record,
         ):
             main.heartbeat_loop(api, executor, stop_event)
-        api.send_heartbeat.assert_not_called()
-        mock_record.assert_not_called()
-        stop_event.wait.assert_called_with(1.0)
+        api.send_heartbeat.assert_called_once()
+        mock_record.assert_called_once_with(True)
+        stop_event.wait.assert_called_once()
 
     def test_exception_records_failed_heartbeat(self):
         api = MagicMock()
@@ -343,7 +344,7 @@ class TestMain:
             patch.object(main.time, "sleep", side_effect=KeyboardInterrupt),
             patch.object(main.os, "getenv", side_effect=lambda k, d=None: d),
         ):
-            main.main()
+            main.legacy_main()
         mock_api_cls.return_value.register_worker.assert_called_once()
         assert fake_thread.start.call_count == 2
 
@@ -365,6 +366,12 @@ class TestMain:
             patch.object(main.os, "getenv", side_effect=lambda k, d=None: d),
             patch.object(executor, "resume_persisted_job_if_any") as mock_resume,
         ):
-            main.main()
+            main.legacy_main()
         mock_server.assert_called_once()
         assert not mock_resume.called
+
+
+def test_production_main_uses_authenticated_worker():
+    with patch('managed_worker.run') as run:
+        main.main()
+    run.assert_called_once_with()

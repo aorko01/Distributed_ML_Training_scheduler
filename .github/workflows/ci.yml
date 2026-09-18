@@ -9,6 +9,10 @@ on:
 
   workflow_dispatch:
     inputs:
+      runtime_docker:
+        description: Run production Docker-exec broker against a disposable CPU fixture
+        type: boolean
+        default: false
       interactive_registry:
         description: Run large interactive PyTorch images against Docker Hub
         type: boolean
@@ -228,6 +232,39 @@ jobs:
           python-version: '3.11'
       - run: pip install -r requirements.txt
       - run: python test/postgres/check_interactive.py
+      - run: python test/postgres/check_runtime.py
+
+  interactive-runtime-docker:
+    name: Production Docker exec broker (CPU fixture)
+    if: github.event_name == 'workflow_dispatch' && inputs.runtime_docker
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_DOTENV_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install runtime broker dependencies
+        run: |
+          python -m venv /tmp/runtime-broker-venv
+          /tmp/runtime-broker-venv/bin/pip install -r Worker/requirements.txt
+      - name: Disposable digest registry and real host broker gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          DML_FIXTURE_REGISTRY="runtime-registry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          DML_REGISTRY_ID=$(docker run -d --name "$DML_FIXTURE_REGISTRY" -p 127.0.0.1:55079:5000 registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373)
+          trap 'docker rm -f "$DML_REGISTRY_ID" >/dev/null' EXIT
+          docker build -t localhost:55079/workload:fixture test/interactive_e2e/runtime
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:55079/v2/ >/dev/null; then break; fi
+            sleep 1
+          done
+          docker push localhost:55079/workload:fixture
+          RUNTIME_FIXTURE_DIGEST=$(docker image inspect localhost:55079/workload:fixture --format '{{index .RepoDigests 0}}')
+          export RUNTIME_FIXTURE_DIGEST
+          sudo --preserve-env=RUNTIME_FIXTURE_DIGEST,PYTHON_DOTENV_DISABLED /tmp/runtime-broker-venv/bin/python test/interactive_e2e/runtime/check_broker.py
 
   user-ui:
     name: User UI build and interactive screens

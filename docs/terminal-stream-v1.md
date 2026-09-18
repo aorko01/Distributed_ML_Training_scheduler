@@ -66,4 +66,4 @@ and tailnet policy requirements in interactive-access-contract.md.
 
 The test broker creates a local PTY in a test process only. It is never copied
 into Access's image and does not prove Docker exec, GPU access, multi-host NAT,
-or workload placement. Production Connect and Save remain disabled this phase.
+or workload placement. The Worker runtime phase implements a separate production Docker-exec broker and a short Connect verification; Save remains disabled. See interactive-runtime-operations.md for rollout gates.

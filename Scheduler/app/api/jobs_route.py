@@ -88,6 +88,8 @@ async def submit_job(
             job_id=job_id
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -122,6 +124,8 @@ async def ingest_job_logs(job_id: str, request: LogLinesRequest):
     try:
         await log_service.publish_log_lines(job_id, request.lines)
         return {"ok": True}
+    except HTTPException:
+        raise
     except Exception as e:
         # Producers rely on the HTTP status to decide whether a batch was
         # accepted. Returning 200 here silently discarded live log lines.
@@ -142,6 +146,8 @@ def update_job_to_vram_estimation_pending(
         )
         return {"job_id": job.id, "status": job.status.value}
 
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -151,6 +157,8 @@ def get_unbuilt_jobs(db: Session = Depends(get_db)):
     try:
         jobs = job_service.get_not_runnable_jobs(db)
         return {"jobs": jobs}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -169,6 +177,8 @@ def claim_job_for_building(
         if job is None:
             return {"message": "No unbuilt jobs available"}
         return job
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -187,6 +197,8 @@ def release_job_to_not_runnable(
             db, request.job_id, request.builder_id, request.attempt_id
         )
         return {"job_id": job.id, "status": job.status.value}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -198,6 +210,8 @@ async def image_builder_heartbeat(
     """Renew active image-build leases and return stale attempts to cancel."""
     try:
         return await image_builder_service.process_heartbeat(db, request)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=503, detail="Image-builder heartbeat failed") from e
 
@@ -223,6 +237,8 @@ def save_vram_estimation(
             "step_time": job.step_time,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -233,6 +249,8 @@ async def pull_job(request: WorkerResource, db: Session = Depends(get_db)):
         if job_info is None:
             return {"message": "No runnable jobs available"}
         return job_info
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -249,6 +267,8 @@ async def resume_job(request: JobResumeRequest, db: Session = Depends(get_db)):
         if job_info is None:
             return {"message": "Job is not in progress on this worker"}
         return job_info
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -259,6 +279,8 @@ def update_job_to_runnable(request: JobIDRequest, db: Session = Depends(get_db))
         job = job_service.set_job_runnable(db, request.job_id)
         return {"job_id": job.id, "status": job.status.value}
 
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -268,6 +290,8 @@ def mark_job_completed(request: JobIDRequest, db: Session = Depends(get_db)):
     try:
         job = job_service.set_to_completed(db, request.job_id)
         return {"job_id": job.id, "status": job.status.value}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -293,6 +317,8 @@ def mark_job_failed(request: JobFailureReport, db: Session = Depends(get_db)):
             "status": job.status.value,
             "failure_reason": job.failure_reason,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -323,6 +349,8 @@ async def upload_output_file(
         if not job_id or "/" in job_id or "\\" in job_id or ".." in job_id:
             return {"error": "Invalid job_id derived from filename"}
 
+        job_service._reject_managed_job(db, job_id)
+
         # Save file (streamed read is fine for small outputs; large outputs
         # should use the object store presigned path instead)
         with open(file_path, "wb") as f:
@@ -337,6 +365,8 @@ async def upload_output_file(
             "job_id": job_id,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -374,6 +404,8 @@ def get_output_by_id(request: JobIDRequest, db: Session = Depends(get_db)):
 
         return {"job_id": job_id, "status": status, "content": content}
 
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -386,6 +418,8 @@ def get_queue_length(
     try:
         count = job_service.get_runnable_jobs_count(db)
         return {"queue_length": count}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -398,6 +432,8 @@ def get_my_jobs(
     try:
         jobs = job_service.get_user_jobs(db, current_user.user_id)
         return {"jobs": jobs}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -410,6 +446,8 @@ def get_my_jobs_count(
     try:
         count = job_service.get_user_jobs_count(db, current_user.user_id)
         return {"count": count}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -422,6 +460,8 @@ def get_my_jobs_gpu_hours(
     try:
         gpu_hours = job_service.get_user_gpu_hours(db, current_user.user_id)
         return {"gpu_hours": gpu_hours}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -482,6 +522,8 @@ def get_job_logs(
             return {"error": "Job not found"}
         content = log_service.fetch_build_log_from_object_store(job_id)
         return {"job_id": job_id, "status": job["status"], "content": content}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -563,5 +605,7 @@ def get_job_by_id(
         if job is None:
             return {"error": "Job not found"}
         return job
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}

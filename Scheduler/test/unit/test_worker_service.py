@@ -72,9 +72,11 @@ class TestRegisterOrUpdate:
 
 class TestProcessHeartbeat:
     @pytest.mark.asyncio()
-    async def test_heartbeat_existing_redis_key(self, fake_redis):
+    async def test_heartbeat_existing_redis_key(self, db, fake_redis):
         fake_redis.hashes["worker:w1"] = {"available_vram": "1"}
+        make_worker(db, worker_id="w1")
         with (
+            patch.object(worker_service, "SessionLocal", return_value=db),
             patch.object(worker_service, "redis_client", fake_redis),
             patch.object(
                 worker_service, "_update_db_worker_metrics", return_value=None
@@ -171,6 +173,6 @@ class TestGetAllWorkers:
         by_id = {w["worker_id"]: w for w in workers}
         assert by_id["online"]["status"] == "online"
         assert by_id["offline"]["status"] == "offline"
-        # running_jobs counts IN_PROGRESS jobs whose device == worker.gpu_type
-        assert by_id["online"]["running_jobs"] == 1
+        # GPU model is not a Worker identity. Legacy work has no durable owner.
+        assert by_id["online"]["running_jobs"] == 0
         assert by_id["offline"]["running_jobs"] == 0
