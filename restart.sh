@@ -3,6 +3,8 @@ set -euo pipefail
 
 repository_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 scheduler_manifest="$repository_dir/Scheduler/docker-compose.yml"
+scheduler_runtime_manifest="$repository_dir/Scheduler/compose.runtime.yaml"
+scheduler_interactive_manifest="$repository_dir/Scheduler/compose.interactive.yaml"
 interactive_manifest="$repository_dir/deploy/interactive/compose.yaml"
 interactive_env_file="${INTERACTIVE_ENV_FILE:-/etc/distributed-ml/interactive.env}"
 require_interactive="${REQUIRE_INTERACTIVE:-0}"
@@ -15,13 +17,26 @@ done
 [[ "$require_interactive" == 0 || "$require_interactive" == 1 ]] || { echo 'REQUIRE_INTERACTIVE must be 0 or 1.' >&2; exit 1; }
 [[ "$wait_timeout" =~ ^[1-9][0-9]*$ ]] || { echo 'RESTART_WAIT_TIMEOUT must be a positive integer.' >&2; exit 1; }
 
+# Scheduler runtime overlays (worker auth + interactive wiring) are always
+# layered onto the base Compose file. Defaults match the Scheduler VM layout;
+# override via environment for a non-standard host. Each path must already be
+# a regular file: Docker would otherwise create a directory at a missing bind
+# source and the API would fail to start.
+export WORKER_CREDENTIALS_HOST_FILE="${WORKER_CREDENTIALS_HOST_FILE:-/etc/dml/worker-credentials.json}"
+export CONTROLLER_SECRET_HOST_FILE="${CONTROLLER_SECRET_HOST_FILE:-/etc/dml/controller.secret}"
+export MANAGEMENT_CA_HOST_FILE="${MANAGEMENT_CA_HOST_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+export INTERACTIVE_BUILDER_SECRET_HOST_FILE="${INTERACTIVE_BUILDER_SECRET_HOST_FILE:-/etc/dml/secrets/interactive-builder}"
+for secret_path in "$WORKER_CREDENTIALS_HOST_FILE" "$CONTROLLER_SECRET_HOST_FILE" "$MANAGEMENT_CA_HOST_FILE" "$INTERACTIVE_BUILDER_SECRET_HOST_FILE"; do
+    [[ -f "$secret_path" && ! -L "$secret_path" ]] || { echo "Required Scheduler host secret is missing or not a regular file: $secret_path" >&2; exit 1; }
+done
+
 # Serialize the complete post-push update for this checkout, including preflight.
 lock_key="$(printf '%s' "$repository_dir" | cksum)"
 lock_key="${lock_key%% *}"
 exec 9>"${TMPDIR:-/tmp}/dml-restart-$lock_key.lock"
 flock -w "$wait_timeout" 9
 
-scheduler=(docker compose --project-name scheduler --project-directory "$repository_dir/Scheduler" --file "$scheduler_manifest")
+scheduler=(docker compose --project-name scheduler --project-directory "$repository_dir/Scheduler" --file "$scheduler_manifest" --file "$scheduler_runtime_manifest" --file "$scheduler_interactive_manifest")
 interactive=(docker compose --project-name dml-interactive --project-directory "$repository_dir" --env-file "$interactive_env_file" --file "$interactive_manifest")
 
 on_failure() {

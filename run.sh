@@ -33,9 +33,10 @@ ssh -o BatchMode=yes \
      cd "$HOME/Distributed_ML_Training_scheduler/UI" &&
      bash restart.sh &&
      cd "$HOME/Distributed_ML_Training_scheduler/Docker_Image_Builder" &&
-     docker compose down &&
-     docker compose build &&
-     docker compose up -d'
+     export INTERACTIVE_BUILDER_SECRET_HOST_FILE="${INTERACTIVE_BUILDER_SECRET_HOST_FILE:-/etc/dml/secrets/interactive-builder}" &&
+     docker compose -f docker-compose.yml -f compose.interactive.yaml down &&
+     docker compose -f docker-compose.yml -f compose.interactive.yaml build &&
+     docker compose -f docker-compose.yml -f compose.interactive.yaml up -d'
 
 echo ">>> [3/3] Worker"
 ssh -o BatchMode=yes \
