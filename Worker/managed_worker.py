@@ -361,6 +361,26 @@ def _default_state_dir():
     return str(Path.home() / ".local" / "share" / "dml-worker")
 
 
+def scheduler_startup_error(worker_id, error):
+    """Return a safe, actionable startup failure without exposing secrets."""
+    if error.status == 503:
+        return (
+            "Worker authentication is unavailable on the Scheduler (503). "
+            "Register Worker ID "
+            + worker_id
+            + " in the Scheduler WORKER_CREDENTIALS_FILE and recreate the API container. "
+            "The Worker credential reached the Scheduler; changing this Worker's .env will not repair that map."
+        )
+    if error.status == 401:
+        return (
+            "Worker authentication was rejected by the Scheduler (401). "
+            "Check that the Scheduler entry for Worker ID "
+            + worker_id
+            + " contains the same credential, without a trailing newline."
+        )
+    return "Scheduler rejected Worker startup (HTTP " + str(error.status) + ")."
+
+
 def run():
     state_dir = os.environ.get("WORKER_STATE_DIR") or _default_state_dir()
     # Default the host lock inside the state dir (user-writable). Only honor
@@ -388,7 +408,10 @@ def run():
     signal.signal(signal.SIGTERM, lambda *_: setattr(coordinator, "draining", True))
     signal.signal(signal.SIGINT, lambda *_: setattr(coordinator, "draining", True))
     try:
-        worker.startup()
+        try:
+            worker.startup()
+        except SchedulerRejected as exc:
+            raise SystemExit(scheduler_startup_error(worker_id, exc)) from None
         heartbeat = threading.Thread(target=worker.heartbeat_loop, daemon=True)
         heartbeat.start()
         import server

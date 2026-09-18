@@ -1,5 +1,5 @@
 from unittest.mock import MagicMock, patch
-from managed_worker import ManagedWorker, BatchAPI
+from managed_worker import ManagedWorker, BatchAPI, scheduler_startup_error
 import json
 from execution_state import Coordinator
 from test.unit.test_execution_coordinator import assignment
@@ -101,3 +101,14 @@ def test_fenced_batch_logs_fit_request_limit_even_with_unicode():
         assert len(body["lines"]) <= 100
         delivered.extend(body["lines"])
     assert delivered == lines
+
+
+def test_scheduler_startup_authentication_errors_are_actionable_and_secret_free():
+    from scheduler_protocol import SchedulerRejected
+
+    worker_id = "worker-identity"
+    unavailable = scheduler_startup_error(worker_id, SchedulerRejected(503))
+    rejected = scheduler_startup_error(worker_id, SchedulerRejected(401))
+    assert worker_id in unavailable and "WORKER_CREDENTIALS_FILE" in unavailable
+    assert worker_id in rejected and "trailing newline" in rejected
+    assert "secret" not in unavailable.lower() and "Bearer " not in unavailable
