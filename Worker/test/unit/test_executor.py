@@ -233,6 +233,49 @@ class TestHandleVramEstimation:
             executor.handle_vram_estimation("j1", "img", "python train.py")
         executor.api.save_vram_estimation.assert_called_once()
 
+    def test_report_dir_avoids_systemd_private_tmp(self, executor, tmp_path):
+        """The report dir must not live under /tmp: with PrivateTmp=true the
+        worker's /tmp is a private namespace invisible to the Docker daemon,
+        so the bind-mount lands empty and report.json is never seen (rc=0,
+        dir_listing=[])."""
+        import contextlib
+
+        result = SimpleNamespace(returncode=0, stderr="", stdout="")
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        @contextlib.contextmanager
+        def _fake_tmpdir(*a, **k):
+            # Must be pinned under WORKER_STATE_DIR (daemon-visible), never
+            # the tempfile default (/tmp → hidden by PrivateTmp). Note: pytest
+            # tmp_path itself lives under /tmp, so only assert the state-dir
+            # pinning here, not a blanket /tmp prefix ban.
+            assert k.get("dir", "").startswith(str(state_dir)), (
+                f"report tmpdir must be under WORKER_STATE_DIR, got dir={k.get('dir')!r}"
+            )
+            yield str(tmp_path)
+
+        with (
+            patch.dict(executor_module.os.environ, {"WORKER_STATE_DIR": str(state_dir)}),
+            patch.object(JobExecutor, "_parse_python_command", return_value=["train.py"]),
+            patch.object(executor_module.subprocess, "run", return_value=result),
+            patch.object(executor_module.tempfile, "TemporaryDirectory", _fake_tmpdir),
+            patch.object(JobExecutor, "_record_job"),
+        ):
+            executor.api.mark_job_failed = MagicMock()
+            executor.handle_vram_estimation("j1", "img", "python train.py")
+
+    def test_report_base_dir_falls_back_to_output_dir(self, executor, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        with (
+            patch.dict(executor_module.os.environ, {}, clear=False),
+            patch.object(executor_module.os.environ, "get", return_value=None),
+            patch.object(executor_module, "OUTPUT_DIR", str(out)),
+        ):
+            base = JobExecutor._vram_report_base_dir()
+        assert base == str(out / "vram-reports")
+
 
 class TestHandleTraining:
     def test_starts_monitor_and_runs(self, executor, tmp_path):

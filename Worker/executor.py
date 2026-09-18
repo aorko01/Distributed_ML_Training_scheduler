@@ -315,6 +315,34 @@ class JobExecutor:
                 return command_args or None
         return None
 
+    @staticmethod
+    def _vram_report_base_dir() -> str:
+        """Host dir for VRAM estimation reports, visible to the Docker daemon.
+
+        The report dir is bind-mounted into the estimation container, so it
+        must live on a path the daemon can see. ``tempfile`` defaults to /tmp,
+        which is invisible to the daemon when this worker runs under systemd
+        with ``PrivateTmp=true`` (each service gets its own /tmp namespace):
+        the container then writes report.json into a daemon-side empty dir
+        while the worker sees an empty private dir (rc=0, dir_listing=[]).
+        ``PrivateTmp`` also hides /var/tmp, so use the worker state dir (or
+        the job output dir as fallback) — both are real daemon-visible paths.
+        """
+        candidates = [
+            os.environ.get("WORKER_STATE_DIR"),
+            OUTPUT_DIR,
+        ]
+        for base in candidates:
+            if not base:
+                continue
+            vram_dir = os.path.join(base, "vram-reports")
+            try:
+                os.makedirs(vram_dir, exist_ok=True)
+                return vram_dir
+            except OSError:
+                continue
+        return tempfile.gettempdir()
+
     def handle_vram_estimation(self, job_id: str, image_name: str, command: str):
         started_at = time.time()
         target_command = self._parse_python_command(command)
@@ -326,7 +354,10 @@ class JobExecutor:
             )
             return
 
-        with tempfile.TemporaryDirectory(prefix=f"vram_{job_id}_") as report_dir:
+        with tempfile.TemporaryDirectory(
+            prefix=f"vram_{job_id}_", dir=self._vram_report_base_dir()
+        ) as report_dir:
+            report_dir = os.path.realpath(report_dir)
             report_path = os.path.join(report_dir, "report.json")
             cmd = [
                 "docker", "run", "--rm", "--gpus", "all",
