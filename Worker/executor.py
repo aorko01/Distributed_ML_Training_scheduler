@@ -337,7 +337,11 @@ class JobExecutor:
                 "/vram_estimation.py", "--output", "/report/report.json", *target_command,
             ]
             
-            logger.info("Running VRAM estimation for job %s.", job_id)
+            logger.info(
+                "Running VRAM estimation for job %s (base_dir=%s script=%s report_dir=%s image=%s target=%s).",
+                job_id, os.path.dirname(os.path.abspath(VRAM_ESTIMATION_SCRIPT)),
+                VRAM_ESTIMATION_SCRIPT, report_dir, image_name, target_command,
+            )
             record_event("info", f"Job {job_id} VRAM estimation started")
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True)
@@ -362,7 +366,21 @@ class JobExecutor:
                 if report.get("step_wall_time") is None:
                     raise ValueError("No optimizer steps were observed")
             except (OSError, ValueError, json.JSONDecodeError) as e:
-                logger.error("Invalid VRAM estimation report for job %s: %s", job_id, e)
+                try:
+                    dir_listing = sorted(os.listdir(report_dir))
+                except OSError as list_err:
+                    dir_listing = [f"<listdir failed: {list_err}>"]
+                logger.error(
+                    "Invalid VRAM estimation report for job %s: %s "
+                    "(report_path=%s exists=%s dir_listing=%s "
+                    "container_rc=%s stdout_tail=%r stderr_tail=%r). "
+                    "If report_path is under /tmp on a systemd worker, check "
+                    "PrivateTmp=true hiding the bind-mount from the Docker daemon.",
+                    job_id, e, report_path, os.path.exists(report_path),
+                    dir_listing, result.returncode,
+                    result.stdout[-2000:] if result.stdout else "",
+                    result.stderr[-2000:] if result.stderr else "",
+                )
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
                 self.api.mark_job_failed(
                     job_id, "user", f"Invalid VRAM estimation report: {e}"
