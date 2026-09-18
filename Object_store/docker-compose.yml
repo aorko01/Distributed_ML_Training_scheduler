@@ -3,8 +3,10 @@ services:
     image: minio/minio:latest
     container_name: minio-store
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # Localhost-only: public traffic enters via Caddy (object.zulfiker.xyz),
+      # never directly to MinIO from other VMs.
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -22,12 +24,20 @@ services:
       - .env
     environment:
       MINIO_ENDPOINT: minio:9000
-      MINIO_PUBLIC_ENDPOINT: localhost:9000
-      OBJECT_STORE_BUCKET: uploads
-      OBJECT_OUTPUT_BUCKET: outputs
+      MINIO_SECURE: "false"
+      # Routable S3 endpoint used for presigned URLs. Must NOT be
+      # localhost/docker-internal: workers and browsers use these URLs.
+      # Served via Caddy at https://object.zulfiker.xyz (root handle -> :9000).
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-object.zulfiker.xyz}
+      MINIO_PUBLIC_SECURE: ${MINIO_PUBLIC_SECURE:-true}
+      OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-uploads}
+      OBJECT_OUTPUT_BUCKET: ${OBJECT_OUTPUT_BUCKET:-outputs}
     ports:
-      - "8010:8010"
-    command: uvicorn main:app --host 0.0.0.0 --port 8010 --reload
+      # Localhost-only: public API traffic enters via Caddy
+      # (https://object.zulfiker.xyz/objects/* -> 127.0.0.1:8010).
+      - "127.0.0.1:8010:8010"
+    restart: always
+    command: uvicorn main:app --host 0.0.0.0 --port 8010
 
 volumes:
   minio_data:

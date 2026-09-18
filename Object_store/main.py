@@ -17,7 +17,22 @@ MINIO_ROOT_PASSWORD = os.environ.get("MINIO_ROOT_PASSWORD", "minioadmin")
 MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
 # Endpoint used to build presigned URLs. Must be reachable by clients (workers),
 # so it cannot be the Docker-internal "minio:9000".
-MINIO_PUBLIC_ENDPOINT = os.environ.get("MINIO_PUBLIC_ENDPOINT", "localhost:9000")
+_raw_public_endpoint = os.environ.get("MINIO_PUBLIC_ENDPOINT", "localhost:9000").strip()
+# Accept both bare hosts ("object.zulfiker.xyz", "host:9000") and full URLs
+# ("https://object.zulfiker.xyz") so compose/.env stay flexible.
+_scheme_secure: bool | None = None
+for _scheme in ("https://", "http://"):
+    if _raw_public_endpoint.lower().startswith(_scheme):
+        _scheme_secure = _scheme == "https://"
+        _raw_public_endpoint = _raw_public_endpoint[len(_scheme):]
+        break
+MINIO_PUBLIC_ENDPOINT = _raw_public_endpoint.strip("/") or "localhost:9000"
+if "MINIO_PUBLIC_SECURE" in os.environ:
+    MINIO_PUBLIC_SECURE = os.environ.get("MINIO_PUBLIC_SECURE", "false").lower() == "true"
+elif _scheme_secure is not None:
+    MINIO_PUBLIC_SECURE = _scheme_secure
+else:
+    MINIO_PUBLIC_SECURE = MINIO_SECURE
 
 
 def get_client() -> Minio:
@@ -34,7 +49,7 @@ def get_public_client() -> Minio:
         MINIO_PUBLIC_ENDPOINT,
         access_key=MINIO_ROOT_USER,
         secret_key=MINIO_ROOT_PASSWORD,
-        secure=MINIO_SECURE,
+        secure=MINIO_PUBLIC_SECURE,
         region="us-east-1",
     )
 
