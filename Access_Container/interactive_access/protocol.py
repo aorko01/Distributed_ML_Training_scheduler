@@ -149,3 +149,7 @@ async def write_record(writer, kind, payload=b'', timeout=5):
     writer.write(encode(kind, payload))
     async with asyncio.timeout(timeout):
         await writer.drain()
+        # drain() need not suspend when the transport is below its high-water
+        # mark.  Always give input, readiness probes and cancellation a turn
+        # between bounded records, even during continuously available output.
+        await asyncio.sleep(0)

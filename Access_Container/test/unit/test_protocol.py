@@ -48,6 +48,20 @@ def test_duplicate_keys():
         dimensions(b'{"rows":1,"rows":2,"columns":80}')
 
 
+async def test_record_write_yields_even_without_transport_backpressure():
+    class Writer:
+        def write(self, data):
+            pass
+
+        async def drain(self):
+            pass  # StreamWriter.drain can complete without suspending.
+
+    scheduled = asyncio.Event()
+    asyncio.get_running_loop().call_soon(scheduled.set)
+    await write_record(Writer(), Type.STDOUT, b'output')
+    assert scheduled.is_set(), 'Continuous output must let input and health tasks run'
+
+
 @pytest.mark.parametrize('action', ['write', 'close'])
 async def test_stream_completion_does_not_swallow_shutdown_cancellation(action):
     class Writer:

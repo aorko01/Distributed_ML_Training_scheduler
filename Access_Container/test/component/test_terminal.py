@@ -43,12 +43,28 @@ async def open_terminal(port):
 
 async def output_until(reader, needle):
     output = b''
+    window = max(65536, len(needle))
     async with asyncio.timeout(5):
         while needle not in output:
             kind, payload = await read_record(reader)
             assert kind == Type.STDOUT
-            output += payload
+            # Keep a bounded window, including markers split across records.
+            # A flood must not turn repeated concatenation/search into quadratic
+            # work that blocks the event loop while Ctrl-C and probes are due.
+            output = (output + payload)[-window:]
     return output
+
+
+async def test_output_until_bounds_capture_and_matches_split_marker():
+    reader = asyncio.StreamReader()
+    for _ in range(64):
+        reader.feed_data(encode(Type.STDOUT, b'x' * 16384))
+    reader.feed_data(encode(Type.STDOUT, b'control_'))
+    reader.feed_data(encode(Type.STDOUT, b'ok'))
+    reader.feed_eof()
+    output = await output_until(reader, b'control_ok')
+    assert b'control_ok' in output
+    assert len(output) <= 65536
 
 
 async def wait_cleanup(service, broker):
