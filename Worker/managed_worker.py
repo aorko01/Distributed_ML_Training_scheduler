@@ -338,15 +338,50 @@ class ManagedWorker:
         self.stop_event.set()
 
 
+def _default_state_dir():
+    """System dir when writable (service install), else per-user fallback.
+
+    /var/lib/dml-worker is correct for a root/systemd install but fails with
+    PermissionError for dev runs as a normal user. Fall back to a user-owned
+    directory so `python3 main.py` works without sudo.
+    """
+    system_default = Path("/var/lib/dml-worker")
+    try:
+        system_default.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Exist-or-created is not enough; verify we can actually write.
+        probe = system_default / ".write-test"
+        probe.touch(exist_ok=True)
+        probe.unlink(missing_ok=True)
+        return str(system_default)
+    except OSError:
+        pass
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return str(Path(xdg) / "dml-worker")
+    return str(Path.home() / ".local" / "share" / "dml-worker")
+
+
 def run():
-    coordinator = Coordinator(
-        os.environ.get("WORKER_STATE_DIR", "/var/lib/dml-worker"),
-        host_lock_path="/run/dml-worker-host.lock",
-    )
+    state_dir = os.environ.get("WORKER_STATE_DIR") or _default_state_dir()
+    # Default the host lock inside the state dir (user-writable). Only honor
+    # an explicit override; the old /run/... default requires root.
+    host_lock = os.environ.get("WORKER_HOST_LOCK")
+    try:
+        coordinator = Coordinator(state_dir, host_lock_path=host_lock)
+    except PermissionError as exc:
+        raise SystemExit(f"Worker cannot start: {exc}") from exc
+    if os.environ.get("WORKER_STATE_DIR") is None and state_dir != "/var/lib/dml-worker":
+        print(f"WORKER_STATE_DIR not set; using user-writable fallback: {state_dir}")
+    scheduler_url = os.environ.get("SCHEDULER_URL")
+    cred_file = os.environ.get("WORKER_SERVICE_CREDENTIAL_FILE")
+    missing = [k for k, v in (("SCHEDULER_URL", scheduler_url), ("WORKER_SERVICE_CREDENTIAL_FILE", cred_file)) if not v]
+    if missing:
+        raise SystemExit(
+            f"Worker cannot start: missing required env: {', '.join(missing)}. "
+            f"See Worker/.env.example."
+        )
     worker_id = get_or_create_worker_id()
-    api = ExecutionAPI(
-        os.environ["SCHEDULER_URL"], os.environ["WORKER_SERVICE_CREDENTIAL_FILE"]
-    )
+    api = ExecutionAPI(scheduler_url, cred_file)
     worker = ManagedWorker(
         worker_id, coordinator, api, DockerOps(coordinator, worker_id)
     )

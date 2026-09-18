@@ -1,12 +1,16 @@
 """One host lock and crash-safe journal shared by admission and execution."""
 
-import fcntl
 import json
 from pathlib import Path
 import sqlite3
 import threading
 import time
 from uuid import uuid4
+
+try:
+    import fcntl
+except ImportError:  # Windows / platforms without fcntl
+    fcntl = None
 
 MODES_BLOCKING = {
     "RECONCILING",
@@ -20,9 +24,41 @@ MODES_BLOCKING = {
 class Coordinator:
     def __init__(self, state_dir, clock=time.monotonic, host_lock_path=None):
         self.path = Path(state_dir)
-        self.path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.host_lock = open(host_lock_path or self.path / "service.lock", "a")
-        fcntl.flock(self.host_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            self.path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except PermissionError as exc:
+            raise PermissionError(
+                f"Cannot create state dir '{self.path}': permission denied. "
+                f"Set WORKER_STATE_DIR to a writable directory, or create it first: "
+                f"sudo install -d -m 0700 -o $USER '{self.path}'"
+            ) from exc
+        lock_path = Path(host_lock_path) if host_lock_path else (self.path / "service.lock")
+        try:
+            if lock_path.parent != self.path:
+                lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.host_lock = open(lock_path, "a")
+        except PermissionError as exc:
+            raise PermissionError(
+                f"Cannot create lock file '{lock_path}': permission denied. "
+                f"Set WORKER_HOST_LOCK to a writable path, or create it first: "
+                f"sudo install -d -m 0755 -o $USER '{lock_path.parent}'"
+            ) from exc
+        if fcntl is not None:
+            try:
+                fcntl.flock(self.host_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError) as exc:
+                self.host_lock.close()
+                raise RuntimeError(
+                    "Another worker instance is already running "
+                    f"(could not lock '{lock_path}')"
+                ) from exc
+        else:
+            try:
+                import msvcrt
+
+                msvcrt.locking(self.host_lock.fileno(), msvcrt.LK_NBLCK, 1)
+            except (ImportError, OSError):
+                pass  # Best-effort single-instance guard on platforms w/o flock.
         self.lock = threading.RLock()
         self.clock = clock
         self.instance_id = str(uuid4())
