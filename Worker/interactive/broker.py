@@ -231,6 +231,7 @@ class Broker:
         self.connections.add(task)
         writer.transport.set_write_buffer_limits(high=65536, low=16384)
         session = None
+        workspace = None
         output = None
         incoming = None
         reserved = False
@@ -254,6 +255,19 @@ class Broker:
                     return
                 if kind == Type.PROBE and not payload:
                     await write_record(writer, Type.READY)
+                    return
+                if kind == Type.HELLO:
+                    # Workspace clients have their own state machine.  Do not
+                    # reinterpret a terminal OPEN/CLOSE as file operations.
+                    if self.busy:
+                        await write_record(writer, Type.ERROR, json_bytes({"code": "BUSY"}))
+                        return
+                    from .workspace_broker import WorkspaceSession
+                    from Access_Container.interactive_access.workspace_protocol import metadata
+
+                    self.busy, reserved = True, True
+                    workspace = WorkspaceSession(self, reader, writer)
+                    await workspace.run(metadata(payload))
                     return
                 if kind != Type.OPEN:
                     raise ProtocolError()
@@ -370,6 +384,9 @@ class Broker:
                 output.cancel()
                 with suppress(BaseException):
                     await output
+            if workspace:
+                with suppress(Exception):
+                    await workspace.close()
             if session:
                 if not await asyncio.to_thread(session.close):
                     self.on_failure()

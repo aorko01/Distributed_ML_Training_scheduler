@@ -12,6 +12,9 @@ class Settings:
     fresh_seconds: int = 15
     startup_seconds: int = 1920
     lifetime_seconds: int = 0
+    workspace_editor: bool = False
+    workspace_save: bool = False
+    workspace_training_submission: bool = False
 
     @classmethod
     def from_env(cls):
@@ -22,6 +25,9 @@ class Settings:
             15,
             int(os.getenv("INTERACTIVE_STARTUP_SECONDS", "1920")),
             int(os.getenv("INTERACTIVE_LIFETIME_SECONDS", "0")),
+            os.getenv("WORKSPACE_EDITOR_ENABLED", "0") == "1",
+            os.getenv("WORKSPACE_SAVE_ENABLED", "0") == "1",
+            os.getenv("WORKSPACE_TRAINING_SUBMISSION_ENABLED", "0") == "1",
         )
         if (
             value.lease_seconds < 20

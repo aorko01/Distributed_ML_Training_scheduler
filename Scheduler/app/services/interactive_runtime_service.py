@@ -32,6 +32,10 @@ PUBLIC_FIELDS = (
     "lifetime_deadline",
     "failure_code",
     "failure_detail",
+    "access_service",
+    "application_protocol",
+    "editor_capable",
+    "workspace_root",
 )
 
 
@@ -80,7 +84,7 @@ def start(db, owner, workspace_id, key, body):
     revision = (
         db.query(Revision)
         .filter_by(
-            id=body.revision_id or workspace.current_revision_id,
+            id=body.revision_id or workspace.saved_revision_id or workspace.current_revision_id,
             workspace_id=workspace_id,
             state="IMAGE_READY",
         )
@@ -105,6 +109,7 @@ def start(db, owner, workspace_id, key, body):
         .scalar()
         or 0
     ) + 1
+    editor = Settings.from_env().workspace_editor
     runtime = Runtime(
         id=new_id(),
         workspace_id=workspace_id,
@@ -119,6 +124,9 @@ def start(db, owner, workspace_id, key, body):
         created_at=now(),
         desired_state="RUNNING",
         state="QUEUED",
+        access_service="workspace" if editor else "terminal",
+        application_protocol="workspace-stream-v1" if editor else "terminal-stream-v1",
+        editor_capable=editor,
     )
     db.add(runtime)
     db.commit()
@@ -183,7 +191,7 @@ def ready(db, runtime):
     )
 
 
-def connection(db, owner, runtime_id, management):
+def connection(db, owner, runtime_id, management, workspace=False):
     runtime = owned_runtime(db, owner, runtime_id)
     if runtime.assignment_id:
         lock_worker(db, db.get(Assignment, runtime.assignment_id).worker_id)
@@ -194,10 +202,12 @@ def connection(db, owner, runtime_id, management):
         .with_for_update()
         .one()
     )
-    if not ready(db, runtime):
+    if not ready(db, runtime) or (workspace and (not runtime.editor_capable or runtime.access_service != "workspace")):
         raise HTTPException(409, "Runtime is unavailable")
-    if runtime.connection_requested_at and utc(
-        runtime.connection_requested_at
+    requested_field = "workspace_connection_requested_at" if workspace else "connection_requested_at"
+    requested_at = getattr(runtime, requested_field)
+    if requested_at and utc(
+        requested_at
     ) > now() - timedelta(seconds=5):
         raise HTTPException(429, "Wait before requesting another connection")
     origin = os.getenv("INTERACTIVE_GATEWAY_WSS_ORIGIN", "")
@@ -211,7 +221,7 @@ def connection(db, owner, runtime_id, management):
         or parsed.path not in ("", "/")
     ):
         raise HTTPException(503, "Public Gateway unavailable")
-    runtime.connection_requested_at = now()
+    setattr(runtime, requested_field, now())
     resource_id, generation = runtime.resource_id, runtime.generation
     db.commit()
     grant = management.call(
@@ -221,7 +231,9 @@ def connection(db, owner, runtime_id, management):
             "user": owner,
             "resource_id": resource_id,
             "generation": str(generation),
-            "service": "terminal",
+            # A workspace endpoint still accepts the legacy OPEN verification
+            # path, but it is registered under its immutable workspace service.
+            "service": runtime.access_service,
             "gateway_id": os.environ["INTERACTIVE_GATEWAY_ID"],
             "authorized": True,
         },
@@ -243,11 +255,13 @@ def connection(db, owner, runtime_id, management):
         "wss_url": origin.rstrip("/")
         + "/v1/connect/"
         + quote(resource_id, safe="")
-        + "/terminal",
+        + "/" + runtime.access_service,
         "ticket": grant["ticket"],
         "expires_at": grant["expires_at"],
         "runtime_id": runtime.id,
         "generation": generation,
         "protocol": "tcp-stream-v1",
-        "terminal_protocol": "terminal-stream-v1",
+        "terminal_protocol": "terminal-stream-v1" if not workspace else None,
+        "workspace_protocol": "workspace-stream-v1" if workspace else None,
+        "service": runtime.access_service,
     }

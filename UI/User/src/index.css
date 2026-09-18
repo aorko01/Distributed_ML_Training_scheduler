@@ -129,6 +129,20 @@ p {
   padding: 1.5rem;
 }
 
+.workspace-editor { display:grid; grid-template-columns: 230px minmax(0,1fr); grid-template-rows:auto 1fr; min-height: calc(100vh - 4rem); gap:0; background:var(--bg-secondary); }
+.workspace-editor header { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:.75rem; align-items:center; padding:1rem; border-bottom:1px solid var(--border-color); }
+.workspace-editor aside { padding:1rem; border-right:1px solid var(--border-color); overflow:auto; }
+.file-entry { display:block; width:100%; text-align:left; padding:.4rem; border:0; background:transparent; color:var(--text-primary); }
+.workspace-editor main { min-width:0; display:grid; grid-template-rows:auto minmax(260px,1fr) minmax(180px,35%); }
+.workspace-editor nav { display:flex; overflow:auto; border-bottom:1px solid var(--border-color); }
+.workspace-editor nav button, .terminal-panel button { border:0; background:var(--bg-tertiary); color:var(--text-primary); padding:.5rem .75rem; }
+.workspace-editor .active-tab { border-bottom:2px solid var(--accent-primary); }
+.monaco-host { min-height:260px; }
+.terminal-panel { min-height:180px; border-top:1px solid var(--border-color); background:#111; overflow:hidden; }
+.terminal-panel > div:first-child { display:flex; justify-content:space-between; padding:.35rem .75rem; background:var(--terminal-header); }
+.terminal-panel > div:last-child { height:calc(100% - 34px); padding:.5rem; }
+@media (max-width: 700px) { .workspace-editor { grid-template-columns:1fr; } .workspace-editor aside { border-right:0; border-bottom:1px solid var(--border-color); max-height:180px; } }
+
 /* Layout */
 .app-container {
   display: flex;

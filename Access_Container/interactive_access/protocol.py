@@ -22,6 +22,24 @@ class Type(IntEnum):
     AUTHENTICATED = 18
     PROBE = 19
     READY = 20
+    # workspace-stream-v1 is deliberately a separate application protocol.  It
+    # shares the six byte transport framing, but terminal-stream-v1 sessions
+    # never accept these records.
+    HELLO = 32
+    WORKSPACE_READY = 33
+    FILE_REQUEST = 34
+    FILE_RESULT = 35
+    FILE_CHUNK = 36
+    FILE_END = 37
+    PTY_OPEN = 38
+    PTY_OPENED = 39
+    PTY_STDIN = 40
+    PTY_STDOUT = 41
+    PTY_RESIZE = 42
+    PTY_CLOSE = 43
+    PTY_EXIT = 44
+    WORKSPACE_STATE = 45
+    CANCEL = 46
 
 
 class ProtocolError(Exception):

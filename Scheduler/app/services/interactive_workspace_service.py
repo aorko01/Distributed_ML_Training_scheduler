@@ -171,7 +171,13 @@ def mark_ready(db, attempt):
     rev.image_digest_ref = attempt.image_digest_ref
     rev.resolved_base_digest = attempt.resolved_base_digest
     rev.lease_until = None
-    db.query(Workspace).filter_by(id=rev.workspace_id).update({'current_revision_id': rev.id})
+    values = {'current_revision_id': rev.id}
+    # A ready initial source is startable; later snapshot publications advance
+    # the durable saved head only after their immutable digest is accepted.
+    workspace = db.get(Workspace, rev.workspace_id)
+    if workspace.saved_revision_id is None or rev.origin == 'SNAPSHOT':
+        values['saved_revision_id'] = rev.id
+    db.query(Workspace).filter_by(id=rev.workspace_id).update(values)
     db.commit()
     return {'status': 'ok'}
 

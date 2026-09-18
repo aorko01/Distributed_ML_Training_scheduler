@@ -58,6 +58,14 @@ class InteractiveRuntime(Base):
     controller_token = Column(String)
     controller_until = Column(DateTime(timezone=True))
     connection_requested_at = Column(DateTime(timezone=True))
+    workspace_connection_requested_at = Column(DateTime(timezone=True))
+    # Pinned at creation.  A live terminal endpoint is never mutated into a
+    # workspace endpoint; an upgrade requires a new runtime generation.
+    access_service = Column(String, nullable=False, default="terminal")
+    application_protocol = Column(String, nullable=False, default="terminal-stream-v1")
+    editor_capable = Column(Boolean, nullable=False, default=False)
+    workspace_root = Column(String)
+    source_image_metadata = Column(JSON)
     __table_args__ = (
         ForeignKeyConstraint(
             ["workspace_id", "owner_user_id"],
@@ -74,6 +82,7 @@ class InteractiveRuntime(Base):
         UniqueConstraint("workspace_id", "request_key"),
         UniqueConstraint("id", "generation"),
         CheckConstraint("generation > 0"),
+        CheckConstraint("(access_service='terminal' AND application_protocol='terminal-stream-v1' AND NOT editor_capable) OR (access_service='workspace' AND application_protocol='workspace-stream-v1' AND editor_capable)"),
         CheckConstraint("desired_state IN ('RUNNING','STOPPED')"),
         CheckConstraint(
             "state IN ('QUEUED','ASSIGNED','PULLING','STARTING','CONNECTING','READY','STOPPING','LOST','STOPPED','FAILED')"

@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends, Response, Request, HTTPException
 from app.api.deps import get_db, get_current_active_user
 from app.api.interactive_workspace_route import key
 from app.schemas.worker_execution_schema import Start
+from app.models.interactive_workspace_model import WorkspaceTrainingSubmission
 from app.services import interactive_runtime_service as service
+from app.services import workspace_editor_service as workspace_service
+from app.schemas.workspace_editor_schema import SaveRequest, TrainingRequest
 from app.services.interactive_management_client import ManagementClient
 
 
@@ -58,3 +61,56 @@ def connection(
         return service.connection(db, user.user_id, runtime_id, client)
     finally:
         client.close()
+
+
+@router.post("/runtimes/{runtime_id}/workspace-connection")
+def workspace_connection(
+    runtime_id: str,
+    response: Response,
+    user=Depends(get_current_active_user),
+    db=Depends(get_db),
+):
+    """Issue a fresh, single-use grant for the pinned workspace service."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        client = ManagementClient()
+    except (KeyError, OSError, ValueError):
+        raise HTTPException(503, "Connection service unavailable") from None
+    try:
+        return service.connection(db, user.user_id, runtime_id, client, workspace=True)
+    finally:
+        client.close()
+
+
+@router.post("/runtimes/{runtime_id}/saves", status_code=202)
+def save_workspace(
+    runtime_id: str, body: SaveRequest, request_key=Depends(key),
+    user=Depends(get_current_active_user), db=Depends(get_db),
+):
+    return workspace_service.create_save(db, user.user_id, runtime_id, request_key, body)
+
+
+@router.get("/saves/{save_id}")
+def save_status(save_id: str, user=Depends(get_current_active_user), db=Depends(get_db)):
+    return workspace_service.get_save(db, user.user_id, save_id)
+
+
+@router.post("/runtimes/{runtime_id}/training-submissions", status_code=202)
+def training_submission(
+    runtime_id: str, body: TrainingRequest, request_key=Depends(key),
+    user=Depends(get_current_active_user), db=Depends(get_db),
+):
+    return workspace_service.create_submission(db, user.user_id, runtime_id, request_key, body)
+
+
+@router.get("/training-submissions/{submission_id}")
+def training_status(submission_id: str, user=Depends(get_current_active_user), db=Depends(get_db)):
+    item = db.query(WorkspaceTrainingSubmission).filter_by(id=submission_id, owner_user_id=user.user_id).first()
+    if not item:
+        raise HTTPException(404, "Training submission not found")
+    return workspace_service.submission_public(item)
+
+
+@router.get("/workspaces/{workspace_id}/revisions")
+def revision_history(workspace_id: str, after: int | None = None, user=Depends(get_current_active_user), db=Depends(get_db)):
+    return workspace_service.revisions(db, user.user_id, workspace_id, after=after)

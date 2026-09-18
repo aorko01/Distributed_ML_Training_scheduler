@@ -4,6 +4,7 @@ import uuid
 from .clock import Clock
 from .broker_client import connect, close_writer
 from .protocol import Type, ProtocolError, dimensions, read_record, write_record, json_bytes, parse_json
+from .workspace_protocol import metadata as workspace_metadata, unpack_chunk
 
 log = logging.getLogger('interactive_access')
 
@@ -25,6 +26,83 @@ class Capacity:
         self.active -= 1
 
 
+async def run_workspace_session(reader, writer, config, clock, hello=None):
+    """Relay workspace-stream-v1 after validating its application handshake.
+
+    Access remains a narrow authenticated proxy: paths and Docker identifiers
+    are never interpreted here, and WorkspaceSession on the Worker remains the
+    policy enforcement point.
+    """
+    broker = None
+    tasks = []
+    try:
+        if hello is None:
+            kind, hello = await clock.wait(read_record(reader), config.open_timeout)
+            if kind != Type.HELLO:
+                raise ProtocolError()
+        value = workspace_metadata(hello)
+        if set(value) != {"protocol"} or value["protocol"] != "workspace-stream-v1":
+            raise ProtocolError()
+        broker_reader, broker = await connect(config, clock)
+        await write_record(broker, Type.HELLO, hello, config.write_timeout)
+        kind, ready = await clock.wait(read_record(broker_reader), config.broker_timeout)
+        if kind != Type.WORKSPACE_READY:
+            raise OSError()
+        workspace_metadata(ready)
+        await write_record(writer, kind, ready, config.write_timeout)
+
+        def client_record(kind, payload):
+            if kind in (Type.FILE_REQUEST, Type.FILE_END, Type.CANCEL, Type.PTY_OPEN, Type.PTY_RESIZE):
+                workspace_metadata(payload)
+            elif kind == Type.FILE_CHUNK:
+                unpack_chunk(payload)
+            elif kind in (Type.PTY_STDIN,):
+                if len(payload) > 65530:
+                    raise ProtocolError()
+            elif kind in (Type.PTY_CLOSE, Type.CLOSE):
+                if payload:
+                    raise ProtocolError()
+            else:
+                raise ProtocolError()
+
+        def server_record(kind, payload):
+            if kind in (Type.FILE_RESULT, Type.FILE_END, Type.PTY_OPENED, Type.PTY_EXIT, Type.WORKSPACE_READY, Type.WORKSPACE_STATE, Type.ERROR):
+                workspace_metadata(payload)
+            elif kind == Type.FILE_CHUNK:
+                unpack_chunk(payload)
+            elif kind == Type.PTY_STDOUT:
+                if len(payload) > 65530:
+                    raise ProtocolError()
+            else:
+                raise ProtocolError()
+
+        async def forward(source, target, validate):
+            while True:
+                kind, payload = await read_record(source)
+                validate(kind, payload)
+                await write_record(target, kind, payload, config.write_timeout)
+                if kind == Type.CLOSE:
+                    return
+
+        tasks = [
+            asyncio.create_task(forward(reader, broker, client_record)),
+            asyncio.create_task(forward(broker_reader, writer, server_record)),
+        ]
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if broker:
+            try:
+                await write_record(broker, Type.CLOSE, timeout=1)
+            except (OSError, TimeoutError):
+                pass
+        await close_writer(broker)
+
+
 async def run_session(reader, writer, config, capacity, clock=None):
     clock = clock or Clock()
     session_id = str(uuid.uuid4())
@@ -41,6 +119,9 @@ async def run_session(reader, writer, config, capacity, clock=None):
             await write_record(writer, Type.ERROR, json_bytes({'code': outcome}))
             return
         kind, payload = await clock.wait(read_record(reader), config.open_timeout)
+        if kind == Type.HELLO:
+            await run_workspace_session(reader, writer, config, clock, payload)
+            return
         if kind != Type.OPEN:
             raise ProtocolError()
         dimensions(payload, opening=True)

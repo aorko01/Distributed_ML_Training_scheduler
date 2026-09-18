@@ -23,10 +23,11 @@ export interface Runtime {
   id: string; workspace_id: string; revision_id: string; generation: number; profile_version: string;
   state: 'QUEUED' | 'ASSIGNED' | 'PULLING' | 'STARTING' | 'CONNECTING' | 'READY' | 'STOPPING' | 'LOST' | 'STOPPED' | 'FAILED';
   desired_state: 'RUNNING' | 'STOPPED'; failure_detail: string | null; lifetime_deadline: string | null;
+  access_service?: 'terminal' | 'workspace'; application_protocol?: 'terminal-stream-v1' | 'workspace-stream-v1'; editor_capable?: boolean;
 }
 export interface ConnectionGrant {
   wss_url: string; ticket: string; expires_at: string; runtime_id: string; generation: number;
-  protocol: 'tcp-stream-v1'; terminal_protocol: 'terminal-stream-v1';
+  protocol: 'tcp-stream-v1'; terminal_protocol: 'terminal-stream-v1' | null; workspace_protocol?: 'workspace-stream-v1' | null; service?: string;
 }
 export interface Choice { id: string; label: string }
 export interface SourceJob { id: string; name: string }
@@ -66,6 +67,7 @@ export const interactive = {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: '{}' }),
   stop: (id: string) => request<Runtime>(`/runtimes/${encodeURIComponent(id)}/stop`, { method: 'POST' }, '/interactive'),
   connection: (id: string, signal?: AbortSignal) => request<ConnectionGrant>(`/runtimes/${encodeURIComponent(id)}/connection`, { method: 'POST', signal }, '/interactive'),
+  workspaceConnection: (id: string, signal?: AbortSignal) => request<ConnectionGrant>(`/runtimes/${encodeURIComponent(id)}/workspace-connection`, { method: 'POST', signal }, '/interactive'),
   bases: () => request<Choice[]>('/base-images'),
   sources: () => request<SourceJob[]>('/source-jobs'),
   list: () => request<Workspace[]>(''),

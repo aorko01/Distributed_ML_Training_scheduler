@@ -222,7 +222,7 @@ def reconcile_one(db, management):
                     "generation": str(generation),
                     "owner": owner,
                     "enrollment_id": enrollment,
-                    "service": "terminal",
+                    "service": runtime.access_service,
                     "protocol": "tcp-stream-v1",
                     "port": 9000,
                 },

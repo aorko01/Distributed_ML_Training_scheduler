@@ -17,6 +17,9 @@ class InteractiveWorkspace(Base):
     source_type = Column(String, nullable=False)
     source_job_id = Column(String, nullable=True)
     current_revision_id = Column(String, nullable=True)
+    # current_revision_id is publication activity; saved_revision_id advances
+    # only after a snapshot is fully published and is safe to start.
+    saved_revision_id = Column(String, nullable=True)
     request_key = Column(String(128), nullable=False)
     request_hash = Column(String(64), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -52,6 +55,9 @@ class InteractiveImageRevision(Base):
     excluded_builder_id = Column(String)
     excluded_until = Column(DateTime(timezone=True))
     attempt_count = Column(Integer, nullable=False, default=0)
+    parent_revision_id = Column(String)
+    snapshot_operation_id = Column(String, unique=True)
+    source_image_metadata = Column(JSON)
     build_logs = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -64,4 +70,58 @@ class InteractiveImageRevision(Base):
         CheckConstraint("state != 'IMAGE_READY' OR (image_tag IS NOT NULL AND image_digest_ref IS NOT NULL AND resolved_base_digest IS NOT NULL)"),
         CheckConstraint("(origin = 'UPLOAD' AND source_object_key IS NOT NULL AND requested_base_image IS NOT NULL AND source_image_tag IS NULL) OR (origin = 'EXISTING_JOB' AND source_image_tag IS NOT NULL AND source_object_key IS NULL AND requested_base_image IS NULL) OR origin = 'SNAPSHOT'"),
         CheckConstraint("state != 'BUILDING' OR (builder_id IS NOT NULL AND attempt_id IS NOT NULL AND started_at IS NOT NULL AND lease_until IS NOT NULL)"),
+    )
+
+
+class WorkspaceSaveOperation(Base):
+    __tablename__ = "workspace_save_operations"
+    id = Column(String, primary_key=True, default=new_id)
+    owner_user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("interactive_workspaces.id"), nullable=False, index=True)
+    runtime_id = Column(String, ForeignKey("interactive_runtimes.id"), nullable=False, index=True)
+    generation = Column(Integer, nullable=False)
+    assignment_id = Column(String)
+    attempt_token = Column(String)
+    parent_revision_id = Column(String, ForeignKey("interactive_image_revisions.id"), nullable=False)
+    purpose = Column(String, nullable=False)
+    request_key = Column(String(128), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    state = Column(String, nullable=False, default="REQUESTED", index=True)
+    capture_attempt_id = Column(String)
+    artifact_id = Column(String)
+    artifact_sha256 = Column(String(64))
+    artifact_size = Column(Integer)
+    image_id = Column(String)
+    target_revision_id = Column(String, unique=True)
+    failure_code = Column(String)
+    failure_detail = Column(String(256))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("runtime_id", "generation", "request_key"),
+        CheckConstraint("purpose IN ('SAVE','TRAIN')"),
+        CheckConstraint("state IN ('REQUESTED','CAPTURING','UPLOADING','PUBLISH_QUEUED','PUBLISHING','SUCCEEDED','FAILED','CANCELLED')"),
+    )
+
+
+class WorkspaceTrainingSubmission(Base):
+    __tablename__ = "workspace_training_submissions"
+    id = Column(String, primary_key=True, default=new_id)
+    owner_user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("interactive_workspaces.id"), nullable=False, index=True)
+    runtime_id = Column(String, ForeignKey("interactive_runtimes.id"), nullable=False, index=True)
+    generation = Column(Integer, nullable=False)
+    save_operation_id = Column(String, ForeignKey("workspace_save_operations.id"), nullable=False, unique=True)
+    request_key = Column(String(128), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    settings = Column(JSON, nullable=False)
+    state = Column(String, nullable=False, default="SAVING")
+    job_id = Column(String, ForeignKey("jobs.id"), unique=True)
+    failure_code = Column(String)
+    failure_detail = Column(String(256))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("runtime_id", "generation", "request_key"),
+        CheckConstraint("state IN ('SAVING','WAITING_FOR_REVISION','STOPPING_RUNTIME','WAITING_FOR_RELEASE','PREPARING_JOB','JOB_CREATED','FAILED')"),
     )

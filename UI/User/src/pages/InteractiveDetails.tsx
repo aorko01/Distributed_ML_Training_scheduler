@@ -111,6 +111,8 @@ export default function InteractiveDetails() {
         <button className="btn" disabled={busy} onClick={startRuntime}>Start</button>}{' '}
       {runtime && !['STOPPED','FAILED'].includes(runtime.state) && <button className="btn btn-secondary" disabled={busy || runtime.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop</button>}{' '}
       <button className="btn btn-secondary" disabled={busy || runtime?.state !== 'READY' || runtime.desired_state !== 'RUNNING' || connectionState === 'Checking connection…'} onClick={connect}>Connect</button>{' '}
+      {runtime?.editor_capable && connectionState === 'Connected successfully' && <Link className="btn" to={`/interactive/${id}/editor`}>Open Editor</Link>}{' '}
+      {runtime && !runtime.editor_capable && <span title="Start a new editor-capable runtime after the workspace editor rollout is enabled">Editor unavailable for this runtime</span>}{' '}
       <button className="btn btn-secondary" disabled title="Saving is not available in this phase">Save as new revision</button>
       {connectionState && <p role="status">{connectionState}</p>}
     </>}
