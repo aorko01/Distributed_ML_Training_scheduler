@@ -48,10 +48,7 @@ class Coordinator:
                 fcntl.flock(self.host_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except (BlockingIOError, OSError) as exc:
                 self.host_lock.close()
-                raise RuntimeError(
-                    "Another worker instance is already running "
-                    f"(could not lock '{lock_path}')"
-                ) from exc
+                raise
         else:
             try:
                 import msvcrt
