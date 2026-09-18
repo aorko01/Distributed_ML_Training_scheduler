@@ -51,6 +51,7 @@ services:
     extra_hosts: ["${HM_HEADSCALE_HOST_OVERRIDE:-headscale-host.internal}:${HM_HEADSCALE_HOST_IP:-host-gateway}"]
     volumes: *management-mounts
     networks: [control]
+    ports: ['127.0.0.1:8020:8020']
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health/ready',timeout=4)"]
       interval: 5s

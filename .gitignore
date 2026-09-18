@@ -12,6 +12,8 @@ uploads/
 # be committed.
 .env_test
 **/.env_test
+.env.runtime
+secrets/
 
 __pycache__/
 **/__pycache__/
