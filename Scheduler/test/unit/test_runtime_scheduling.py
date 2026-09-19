@@ -13,11 +13,19 @@ from app.models.interactive_runtime_model import (
     WorkerAssignment as Assignment,
 )
 from app.models.job_model import JobStatus
-from app.schemas.worker_execution_schema import Claim, Fence, Result, Start, Event
+from app.schemas.worker_execution_schema import (
+    Claim,
+    Cleanup,
+    Event,
+    Fence,
+    Result,
+    Start,
+)
 from app.services import interactive_runtime_service as runtimes
 from app.services.scheduling import claims
 from app.services.scheduling.config import Settings
-from app.services.scheduling.types import now, Kind, Candidate
+from app.services.scheduling.types import now, Kind, Candidate, Snapshot
+from app.services.scheduling.policy import interactive_ineligibility
 from test.helpers import make_user, make_worker, make_job
 
 SETTINGS = Settings(admission=True, interactive=True)
@@ -52,6 +60,25 @@ def inventory():
             }
         ],
     }
+
+
+def test_interactive_ineligibility_reports_all_capacity_blockers():
+    inv = inventory()
+    inv["free_ram_gb"] = 8.5
+    inv["gpus"][0].update(busy=True, processes=[1842, 2278])
+    reason = interactive_ineligibility(
+        Snapshot("worker", "gpu", inv["free_vram_gb"], 0, inv),
+        {
+            "platform": "linux/amd64",
+            "memory_gb": 8,
+            "cpu": 2,
+            "disk_gb": 20,
+            "pull_headroom_gb": 40,
+            "minimum_vram_gb": 4,
+            "gpu_models": [],
+        },
+    )
+    assert reason == "insufficient_ram,gpu_busy:pids=1842,2278"
 
 
 def worker(db, **changes):
@@ -324,6 +351,22 @@ def test_expired_lease_holds_capacity_and_old_instance_can_only_cleanup(
     runtime.management_revoked = True
     db.commit()
     assert claims.cleanup(db, w.worker_id, fence(assigned)) == {"released": True}
+
+
+def test_cleanup_preserves_worker_runtime_failure_when_event_was_lost(db, monkeypatch):
+    owner = make_user(db)
+    w = worker(db)
+    _, runtime = workspace(db, owner.user_id, monkeypatch)
+    assigned = pull(db, w)
+    runtime.management_revoked = True
+    db.commit()
+    body = Cleanup(**fence(assigned).model_dump(), failure_code="START_FAILED")
+
+    assert claims.cleanup(db, w.worker_id, body) == {"released": True}
+    assert runtime.state == "FAILED"
+    assert runtime.desired_state == "STOPPED"
+    assert runtime.failure_code == "START_FAILED"
+    assert "cleanup" in runtime.failure_detail.lower()
 
 
 def test_start_owner_idempotency_and_pinning(db, monkeypatch):

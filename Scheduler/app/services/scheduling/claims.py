@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import logging
+import time
 from datetime import timedelta
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -14,7 +16,47 @@ from app.models.interactive_runtime_model import (
 from app.models.interactive_workspace_model import new_id
 from .types import Snapshot, Kind, now, utc
 from .config import Settings
-from .policy import create_policy, worker_eligible, compatible_gpu
+from .policy import (
+    create_policy,
+    worker_eligible,
+    compatible_gpu,
+    interactive_ineligibility,
+)
+
+logger = logging.getLogger("uvicorn.error")
+_placement_warning_at = {}
+
+
+def _log_interactive_placement_wait(db, snapshot, settings):
+    if not settings.interactive:
+        return
+    runtimes = (
+        db.query(Runtime)
+        .filter(Runtime.state == "QUEUED", Runtime.desired_state == "RUNNING")
+        .order_by(Runtime.created_at, Runtime.id)
+        .limit(64)
+        .all()
+    )
+    timestamp = time.monotonic()
+    if len(_placement_warning_at) > 1024:
+        stale = [item for item, seen in _placement_warning_at.items() if timestamp - seen > 3600]
+        for item in stale:
+            _placement_warning_at.pop(item, None)
+    for runtime in runtimes:
+        reason = interactive_ineligibility(snapshot, runtime.launch_spec)
+        if not reason:
+            continue
+        key = (snapshot.worker_id, runtime.id, reason)
+        if timestamp - _placement_warning_at.get(key, 0) < 60:
+            continue
+        _placement_warning_at[key] = timestamp
+        logger.warning(
+            "interactive_runtime placement_wait runtime_id=%s workspace_id=%s worker_id=%s reason=%s",
+            runtime.id,
+            runtime.workspace_id,
+            snapshot.worker_id,
+            reason,
+        )
 
 
 def digest(value):
@@ -110,6 +152,7 @@ def claim(db, worker_id, body, settings=None, policy=None):
             snapshot = Snapshot(
                 worker_id, worker.gpu_type, inv["free_vram_gb"], len(active), inv
             )
+            _log_interactive_placement_wait(db, snapshot, settings)
             candidate = policy.choose(db, snapshot, settings)
             if candidate is None:
                 db.commit()
@@ -545,8 +588,20 @@ def release_if_clean(db, worker, assignment):
 def cleanup(db, worker_id, body):
     worker, assignment = fence(db, worker_id, body, cleanup=True)
     assignment.cleanup_ack = True
+    failure_code = getattr(body, "failure_code", None)
+    if failure_code and not assignment.runtime_id:
+        raise HTTPException(422, "Runtime failure code requires interactive assignment")
     if assignment.runtime_id:
-        stop_runtime(db.get(Runtime, assignment.runtime_id))
+        runtime = db.get(Runtime, assignment.runtime_id)
+        stop_runtime(runtime, failure_code)
+        if failure_code:
+            logger.warning(
+                "interactive_runtime worker_failure_cleanup runtime_id=%s assignment_id=%s worker_id=%s failure_code=%s",
+                runtime.id,
+                assignment.id,
+                worker_id,
+                failure_code,
+            )
     released = release_if_clean(db, worker, assignment)
     db.commit()
     return {"released": released}

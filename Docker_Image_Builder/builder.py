@@ -26,6 +26,25 @@ from docker_ops import (
     prune_old_base_images,
 )
 
+_interactive_error_lock = threading.Lock()
+_interactive_error_last: dict[str, float] = {}
+
+
+def _log_interactive_error(operation: str, exc: Exception) -> None:
+    """Report queue failures without flooding logs from every builder thread."""
+    timestamp = time.monotonic()
+    with _interactive_error_lock:
+        last = _interactive_error_last.get(operation, 0.0)
+        if timestamp - last < 30:
+            return
+        _interactive_error_last[operation] = timestamp
+    logger.warning(
+        "Interactive build queue %s failed: %s",
+        operation,
+        exc,
+        exc_info=True,
+    )
+
 
 class BuildLeaseRegistry:
     """Thread-safe active-build registry shared with the heartbeat thread."""
@@ -212,15 +231,15 @@ def worker_loop(
                     interactive_registry.accept_heartbeat(heartbeat)
                     if prefer_interactive:
                         interactive_item = interactive_api.claim()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log_interactive_error("heartbeat/claim", exc)
             if interactive_item is None:
                 job = claim_job_for_building(BUILDER_ID)
             if job is None and interactive_item is None and interactive_api.enabled():
                 try:
                     interactive_item = interactive_api.claim()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log_interactive_error("claim", exc)
             prefer_interactive = not prefer_interactive
             if interactive_item is not None:
                 run_interactive(client, interactive_item, interactive_registry, stop_event)
@@ -346,8 +365,8 @@ def run_interactive(client, item, registry, stop_event):
                 body['cancel_builds'] = [{'job_id': row['revision_id'], 'attempt_id': row['attempt_id']}
                                        for row in body.get('cancel_builds', [])]
                 registry.accept_heartbeat(body)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_interactive_error("active heartbeat", exc)
             local_stop.wait(HEARTBEAT_INTERVAL)
     thread = threading.Thread(target=renew, daemon=True)
     thread.start()
@@ -382,6 +401,15 @@ def _worker_entry(
 def main():
     logger.info("Docker Image Builder service starting ...")
     logger.info("Watching scheduler queue: %s", SCHEDULER_QUEUE_URL)
+    if interactive_api.enabled():
+        logger.info(
+            "Interactive build queue enabled: %s/internal/interactive/builds",
+            SCHEDULER_QUEUE_URL.rsplit('/jobs/', 1)[0],
+        )
+    else:
+        logger.warning(
+            "Interactive build queue disabled: INTERACTIVE_BUILDER_SECRET_FILE is not set; interactive workspace uploads will remain queued. Start with compose.interactive.yaml."
+        )
 
     init_db()
     client = docker.from_env()

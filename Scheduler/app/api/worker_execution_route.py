@@ -9,6 +9,7 @@ from app.schemas.worker_execution_schema import (
     Event,
     Result,
     Fence,
+    Cleanup,
 )
 from app.services.scheduling import claims
 from app.services import interactive_controller
@@ -56,7 +57,7 @@ def result(body: Result, worker=Depends(worker_auth), db=Depends(get_db)):
 
 
 @router.post("/cleanup")
-def cleanup(body: Fence, worker=Depends(worker_auth), db=Depends(get_db)):
+def cleanup(body: Cleanup, worker=Depends(worker_auth), db=Depends(get_db)):
     return claims.cleanup(db, worker, body)
 
 

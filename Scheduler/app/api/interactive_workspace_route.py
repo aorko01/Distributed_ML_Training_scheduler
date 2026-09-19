@@ -1,4 +1,5 @@
 import hmac
+import logging
 import os
 import stat
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
@@ -9,6 +10,8 @@ from app.models.job_model import Job
 from app.schemas.interactive_workspace_schema import BASE_IMAGES, FromJob, Claim, Heartbeat, Ready, Failure, Logs
 from app.services import interactive_workspace_service as service
 from app.utils.interactive_archive import MAX_UPLOAD
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix='/interactive/workspaces', tags=['interactive workspaces'])
 internal_router = APIRouter(prefix='/internal/interactive/builds', tags=['internal interactive builder'])
@@ -35,8 +38,10 @@ def builder_auth(authorization: str = Header(default='')):
         if len(secret) < 32 or len(secret) > 256 or len(set(secret)) < 8:
             raise ValueError()
     except (KeyError, OSError, ValueError, UnicodeError):
+        logger.exception("interactive_workspace builder_auth_unavailable")
         raise HTTPException(503, 'Builder authentication unavailable') from None
     if not hmac.compare_digest(authorization.encode(), ('Bearer ' + secret).encode()):
+        logger.warning("interactive_workspace builder_auth_rejected")
         raise HTTPException(401, 'Builder authentication required')
 
 

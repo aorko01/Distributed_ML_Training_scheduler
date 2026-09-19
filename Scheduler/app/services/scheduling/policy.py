@@ -29,31 +29,53 @@ def worker_eligible(worker, timestamp, fresh=15):
     )
 
 
+def interactive_ineligibility(snapshot, spec):
+    """Return a stable operator-facing reason when a worker cannot host a runtime."""
+    inv = snapshot.inventory
+    reasons = []
+    if snapshot.assignments:
+        reasons.append("scheduler_assignments_active")
+    if inv.get("local_assignments"):
+        reasons.append("worker_assignments_active")
+    if inv.get("mode") != "AVAILABLE":
+        reasons.append("worker_mode_" + str(inv.get("mode", "unknown")).lower())
+    if not inv.get("interactive_ready"):
+        reasons.append("interactive_preflight_not_ready")
+    if inv.get("platform") != spec["platform"]:
+        reasons.append("platform_mismatch")
+    if not inv.get("nvidia_runtime"):
+        reasons.append("nvidia_runtime_unavailable")
+    if not inv.get("quota_supported"):
+        reasons.append("disk_quota_unavailable")
+    if inv.get("free_ram_gb", 0) < spec["memory_gb"] + 1:
+        reasons.append("insufficient_ram")
+    if inv.get("cpu_cores", 0) < spec["cpu"] + 1:
+        reasons.append("insufficient_cpu")
+    if inv.get("free_disk_gb", 0) < spec["disk_gb"] + spec["pull_headroom_gb"]:
+        reasons.append("insufficient_disk")
+    gpus = inv.get("gpus", [])
+    if not gpus:
+        reasons.append("gpu_inventory_missing")
+    elif any(g.get("busy") is not False or g.get("processes") for g in gpus):
+        pids = sorted({pid for gpu in gpus for pid in gpu.get("processes", [])})
+        reasons.append(
+            "gpu_busy" + ((":pids=" + ",".join(map(str, pids))) if pids else "")
+        )
+    if gpus and not any(
+        gpu.get("uuid", "").startswith("GPU-")
+        and gpu.get("memory_gb", 0) >= spec["minimum_vram_gb"]
+        and (not spec["gpu_models"] or gpu.get("model") in spec["gpu_models"])
+        for gpu in gpus
+    ):
+        reasons.append("no_compatible_gpu")
+    return ",".join(reasons) or None
+
+
 def compatible_gpu(snapshot, spec):
     inv = snapshot.inventory
-    if (
-        snapshot.assignments
-        or inv.get("local_assignments")
-        or inv.get("mode") != "AVAILABLE"
-    ):
+    if interactive_ineligibility(snapshot, spec):
         return None
-    if (
-        not inv.get("interactive_ready")
-        or inv.get("platform") != spec["platform"]
-        or not inv.get("nvidia_runtime")
-        or not inv.get("quota_supported")
-    ):
-        return None
-    if (
-        inv.get("free_ram_gb", 0) < spec["memory_gb"] + 1
-        or inv.get("cpu_cores", 0) < spec["cpu"] + 1
-        or inv.get("free_disk_gb", 0) < spec["disk_gb"] + spec["pull_headroom_gb"]
-    ):
-        return None
-    gpus = inv.get("gpus", [])
-    if not gpus or any(g.get("busy") is not False or g.get("processes") for g in gpus):
-        return None
-    for gpu in gpus:
+    for gpu in inv.get("gpus", []):
         if (
             gpu.get("uuid", "").startswith("GPU-")
             and gpu.get("memory_gb", 0) >= spec["minimum_vram_gb"]

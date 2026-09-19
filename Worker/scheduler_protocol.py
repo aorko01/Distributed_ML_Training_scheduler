@@ -107,7 +107,10 @@ class ExecutionAPI:
         return self.call("bootstrap", Fence.from_assignment(record).body())
 
     def cleanup(self, record):
-        return self.call("cleanup", Fence.from_assignment(record).body())
+        body = Fence.from_assignment(record).body()
+        if record.get("runtime_failure_code"):
+            body["failure_code"] = record["runtime_failure_code"]
+        return self.call("cleanup", body)
 
     def result(self, record, result):
         return self.call("result", {**Fence.from_assignment(record).body(), **result})

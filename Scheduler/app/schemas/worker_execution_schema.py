@@ -94,24 +94,30 @@ class Heartbeat(Strict):
     assignments: Annotated[list[Active], Field(max_length=64)]
 
 
+FailureCode = Literal[
+    "PULL_FAILED",
+    "UNSUPPORTED_IMAGE",
+    "GPU_BUSY",
+    "DISK_FULL",
+    "START_FAILED",
+    "HEALTH_FAILED",
+    "LEASE_LOST",
+    "INTERRUPTED",
+    "LOCAL_CONFLICT",
+]
+
+
 class Event(Fence):
     sequence: Annotated[int, Field(ge=1, le=2**53)]
     phase: Literal["PULLING", "STARTING", "CONNECTING", "STOPPING"]
     health: Health = Field(default_factory=Health)
-    failure_code: (
-        Literal[
-            "PULL_FAILED",
-            "UNSUPPORTED_IMAGE",
-            "GPU_BUSY",
-            "DISK_FULL",
-            "START_FAILED",
-            "HEALTH_FAILED",
-            "LEASE_LOST",
-            "INTERRUPTED",
-            "LOCAL_CONFLICT",
-        ]
-        | None
-    ) = None
+    failure_code: FailureCode | None = None
+
+
+class Cleanup(Fence):
+    # Persisted by the worker before its best-effort STOPPING event. Cleanup is
+    # the final fenced delivery path if that event was lost during an outage.
+    failure_code: FailureCode | None = None
 
 
 class Result(Fence):

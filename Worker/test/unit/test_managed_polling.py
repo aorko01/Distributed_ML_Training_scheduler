@@ -110,6 +110,28 @@ def test_network_failure_cannot_release_pending_result(tmp_path):
     c.close()
 
 
+def test_cleanup_retries_persisted_interactive_failure_code():
+    from scheduler_protocol import ExecutionAPI
+
+    a = assignment("interactive_access")
+    a["runtime_failure_code"] = "START_FAILED"
+    api = ExecutionAPI.__new__(ExecutionAPI)
+    api.call = MagicMock(return_value={"released": True})
+
+    api.cleanup(a)
+
+    assert api.call.call_args.args == (
+        "cleanup",
+        {
+            "instance_id": a["instance_id"],
+            "assignment_id": a["assignment_id"],
+            "attempt_token": a["attempt_token"],
+            "generation": a["generation"],
+            "failure_code": "START_FAILED",
+        },
+    )
+
+
 def test_fenced_batch_logs_fit_request_limit_even_with_unicode():
     record = assignment("batch_training")
     record["payload"] = {"id": "job"}

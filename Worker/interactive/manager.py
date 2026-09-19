@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import suppress
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -15,6 +16,8 @@ from Access_Container.interactive_access.protocol import (
 from .broker import Broker
 from .docker_ops import RuntimeFailure
 from .endpoint import Endpoint
+
+logger = logging.getLogger("managed_worker")
 
 
 class Manager:
@@ -192,6 +195,18 @@ class Manager:
                 await asyncio.sleep(1)
         except Exception as exc:
             code = exc.code if isinstance(exc, RuntimeFailure) else "START_FAILED"
+            # Persist before the event request. Cleanup carries the same fenced
+            # code so a transient callback failure cannot downgrade a failed
+            # runtime to an ordinary stop.
+            record = self.coordinator.update(
+                assignment_id, runtime_failure_code=code
+            )
+            logger.error(
+                "Interactive runtime failed assignment_id=%s code=%s",
+                assignment_id,
+                code,
+                exc_info=True,
+            )
             with suppress(Exception):
                 record = await asyncio.to_thread(
                     self.progress, record, "STOPPING", {}, code
