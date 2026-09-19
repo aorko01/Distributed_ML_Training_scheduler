@@ -59,8 +59,16 @@ class DockerOps:
             return False
         try:
             info = self.client.info()
-            if info.get("Driver") != "overlay2" or "nvidia" not in info.get(
-                "Runtimes", {}
+            has_nvidia = "nvidia" in info.get("Runtimes", {})
+            driver = info.get("Driver", "")
+            # Legacy graph driver (overlay2) OR containerd v1 with overlayfs
+            # snapshotter — both provide the quota support the test exercises.
+            containerd_overlay = any(
+                entry[0] == "driver-type" and entry[1] == "io.containerd.snapshotter.v1"
+                for entry in info.get("DriverStatus", [])
+            )
+            if not has_nvidia or not (
+                driver == "overlay2" or containerd_overlay
             ):
                 return False
             # Operators pre-pull this tiny shell fixture. No production workload
