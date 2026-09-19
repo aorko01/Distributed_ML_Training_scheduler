@@ -16,7 +16,6 @@ class Snapshot:
     free_vram: float
     assignments: int
     inventory: dict
-    estimation_active: bool
 
 
 @dataclass(frozen=True)

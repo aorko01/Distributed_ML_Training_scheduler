@@ -19,6 +19,7 @@ MODES_BLOCKING = {
     "CLEANING",
     "UNCERTAIN",
 }
+EXCLUSIVE_KINDS = {"interactive_access", "vram_estimation"}
 
 
 class Coordinator:
@@ -120,11 +121,17 @@ class Coordinator:
 
     def may_request_work(self):
         with self.lock:
+            estimation_active = any(
+                not record.get("released")
+                and record["kind"] == "vram_estimation"
+                for record in self.records()
+            )
             return (
                 not self.paused
                 and not self.draining
                 and self.mode not in MODES_BLOCKING
                 and not self.claim_pending
+                and not estimation_active
             )
 
     def available(self):
@@ -167,7 +174,10 @@ class Coordinator:
             assignment = envelope.get("assignment")
             if assignment:
                 active = [r for r in self.records() if not r.get("released")]
-                conflict = assignment["kind"] == "interactive_access" and bool(active)
+                conflict = bool(active) and (
+                    assignment["kind"] in EXCLUSIVE_KINDS
+                    or any(r["kind"] in EXCLUSIVE_KINDS for r in active)
+                )
                 assignment.update(
                     local_clean=False,
                     released=False,

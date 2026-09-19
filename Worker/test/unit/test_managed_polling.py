@@ -59,6 +59,31 @@ def test_interactive_reservation_stops_claim_resume_and_keeps_heartbeats(
     c.close()
 
 
+def test_estimation_stops_worker_polling_until_release(tmp_path, reset_telemetry):
+    c = Coordinator(tmp_path)
+    c.available()
+    estimation = assignment("vram_estimation")
+    estimation["instance_id"] = c.instance_id
+    c.begin_claim()
+    import time
+
+    c.accept({"assignment": estimation}, time.monotonic())
+    api = MagicMock()
+    api.claim.return_value = {"assignment": None, "retry_after_seconds": 5}
+    with patch("managed_worker.JobExecutor"):
+        worker = ManagedWorker(
+            "worker", c, api, MagicMock(), lambda *args, **kwargs: {}
+        )
+        worker.poll_once()
+        api.claim.assert_not_called()
+
+        c.mark_clean(estimation["assignment_id"])
+        c.released(estimation["assignment_id"])
+        worker.poll_once()
+        api.claim.assert_called_once()
+    c.close()
+
+
 def test_network_failure_cannot_release_pending_result(tmp_path):
     c = Coordinator(tmp_path)
     c.available()

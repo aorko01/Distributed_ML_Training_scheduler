@@ -91,7 +91,12 @@ def claim(db, worker_id, body, settings=None, policy=None):
                 not settings.admission
                 or worker.instance_id != body.instance_id
                 or not worker_eligible(worker, now(), settings.fresh_seconds)
-                or any(a.exclusive or a.state in ("LOST", "CLEANING") for a in active)
+                or any(
+                    a.exclusive
+                    or a.kind == Kind.ESTIMATION.value
+                    or a.state in ("LOST", "CLEANING")
+                    for a in active
+                )
             ):
                 db.commit()
                 return {"assignment": None, "retry_after_seconds": 5}
@@ -103,17 +108,18 @@ def claim(db, worker_id, body, settings=None, policy=None):
                 db.commit()
                 return {"assignment": None, "retry_after_seconds": 5}
             snapshot = Snapshot(
-                worker_id,
-                worker.gpu_type,
-                inv["free_vram_gb"],
-                len(active),
-                inv,
-                estimation_active=any(
-                    a.kind == Kind.ESTIMATION.value for a in active
-                ),
+                worker_id, worker.gpu_type, inv["free_vram_gb"], len(active), inv
             )
             candidate = policy.choose(db, snapshot, settings)
             if candidate is None:
+                db.commit()
+                return {"assignment": None, "retry_after_seconds": 5}
+            # Estimation measures the workload in isolation.  Keep this guard in
+            # the reservation layer as well as the default policy so a custom
+            # policy cannot launch it beside scheduler- or worker-known work.
+            if candidate.kind == Kind.ESTIMATION and (
+                active or inv["local_assignments"]
+            ):
                 db.commit()
                 return {"assignment": None, "retry_after_seconds": 5}
             assignment_id, token, timestamp = new_id(), new_id(), now()

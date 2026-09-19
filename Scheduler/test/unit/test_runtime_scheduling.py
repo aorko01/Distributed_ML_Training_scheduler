@@ -184,7 +184,7 @@ def test_batch_reservation_prevents_interactive_on_free_second_gpu(db, monkeypat
     assert runtime.state == "QUEUED" and first["kind"] == "batch_training"
 
 
-def test_worker_pulls_one_estimation_while_batch_slots_remain_available(db):
+def test_estimation_keeps_other_worker_slots_idle_until_cleanup(db):
     owner = make_user(db)
     w = worker(db)
     w.inventory = {**w.inventory, "available_slots": 3}
@@ -198,22 +198,49 @@ def test_worker_pulls_one_estimation_while_batch_slots_remain_available(db):
     first_batch = make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
     second_batch = make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
 
-    assignments = [pull(db, w), pull(db, w), pull(db, w)]
+    estimation = pull(db, w)
 
-    assert [assignment["kind"] for assignment in assignments] == [
-        "vram_estimation",
-        "batch_training",
-        "batch_training",
-    ]
-    assert assignments[0]["payload"]["id"] in {
+    assert estimation["kind"] == "vram_estimation"
+    assert estimation["payload"]["id"] in {
         first_estimate.id,
         second_estimate.id,
     }
-    assert {assignment["payload"]["id"] for assignment in assignments[1:]} == {
-        first_batch.id,
-        second_batch.id,
-    }
     assert pull(db, w) is None
+    claims.result(
+        db,
+        w.worker_id,
+        Result(
+            **fence(estimation).model_dump(),
+            outcome="estimation",
+            vram_required=2.0,
+            ram_required=2.0,
+            step_time=1.0,
+        ),
+    )
+    assert pull(db, w) is None
+    claims.cleanup(db, w.worker_id, fence(estimation))
+
+    next_estimation = pull(db, w)
+    assert next_estimation["kind"] == "vram_estimation"
+    assert next_estimation["payload"]["id"] in {
+        first_estimate.id,
+        second_estimate.id,
+    } - {estimation["payload"]["id"]}
+    assert pull(db, w) is None
+    assert first_batch.status == JobStatus.RUNNABLE
+    assert second_batch.status == JobStatus.RUNNABLE
+
+
+def test_estimation_waits_for_existing_batch_to_finish(db):
+    owner = make_user(db)
+    w = worker(db)
+    batch = make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
+    running = pull(db, w)
+    estimate = make_job(db, owner.user_id, status=JobStatus.VRAM_ESTIMATION_PENDING)
+
+    assert running["payload"]["id"] == batch.id
+    assert pull(db, w) is None
+    assert estimate.status == JobStatus.VRAM_ESTIMATION_PENDING
 
 
 def test_active_estimation_worker_does_not_block_another_worker(db):

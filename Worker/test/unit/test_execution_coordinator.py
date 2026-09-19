@@ -65,6 +65,28 @@ def test_exclusive_acceptance_rejects_local_batch_and_host_double_start(tmp_path
     c.close()
 
 
+def test_estimation_blocks_claims_and_rejects_overlap(tmp_path):
+    c = Coordinator(tmp_path, clock=lambda: 10)
+    c.available()
+    c.begin_claim()
+    estimation = assignment("vram_estimation")
+    c.accept({"assignment": estimation}, 10)
+    assert not c.may_request_work()
+
+    c.mark_clean(estimation["assignment_id"])
+    c.released(estimation["assignment_id"])
+    assert c.may_request_work()
+
+    c.begin_claim()
+    c.accept({"assignment": assignment("batch_training")}, 10)
+    c.begin_claim()
+    conflicting = assignment("vram_estimation")
+    c.accept({"assignment": conflicting}, 10)
+    assert c.mode == "UNCERTAIN"
+    assert not c.authoritative(conflicting["assignment_id"])
+    c.close()
+
+
 def test_restart_keeps_cleanup_identity_without_adopting_lease(tmp_path):
     c = Coordinator(tmp_path, clock=lambda: 10)
     c.available()
