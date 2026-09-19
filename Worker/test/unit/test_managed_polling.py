@@ -159,3 +159,30 @@ def test_scheduler_startup_authentication_errors_are_actionable_and_secret_free(
     assert worker_id in unavailable and "WORKER_CREDENTIALS_FILE" in unavailable
     assert worker_id in rejected and "trailing newline" in rejected
     assert "secret" not in unavailable.lower() and "Bearer " not in unavailable
+
+
+def test_startup_recovers_one_stale_first_heartbeat_after_reboot(tmp_path):
+    """An old instance registration must not turn a reboot into a crash loop."""
+    from scheduler_protocol import SchedulerRejected
+
+    coordinator = Coordinator(tmp_path)
+    api = MagicMock()
+    api.register.return_value = {"reconcile_assignments": []}
+    api.heartbeat.side_effect = [
+        SchedulerRejected(409),
+        {"sequence": 1, "decisions": []},
+    ]
+    ops = MagicMock()
+
+    with patch("managed_worker.JobExecutor"), patch(
+        "managed_worker.get_gpu_info", return_value=("GPU", 0, 0, 0, 0)
+    ):
+        worker = ManagedWorker(
+            "worker", coordinator, api, ops, lambda *_args, **_kwargs: {}
+        )
+        worker.startup()
+
+    assert api.register.call_count == 2
+    assert api.heartbeat.call_count == 2
+    assert worker.sequence == 1
+    coordinator.close()

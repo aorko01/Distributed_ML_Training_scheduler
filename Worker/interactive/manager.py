@@ -56,6 +56,11 @@ class Manager:
         try:
             root.mkdir(mode=0o750, parents=True, exist_ok=False)
             os.chown(root, 0, 10001)
+            # dml-worker.service uses UMask=0077, so mkdir's requested 0750
+            # otherwise becomes 0700.  The unprivileged Access container needs
+            # group execute permission to traverse this read-only bind mount and
+            # reach the broker socket/token (both are separately restricted).
+            os.chmod(root, 0o750)
             endpoint_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
             token = secrets.token_urlsafe(48).encode()
             token_file = root / "broker.token"
@@ -149,6 +154,12 @@ class Manager:
             # Probe the Access backend via the sidecar namespace. wget is included
             # in the pinned Alpine Tailscale image; no user-selected destination.
             async def backend_health():
+                # Do not mistake a dead Access container for a slow backend.
+                # Its bounded logs are emitted only when startup finally times
+                # out, before exact cleanup removes the evidence.
+                access.reload()
+                if access.status != "running":
+                    return False
                 result = await asyncio.to_thread(
                     sidecar.exec_run,
                     [
@@ -165,6 +176,18 @@ class Manager:
 
             while not await backend_health():
                 if not authority() or time.monotonic() >= deadline:
+                    with suppress(Exception):
+                        access.reload()
+                        logs = access.logs(tail=30).decode(
+                            "utf-8", errors="replace"
+                        ).strip()
+                        logger.error(
+                            "Interactive Access backend was not ready "
+                            "assignment_id=%s access_status=%s access_logs=%s",
+                            assignment_id,
+                            access.status,
+                            logs[:8192],
+                        )
                     raise RuntimeFailure("START_FAILED")
                 await asyncio.sleep(0.2)
             await asyncio.to_thread(self.endpoint.serve, True)

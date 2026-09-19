@@ -122,6 +122,25 @@ class ManagedWorker:
             available_slots=int(runtime_config.get("max_concurrent_jobs")),
         )
 
+    def register(self):
+        """Register this boot's instance and reject unknown assignments.
+
+        Registration is deliberately repeatable.  In particular, the first
+        heartbeat may race a delayed registration from the pre-reboot
+        instance.  Retrying registration once is safe, whereas accepting an
+        assignment that is absent from the durable local journal is not.
+        """
+        response = self.api.register(
+            self.coordinator.instance_id, get_gpu_info()[0], self.inventory()
+        )
+        known = {r["assignment_id"] for r in self.coordinator.records()}
+        if any(
+            r["assignment_id"] not in known for r in response["reconcile_assignments"]
+        ):
+            self.coordinator.mode = "UNCERTAIN"
+            raise RuntimeError("Missing journal identity; operator reconciliation required")
+        return response
+
     def startup(self):
         # Resolve a lost-response claim under its original key before abandoning
         # the previous instance. Never invent a new request to cover ambiguity.
@@ -142,17 +161,7 @@ class ManagedWorker:
                 self.coordinator.persist(record)
             with self.coordinator.db:
                 self.coordinator.db.execute("DELETE FROM metadata WHERE key='claim'")
-        response = self.api.register(
-            self.coordinator.instance_id, get_gpu_info()[0], self.inventory()
-        )
-        known = {r["assignment_id"] for r in self.coordinator.records()}
-        if any(
-            r["assignment_id"] not in known for r in response["reconcile_assignments"]
-        ):
-            self.coordinator.mode = "UNCERTAIN"
-            raise RuntimeError(
-                "Missing journal identity; operator reconciliation required"
-            )
+        self.register()
         for record in self.coordinator.records():
             if record.get("released"):
                 continue
@@ -184,7 +193,20 @@ class ManagedWorker:
             else False
         )
         self.coordinator.available()
-        self.heartbeat_once()
+        try:
+            self.heartbeat_once()
+        except SchedulerRejected as exc:
+            if exc.status != 409:
+                raise
+            # A reboot can overlap a delayed old-instance registration.  The
+            # Scheduler then correctly fences this first heartbeat as stale.
+            # Re-register the current boot instance once and restart the
+            # sequence; a second 409 is a real competing identity/problem and
+            # is intentionally surfaced instead of masking it.
+            logger.warning("First heartbeat was stale; re-registering Worker instance")
+            self.sequence = 0
+            self.register()
+            self.heartbeat_once()
 
     def heartbeat_once(self):
         self.sequence += 1
