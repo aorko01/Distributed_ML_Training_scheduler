@@ -103,7 +103,14 @@ def claim(db, worker_id, body, settings=None, policy=None):
                 db.commit()
                 return {"assignment": None, "retry_after_seconds": 5}
             snapshot = Snapshot(
-                worker_id, worker.gpu_type, inv["free_vram_gb"], len(active), inv
+                worker_id,
+                worker.gpu_type,
+                inv["free_vram_gb"],
+                len(active),
+                inv,
+                estimation_active=any(
+                    a.kind == Kind.ESTIMATION.value for a in active
+                ),
             )
             candidate = policy.choose(db, snapshot, settings)
             if candidate is None:

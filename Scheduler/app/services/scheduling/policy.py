@@ -80,7 +80,17 @@ class ThreeTierPolicy:
             .correlate(Worker)
             .scalar_subquery()
         )
-        workers = db.query(Worker, holds).filter(
+        estimation_holds = (
+            select(func.count(Assignment.id))
+            .where(
+                Assignment.worker_id == Worker.worker_id,
+                Assignment.released_at.is_(None),
+                Assignment.kind == Kind.ESTIMATION.value,
+            )
+            .correlate(Worker)
+            .scalar_subquery()
+        )
+        workers = db.query(Worker, holds, estimation_holds).filter(
             Worker.protocol_version == 1,
             Worker.authenticated_heartbeat_at
             > now() - timedelta(seconds=settings.fresh_seconds),
@@ -96,17 +106,18 @@ class ThreeTierPolicy:
                 ),
             ),
         )
-        for worker, count in workers.yield_per(64):
+        for worker, count, estimation_count in workers.yield_per(64):
             inv = worker.inventory or {}
             if (
-                worker_eligible(worker, now(), settings.fresh_seconds)
+                not estimation_count
+                and worker_eligible(worker, now(), settings.fresh_seconds)
                 and abs(now().timestamp() - inv.get("observed_at", 0))
                 <= settings.fresh_seconds
                 and count
                 < inv.get("available_slots", 0) + len(inv.get("local_assignments", []))
             ):
                 maximum = max(maximum, inv.get("free_vram_gb", 0))
-        if snapshot.free_vram >= maximum:
+        if not snapshot.estimation_active and snapshot.free_vram >= maximum:
             job = (
                 base.filter(Job.status == JobStatus.VRAM_ESTIMATION_PENDING)
                 .order_by(Job.created_at, Job.id)

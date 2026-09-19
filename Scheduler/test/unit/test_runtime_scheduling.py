@@ -184,6 +184,61 @@ def test_batch_reservation_prevents_interactive_on_free_second_gpu(db, monkeypat
     assert runtime.state == "QUEUED" and first["kind"] == "batch_training"
 
 
+def test_worker_pulls_one_estimation_while_batch_slots_remain_available(db):
+    owner = make_user(db)
+    w = worker(db)
+    w.inventory = {**w.inventory, "available_slots": 3}
+    db.commit()
+    first_estimate = make_job(
+        db, owner.user_id, status=JobStatus.VRAM_ESTIMATION_PENDING
+    )
+    second_estimate = make_job(
+        db, owner.user_id, status=JobStatus.VRAM_ESTIMATION_PENDING
+    )
+    first_batch = make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
+    second_batch = make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
+
+    assignments = [pull(db, w), pull(db, w), pull(db, w)]
+
+    assert [assignment["kind"] for assignment in assignments] == [
+        "vram_estimation",
+        "batch_training",
+        "batch_training",
+    ]
+    assert assignments[0]["payload"]["id"] in {
+        first_estimate.id,
+        second_estimate.id,
+    }
+    assert {assignment["payload"]["id"] for assignment in assignments[1:]} == {
+        first_batch.id,
+        second_batch.id,
+    }
+    assert pull(db, w) is None
+
+
+def test_active_estimation_worker_does_not_block_another_worker(db):
+    owner = make_user(db)
+    high_vram_worker = worker(db)
+    high_vram_worker.inventory = {
+        **high_vram_worker.inventory,
+        "free_vram_gb": 80.0,
+    }
+    db.commit()
+    first = make_job(db, owner.user_id, status=JobStatus.VRAM_ESTIMATION_PENDING)
+    second = make_job(db, owner.user_id, status=JobStatus.VRAM_ESTIMATION_PENDING)
+
+    first_assignment = pull(db, high_vram_worker)
+    assert first_assignment["payload"]["id"] in {first.id, second.id}
+
+    other_worker = worker(db)
+    assigned = pull(db, other_worker)
+    assert assigned["kind"] == "vram_estimation"
+    assert {first_assignment["payload"]["id"], assigned["payload"]["id"]} == {
+        first.id,
+        second.id,
+    }
+
+
 @pytest.mark.parametrize("unavailable", ["full", "cleanup", "stale_inventory"])
 def test_unavailable_high_vram_worker_does_not_block_estimation(db, unavailable):
     owner = make_user(db)
