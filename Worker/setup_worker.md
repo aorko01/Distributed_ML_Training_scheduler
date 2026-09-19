@@ -82,6 +82,13 @@ Then run the worker-local installer from the repository root:
 sudo bash Worker/join_worker.sh
 ```
 
+Interactive admission ignores host GPU VRAM/process activity by default. This
+allows a Worker that also runs its local desktop (`Xorg`/`gnome-shell`) to pull
+an interactive runtime. Scheduler-owned batch-training and VRAM-estimation
+assignments still reserve the Worker and therefore block interactive admission.
+Set `INTERACTIVE_REQUIRE_IDLE_GPU=1` only when a dedicated headless Worker must
+enforce the older completely-idle GPU policy.
+
 The installer is idempotent and automates the remaining host work:
 
 - installs Python and Docker Engine when absent;
@@ -107,6 +114,7 @@ bash Worker/join_worker.sh --check              # read-only static host/config c
 sudo bash Worker/join_worker.sh --no-start      # provision, leave units disabled/stopped
 sudo bash Worker/join_worker.sh --registered    # identity is already registered
 sudo bash Worker/join_worker.sh --show-registration
+sudo bash Worker/join_worker.sh --show-runtime-env
 ```
 
 The NVIDIA **host driver** is the machine prerequisite the script intentionally
@@ -127,6 +135,17 @@ sudo chmod 0600 /etc/dml/worker.env
 `dml-worker.service` reads **only** `/etc/dml/worker.env`
 (`PYTHON_DOTENV_DISABLED=1`); re-copy after every `.env` change and
 `systemctl restart dml-worker`.
+
+This is deliberately separate from your SSH/login environment, so
+`echo $INTERACTIVE_REGISTRY_PREFIXES` in a terminal will normally be empty.
+To verify the setting that the running Worker actually received, use:
+
+```bash
+sudo bash Worker/join_worker.sh --show-runtime-env
+```
+
+It displays only non-secret interactive settings and confirms that the running
+service's allowlist matches `/etc/dml/worker.env`.
 
 ## 5. Manual: provision the worker identity set (one UUID + one secret)
 

@@ -20,6 +20,7 @@ CHECK_ONLY=0
 REGISTRATION_CONFIRMED=0
 NO_START=0
 SHOW_REGISTRATION=0
+SHOW_RUNTIME_ENV=0
 EXISTING_JOINED=0
 
 log() { printf '[dml-worker] %s\n' "$*"; }
@@ -37,6 +38,7 @@ Options:
   --registered         The existing UUID/secret is already on the Scheduler.
   --no-start           Install the units, but leave them disabled and stopped.
   --show-registration  Print the existing Scheduler credential-map entry.
+  --show-runtime-env   Show the non-secret interactive settings seen by systemd.
   -h, --help           Show this help.
 
 On a new host the script generates the Worker UUID and secret, prints the exact
@@ -51,6 +53,7 @@ while (($#)); do
         --registered) REGISTRATION_CONFIRMED=1 ;;
         --no-start) NO_START=1 ;;
         --show-registration) SHOW_REGISTRATION=1 ;;
+        --show-runtime-env) SHOW_RUNTIME_ENV=1 ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown option: $1 (use --help)" ;;
     esac
@@ -114,6 +117,10 @@ validate_env_file() {
     [[ "$scheduler" == https://* ]] || die "SCHEDULER_URL must be a routable https:// URL in $file."
     [[ "$interactive" == "1" ]] || die "INTERACTIVE_WORKER_ENABLED=1 is required for an interactive Worker."
     [[ -n "$prefixes" ]] || die "INTERACTIVE_REGISTRY_PREFIXES is required in $file."
+    local require_idle_gpu
+    require_idle_gpu="$($get_cmd INTERACTIVE_REQUIRE_IDLE_GPU)"
+    [[ -z "$require_idle_gpu" || "$require_idle_gpu" == "0" || "$require_idle_gpu" == "1" ]] ||
+        die "INTERACTIVE_REQUIRE_IDLE_GPU must be 0 or 1 in $file."
     [[ "$access_image" =~ ^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]] ||
         die "INTERACTIVE_ACCESS_IMAGE must be an immutable @sha256 digest in $file."
     [[ "$preflight_image" =~ ^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]] ||
@@ -662,6 +669,38 @@ PY
     printf '\nThen recreate/restart the Scheduler API so it reads the updated map.\n'
 }
 
+show_runtime_env() {
+    local pid configured actual
+    [[ -f "$LIVE_ENV" ]] || die "No installed Worker environment at $LIVE_ENV. Run the installer first."
+    [[ "${EUID}" == 0 ]] || die "Run --show-runtime-env with sudo so it can inspect the systemd Worker process."
+
+    # Show only values that are safe to display.  In particular, never print
+    # the service secret or the registry pull token held in its protected file.
+    printf 'Configured in %s:\n' "$LIVE_ENV"
+    for key in INTERACTIVE_WORKER_ENABLED INTERACTIVE_REGISTRY_PREFIXES \
+        INTERACTIVE_REGISTRY_CREDENTIAL_FILE INTERACTIVE_ACCESS_IMAGE \
+        INTERACTIVE_PREFLIGHT_IMAGE; do
+        configured="$(env_get "$key")"
+        printf '  %s=%s\n' "$key" "${configured:-<unset>}"
+    done
+
+    if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+        printf '\n%s is not active, so there is no process environment to inspect.\n' "$SERVICE_NAME"
+        return 0
+    fi
+    pid="$(systemctl show --value --property=MainPID "$SERVICE_NAME")"
+    [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/environ" ]] ||
+        die "Could not read the active systemd Worker process environment."
+    actual="$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^INTERACTIVE_REGISTRY_PREFIXES=//p' | tail -n 1)"
+    configured="$(env_get INTERACTIVE_REGISTRY_PREFIXES)"
+    printf '\nRunning %s (PID %s):\n' "$SERVICE_NAME" "$pid"
+    printf '  INTERACTIVE_REGISTRY_PREFIXES=%s\n' "${actual:-<unset>}"
+    [[ -n "$actual" ]] || die "The active service did not receive INTERACTIVE_REGISTRY_PREFIXES. Rerun the installer and restart the service."
+    [[ "$actual" == "$configured" ]] ||
+        die "The active service has a stale INTERACTIVE_REGISTRY_PREFIXES value. Run: sudo systemctl restart $SERVICE_NAME"
+    log "The active systemd Worker received the configured interactive registry allowlist."
+}
+
 wait_for_worker() {
     local port deadline payload
     port="$(env_get WORKER_API_PORT)"
@@ -684,6 +723,11 @@ if ((SHOW_REGISTRATION)); then
     [[ -f "$LIVE_ENV" ]] || die "No installed Worker identity; run the installer first."
     command -v python3 >/dev/null || die "python3 is required to read the installed identity."
     print_registration
+    exit 0
+fi
+
+if ((SHOW_RUNTIME_ENV)); then
+    show_runtime_env
     exit 0
 fi
 install_base_packages

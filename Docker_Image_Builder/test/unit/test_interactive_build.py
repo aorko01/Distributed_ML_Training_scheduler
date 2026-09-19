@@ -30,11 +30,14 @@ def test_dockerfiles_and_tags():
     base = 'pytorch/pytorch@sha256:' + 'a' * 64
     output = build.dockerfile(source, base, True)
     assert 'COPY project/' in output and 'pip install' in output
+    assert 'USER 10001:10001' in output
     assert 'CMD ' not in output
     assert all(word not in output.lower() for word in ('tailscale', 'openssh', 'sudo', 'docker.sock', 'password', 'token'))
     derived = build.dockerfile(item('EXISTING_JOB'), base, False)
     assert derived.startswith('FROM ' + base)
-    assert all(word not in derived for word in ('COPY', 'RUN', 'WORKDIR', 'CMD'))
+    assert 'COPY' not in derived and 'CMD' not in derived
+    assert 'WORKDIR /workspace' in derived
+    assert 'USER 10001:10001' in derived
     first = build.tag_for(source)
     source['attempt_id'] = str(uuid.uuid4())
     assert build.tag_for(source) != first
@@ -80,7 +83,8 @@ def test_existing_job_resolves_digest_and_pushes():
     def cli(directory, tag, cancel, on_line):
         content = (Path(directory) / 'Dockerfile').read_text()
         assert content.startswith('FROM user/source@sha256:')
-        assert 'RUN ' not in content
+        assert 'COPY ' not in content
+        assert 'USER 10001:10001' in content
         return 0, [], False
     with patch.object(build, 'run_command') as command, patch.object(api, 'log'), patch.object(build, '_run_cancellable_docker_build', side_effect=cli):
         result = build.build(client, source, lambda: False)

@@ -21,6 +21,23 @@ class RuntimeFailure(Exception):
         super().__init__(code)
 
 
+def canonical_registry_reference(value):
+    """Normalize Docker Hub's optional ``docker.io/`` registry prefix.
+
+    Docker Hub accepts both ``owner/image`` and ``docker.io/owner/image``.
+    Image builders commonly return the former in a digest reference, while a
+    Worker allowlist/credential describes the latter.  Canonicalizing before
+    authorization keeps those equivalent spellings from becoming a false
+    UNSUPPORTED_IMAGE/PULL_FAILED result.  Other registries retain their exact
+    host name.
+    """
+    repository = value.split("@", 1)[0]
+    first = repository.split("/", 1)[0]
+    if "." in first or ":" in first or first == "localhost":
+        return value
+    return "docker.io/" + value
+
+
 def labels(record, worker_id, component):
     p = record["payload"]
     common = {
@@ -96,12 +113,13 @@ class DockerOps:
         ref = record["payload"]["image_digest_ref"]
         if not re.fullmatch(r"[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}", ref):
             raise RuntimeFailure("UNSUPPORTED_IMAGE")
+        canonical_ref = canonical_registry_reference(ref)
         allowed = [
-            x.strip().rstrip("/")
+            canonical_registry_reference(x.strip().rstrip("/"))
             for x in os.getenv("INTERACTIVE_REGISTRY_PREFIXES", "").split(",")
             if x.strip()
         ]
-        if not any(ref.startswith(prefix + "/") for prefix in allowed):
+        if not any(canonical_ref.startswith(prefix + "/") for prefix in allowed):
             raise RuntimeFailure("UNSUPPORTED_IMAGE")
         self.authority(record)
         with self.pull_lock:
@@ -121,7 +139,7 @@ class DockerOps:
                     ):
                         raise RuntimeFailure("PULL_FAILED")
                     server = value["server"]
-                    if not ref.startswith(server + "/"):
+                    if not canonical_ref.startswith(server + "/"):
                         raise RuntimeFailure("PULL_FAILED")
                     auth = base64.b64encode(
                         (value["username"] + ":" + value["password"]).encode()
@@ -138,7 +156,7 @@ class DockerOps:
                             "pull",
                             "--platform",
                             record["payload"]["launch_spec"]["platform"],
-                            ref,
+                            canonical_ref,
                         ],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
@@ -160,12 +178,16 @@ class DockerOps:
                 except OSError:
                     raise RuntimeFailure("PULL_FAILED") from None
         self.authority(record)
-        image = self.client.images.get(ref)
+        image = self.client.images.get(canonical_ref)
         attrs = image.attrs
         spec = record["payload"]["launch_spec"]
         config = attrs.get("Config", {})
         if (
-            ref not in attrs.get("RepoDigests", [])
+            canonical_ref
+            not in {
+                canonical_registry_reference(digest)
+                for digest in attrs.get("RepoDigests", [])
+            }
             or attrs.get("Os") + "/" + attrs.get("Architecture") != spec["platform"]
             or config.get("Volumes")
         ):

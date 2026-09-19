@@ -85,9 +85,19 @@ def extract(data, destination):
 def dockerfile(item, base, upload):
     if not REFERENCE.fullmatch(base) or '@sha256:' not in base:
         raise BuildFailure('system')
-    lines = [f'FROM {base}']
+    # A published interactive workload must never inherit an arbitrary image's
+    # root default.  The Worker rejects root workloads before launch, and the
+    # unprivileged account also keeps the mounted workspace writable without
+    # granting runtime container privileges.
+    lines = [f'FROM {base}', 'USER root', 'WORKDIR /workspace']
     if upload:
-        lines += ['WORKDIR /workspace', 'COPY project/ /workspace/', 'RUN pip install --no-cache-dir -r requirements.txt']
+        lines += ['COPY project/ /workspace/', 'RUN pip install --no-cache-dir -r requirements.txt']
+    lines += [
+        'RUN getent group 10001 >/dev/null || groupadd --gid 10001 dml',
+        'RUN id -u 10001 >/dev/null 2>&1 || useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin dml',
+        'RUN chown -R 10001:10001 /workspace',
+        'USER 10001:10001',
+    ]
     # Labels are JSON-quoted, sourced from validated Scheduler data.
     for key, value in {'workspace': item['workspace_id'], 'revision': item['id'], 'origin': item['origin'], 'source-job': item.get('source_job_id') or ''}.items():
         lines.append(f'LABEL io.dml.{key}={json.dumps(value)}')

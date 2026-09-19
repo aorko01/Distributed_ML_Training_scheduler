@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 import base64
 import json
 import pytest
-from interactive.docker_ops import DockerOps, RuntimeFailure
+from interactive.docker_ops import DockerOps, RuntimeFailure, canonical_registry_reference
 from test.unit.test_execution_coordinator import assignment
 
 
@@ -28,6 +28,49 @@ def record():
         },
     }
     return r
+
+
+def test_docker_hub_references_have_one_canonical_form():
+    digest = "sha256:" + "a" * 64
+    assert canonical_registry_reference("aorko123/workspace@" + digest) == (
+        "docker.io/aorko123/workspace@" + digest
+    )
+    assert canonical_registry_reference("docker.io/aorko123/workspace@" + digest) == (
+        "docker.io/aorko123/workspace@" + digest
+    )
+    assert canonical_registry_reference("registry.example/team/workspace@" + digest) == (
+        "registry.example/team/workspace@" + digest
+    )
+
+
+def test_implicit_docker_hub_image_matches_explicit_allowlist_and_credential(monkeypatch, tmp_path):
+    r = record()
+    r["payload"]["image_digest_ref"] = "aorko123/workspace@sha256:" + "a" * 64
+    credential = tmp_path / "registry.json"
+    credential.write_text(json.dumps({"server": "docker.io", "username": "worker", "password": "token"}))
+    credential.chmod(0o600)
+    monkeypatch.setenv("INTERACTIVE_REGISTRY_PREFIXES", "docker.io/aorko123")
+    monkeypatch.setenv("INTERACTIVE_REGISTRY_CREDENTIAL_FILE", str(credential))
+    canonical = canonical_registry_reference(r["payload"]["image_digest_ref"])
+    client = MagicMock()
+    client.images.get.return_value.attrs = {
+        # Docker may report either Docker Hub spelling in RepoDigests.
+        "RepoDigests": [r["payload"]["image_digest_ref"]],
+        "Os": "linux", "Architecture": "amd64",
+        "Config": {"User": "1000", "WorkingDir": "/workspace"},
+    }
+    coordinator = MagicMock()
+    coordinator.authoritative.return_value = True
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.returncode = 0
+    with patch("interactive.docker_ops.subprocess.Popen", return_value=proc) as launch, patch(
+        "interactive.docker_ops.tempfile.TemporaryDirectory"
+    ) as directory, patch("interactive.docker_ops.Path.mkdir"):
+        directory.return_value.__enter__.return_value = str(tmp_path)
+        DockerOps(coordinator, "worker", client).pull(r)
+    assert canonical in launch.call_args.args[0]
+    client.images.get.assert_called_once_with(canonical)
 
 
 @pytest.mark.parametrize(

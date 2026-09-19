@@ -423,11 +423,16 @@ Access entrypoint (`AccessContainer/access-entrypoint.sh`):
    PermitRootLogin no
    AllowUsers sandbox
    ForceCommand /usr/local/bin/enter-env.sh
-   Subsystem sftp /usr/lib/openssh/sftp-server
    AllowTcpForwarding yes
    X11Forwarding no
    PermitTunnel no
    ```
+   Debian's main `/etc/ssh/sshd_config` already declares the `sftp`
+   subsystem. Do not repeat `Subsystem sftp` in this drop-in: OpenSSH treats a
+   second declaration as a fatal configuration error and exits with status
+   255. `ForceCommand` still receives subsystem requests and exposes the
+   requested command through `SSH_ORIGINAL_COMMAND`, so `enter-env.sh` can
+   continue proxying SFTP into the environment container.
 6. `echo "Tailscale IP: $(tailscale ip -4)"` — **worker scrapes this**.
 7. `exec /usr/sbin/sshd -D -e`.
 
@@ -481,7 +486,9 @@ Files: `gateway/ssh_server.py` (paramiko `ServerInterface`), `session_client.py`
 
 - `_proxy_shell`: `session_client.connect(session_id, headscale_ip)` (private key `<SSH_KEY_DIR>/<sid>`, `AutoAddPolicy` — container host keys ephemeral, blind trust for MVP, `SSH_CONNECT_TIMEOUT=10`). If client asked PTY (`gateway_pty`), `get_pty(term,w,h)` + `invoke_shell()`; else `invoke_shell()` without PTY so piped input isn’t echoed (VS Code install). Then proxy; propagate exit status (10s deadline).
 - `_proxy_exec(command)`: `open_session()` + `exec_command(command)` on container, proxy, propagate status. Used by VS Code OS detection, `ssh host "cmd"`, `scp -t` (scp is exec under the hood).
-- `_proxy_subsystem(name)`: `invoke_subsystem(name)` (sftp). Requires access `Subsystem sftp` + env `sftp-server` binary (§8, §12).
+- `_proxy_subsystem(name)`: `invoke_subsystem(name)` (sftp). Uses the access
+  image's single distro-provided `Subsystem sftp` declaration and requires the
+  env `sftp-server` binary (§8, §12).
 - `_proxy_direct_tcpip(origin, destination)`: `open_channel("direct-tcpip", (dest_host,dest_port), origin)` on container transport, proxy. `ssh -L 8888:localhost:8888` → client opens direct-tcpip `localhost:8888` to gateway; gateway dials same from access (shared netns → env’s Jupyter). `check_channel_direct_tcpip_request` appends FIFO and returns `OPEN_SUCCEEDED`; `check_port_forward_request` allows `-R`; `check_channel_env_request` allows `SendEnv LANG/...`.
 
 `session_client.execute_command` (for `POST /connect` API) + `close` helpers round out the module.
@@ -720,7 +727,7 @@ Gateway (`ssh_server.py`) + access `sshd_config` + `enter-env.sh` must agree:
 |---|---|---|---|---|
 | Interactive terminal | `session` + `pty` + `shell` | `_proxy_shell` (PTY iff client asked) | `ForceCommand` | no `SSH_ORIGINAL_COMMAND` → `bash -l` |
 | `ssh host "cmd"`, VS Code probe, `scp -t` | `session` + `exec "cmd"` | `_proxy_exec` (`exec_command`) | `ForceCommand` (ignores, runs script) | `sh -c "$SSH_ORIGINAL_COMMAND"`, propagate exit status |
-| SFTP / VS Code sync | `session` + `subsystem sftp` | `_proxy_subsystem` (`invoke_subsystem`) | `Subsystem sftp` + `ForceCommand` | `*sftp-server*` → `exec sftp-server` in env mnt ns |
+| SFTP / VS Code sync | `session` + `subsystem sftp` | `_proxy_subsystem` (`invoke_subsystem`) | Distro-provided `Subsystem sftp` + `ForceCommand` | `*sftp-server*` → `exec sftp-server` in env mnt ns |
 | `ssh -L 8888:localhost:8888` | `direct-tcpip localhost:8888` | `_proxy_direct_tcpip` (`open_channel direct-tcpip` to container) | `AllowTcpForwarding yes` | N/A (TCP, not shell; shared netns makes `localhost` == env) |
 | `SendEnv LANG` | `env` | `check_channel_env_request → True` | `AcceptEnv` default | `LANG` backfilled if unset |
 
@@ -831,7 +838,7 @@ Stop/commit via heartbeat (Worker/main.py:41, Scheduler worker_route.py:28)
 
 - `PermissionError: /root/.cache/huggingface/token` (should be gone; if on old session): `export HF_HOME=/tmp/huggingface HF_HUB_CACHE=/tmp/huggingface/hub ...; mkdir -p $HF_HOME` or `rm -f /root/.cache/huggingface/token`. Diagnose: `id; echo $HOME; ls -ld /root; ls -l .../token`.
 - `ssh host "cmd"` runs shell not cmd: old access image without `SSH_ORIGINAL_COMMAND` support — rebuild access image.
-- `sftp: subsystem request failed`: old env without `openssh-sftp-server` — runtime installer should fix; check `ls /usr/lib/openssh/sftp-server` in env, `Subsystem sftp` in access.
+- `sftp: subsystem request failed`: old env without `openssh-sftp-server` — runtime installer should fix; check `ls /usr/lib/openssh/sftp-server` in env and verify there is exactly one `Subsystem sftp` declaration in the access image.
 - `ssh -L` hangs: old gateway without `direct-tcpip` or old access without shared netns — need both; check `AllowTcpForwarding yes` + shared `--network`.
 - `DataLoader worker exited unexpectedly / shm`: needs `--shm-size=8g` (now default); check `df -h /dev/shm`.
 - `No Tailscale IP`: `docker logs interactive-<sid>-access`, check `HEADSCALE_URL/AUTHKEY`, `tailscaled.sock`, pre-auth expiry (3600s).
@@ -875,4 +882,3 @@ To harden later:
 - Per-session persistent home volume (instead of `777`), `600` tokens with correct ownership (instead of `644`), short-lived non-reusable pre-auth keys, `StrictHostKeyChecking` with pinned host keys (instead of ephemeral + AutoAdd).
 - NetworkPolicy: tailnet ACLs per session/user, egress allowlist for training (HF, PyPI, GitHub) instead of full internet.
 - Audit: ship `enter-env` + `sshd` logs, preserve `bash_history` on commit scrubbed of secrets.
-

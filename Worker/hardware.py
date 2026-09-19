@@ -252,7 +252,14 @@ def collect_node_info() -> dict:
     }
 
 def execution_inventory(coordinator,interactive_ready=False,quota_supported=False,available_slots=2):
-    """Fresh physical GPU/process inventory, unknown data always fails closed."""
+    """Fresh GPU inventory used for Scheduler assignment decisions.
+
+    Scheduler-owned assignments always reserve a Worker exclusively.  By
+    default, desktop/display VRAM and unrelated host GPU activity do not block
+    an interactive assignment; the interactive image's requested resources are
+    enforced at launch time.  Set INTERACTIVE_REQUIRE_IDLE_GPU=1 to restore the
+    previous conservative host-activity gate.
+    """
     import time
     import subprocess
     import xml.etree.ElementTree as ET
@@ -261,14 +268,25 @@ def execution_inventory(coordinator,interactive_ready=False,quota_supported=Fals
     try:
         raw = subprocess.run(['nvidia-smi','-q','-x'],capture_output=True,timeout=3,check=True).stdout
         tree = ET.fromstring(raw)
+        require_idle_gpu = os.getenv('INTERACTIVE_REQUIRE_IDLE_GPU', '0').strip() == '1'
         for gpu in tree.findall('gpu'):
-            processes = []
+            observed_processes = []
             for process in gpu.findall('processes/process_info'):
-                processes.append(int(process.findtext('pid')))
+                observed_processes.append(int(process.findtext('pid')))
             total = float(gpu.findtext('fb_memory_usage/total').split()[0])/1024
             used = float(gpu.findtext('fb_memory_usage/used').split()[0])
             utilization = float(gpu.findtext('utilization/gpu_util').split()[0])
-            busy = bool(processes) or used > float(os.getenv('INTERACTIVE_GPU_BASELINE_MB','64')) or utilization > float(os.getenv('INTERACTIVE_GPU_BUSY_PERCENT','1'))
+            # Display servers commonly appear in nvidia-smi and consume a small
+            # amount of VRAM.  They are not Scheduler assignments and must not
+            # hold an otherwise idle Worker in QUEUED state.  Keep the old
+            # process/VRAM/utilisation gate as an explicit opt-in for dedicated
+            # headless Workers.
+            processes = observed_processes if require_idle_gpu else []
+            busy = require_idle_gpu and (
+                bool(observed_processes)
+                or used > float(os.getenv('INTERACTIVE_GPU_BASELINE_MB','64'))
+                or utilization > float(os.getenv('INTERACTIVE_GPU_BUSY_PERCENT','1'))
+            )
             gpus.append({'uuid':gpu.findtext('uuid'),'model':gpu.findtext('product_name'),'memory_gb':total,
                          'busy':busy,'processes':processes})
         complete = bool(gpus) and all(g['uuid'].startswith('GPU-') for g in gpus)

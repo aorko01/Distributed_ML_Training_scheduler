@@ -267,3 +267,46 @@ class TestCollectNodeInfo:
             "mem_usage": 20.0, "cpu_cores": 8, "total_ram": 32.0,
             "total_disk": 500.0, "available_disk": 250.0,
         }
+
+
+class TestExecutionInventory:
+    _gpu_xml = b"""<nvidia_smi_log><gpu>
+      <uuid>GPU-test</uuid><product_name>NVIDIA Test</product_name>
+      <fb_memory_usage><total>12288 MiB</total><used>500 MiB</used></fb_memory_usage>
+      <utilization><gpu_util>25 %</gpu_util></utilization>
+      <processes><process_info><pid>1234</pid></process_info></processes>
+    </gpu></nvidia_smi_log>"""
+
+    @staticmethod
+    def _inventory(monkeypatch):
+        coordinator = SimpleNamespace(mode="AVAILABLE", records=lambda: [])
+        result = SimpleNamespace(stdout=TestExecutionInventory._gpu_xml)
+        memory = SimpleNamespace(available=16 * 1024**3)
+        with (
+            patch.object(hardware.subprocess, "run", return_value=result),
+            patch.object(hardware, "get_gpu_info", return_value=("NVIDIA Test", 12, 11, 1, 0)),
+            patch.object(hardware, "collect_node_info", return_value={
+                "hostname": "host", "ip_address": "127.0.0.1", "cpu_load": 0,
+                "mem_usage": 0, "cpu_cores": 8, "total_ram": 16,
+                "total_disk": 100, "available_disk": 80,
+            }),
+            patch.object(hardware, "count_gpus_in_use", return_value=1),
+            patch.object(hardware.psutil, "virtual_memory", return_value=memory),
+        ):
+            return hardware.execution_inventory(
+                coordinator, interactive_ready=True, quota_supported=True
+            )
+
+    def test_default_ignores_host_gpu_activity_for_interactive_admission(self, monkeypatch):
+        monkeypatch.delenv("INTERACTIVE_REQUIRE_IDLE_GPU", raising=False)
+        inventory = self._inventory(monkeypatch)
+        assert inventory["gpus"] == [{
+            "uuid": "GPU-test", "model": "NVIDIA Test", "memory_gb": 12.0,
+            "busy": False, "processes": [],
+        }]
+
+    def test_strict_gpu_idle_mode_reports_host_gpu_activity(self, monkeypatch):
+        monkeypatch.setenv("INTERACTIVE_REQUIRE_IDLE_GPU", "1")
+        inventory = self._inventory(monkeypatch)
+        assert inventory["gpus"][0]["busy"] is True
+        assert inventory["gpus"][0]["processes"] == [1234]
