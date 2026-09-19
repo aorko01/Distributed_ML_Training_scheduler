@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 import zipfile
-from config import DOCKER_HUB_USERNAME
+from config import DOCKER_HUB_USERNAME, logger
 from database import record_interactive_attempt
 import interactive_api as api
 from docker_ops import _run_cancellable_docker_build, _get_build_lock, _remove_local_image, _terminate_process, _is_auth_error, _is_transient_build_error
@@ -183,6 +183,7 @@ def build(client, item, cancel):
         try:
             check(cancel)
             api.log(item, 'Building workload image')
+            logger.info("Building interactive image %s ...", tag)
             code, raw, cancelled = _run_cancellable_docker_build(str(root), tag, cancel, lambda line: None)
             if cancelled:
                 raise Cancelled()
@@ -193,6 +194,7 @@ def build(client, item, cancel):
             lock.release()
         check(cancel)
         api.log(item, 'Pushing workload image')
+        logger.info("Pushing interactive image %s ...", tag)
         run_command(['push', tag], cancel)
         check(cancel)
         digest = client.images.get_registry_data(tag).attrs['Descriptor']['digest']
@@ -206,6 +208,11 @@ def process(client, item, registry):
     attempt = item['attempt_id']
     registry.register(item['id'], attempt)
     cancel = lambda: registry.should_cancel(attempt)
+    logger.info("=" * 50)
+    logger.info(
+        "Processing interactive revision: %s (workspace %s, attempt %s, origin %s)",
+        item['id'], item.get('workspace_id'), attempt, item.get('origin'),
+    )
     try:
         record_interactive_attempt(item['id'], attempt, tag_for(item))
         result = build(client, item, cancel)
@@ -213,11 +220,23 @@ def process(client, item, registry):
         check(cancel)
         api.request('ready', {**api.attempt(item), **result})
         record_interactive_attempt(item['id'], attempt, result['image_tag'], result['image_digest_ref'], accepted=True)
+        logger.info(
+            "Interactive revision %s completed: %s (%s)",
+            item['id'], result['image_tag'], result['image_digest_ref'],
+        )
         _remove_local_image(client, result['image_tag'])
     except Cancelled:
+        logger.warning(
+            "Cancelled interactive revision %s (attempt %s).",
+            item['id'], attempt,
+        )
         _remove_local_image(client, tag_for(item))
     except Exception as exc:
         kind = exc.kind if isinstance(exc, BuildFailure) else 'system'
+        logger.error(
+            "Interactive revision %s failed (%s): %s",
+            item['id'], kind, exc, exc_info=True,
+        )
         if not cancel():
             try:
                 api.log(item, 'Build failed')
