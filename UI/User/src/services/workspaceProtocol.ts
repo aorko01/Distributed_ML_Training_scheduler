@@ -23,7 +23,7 @@ export class WorkspaceConnection {
     this.socket = new WebSocket(this.grant.wss_url); this.socket.binaryType = 'arraybuffer';
     this.socket.onopen = () => this.socket.send(JSON.stringify({ type: 'authenticate', ticket: this.grant.ticket }));
     this.socket.onerror = () => this.close(new Error('Workspace connection failed'));
-    this.socket.onclose = () => this.close(new Error('Workspace disconnected'));
+    this.socket.onclose = (event: CloseEvent) => this.close(new Error(`Workspace disconnected (code ${event?.code ?? 1006})`));
     this.socket.onmessage = event => { try { if (typeof event.data === 'string') { const gateway = JSON.parse(event.data); if (gateway.type !== 'ready' || gateway.protocol !== 'tcp-stream-v1') throw new Error('Gateway protocol error'); this.send(WorkspaceType.HELLO, json({ protocol: 'workspace-stream-v1' })); return; } this.feed(new Uint8Array(event.data)); } catch (error) { this.close(error instanceof Error ? error : new Error('Workspace protocol error')); } };
     await this.ready;
   }

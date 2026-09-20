@@ -99,9 +99,14 @@ export function verifyConnection(grant: ConnectionGrant, signal: AbortSignal,
     signal.addEventListener('abort', abort, { once: true });
     socket.onopen = () => { socket.send(JSON.stringify({ type: 'authenticate', ticket: grant.ticket })); };
     socket.onerror = () => finish(new Error('Gateway connection failed'));
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      // Surface the WebSocket close code: the gateway distinguishes 4401
+      // ticket, 4403 origin, 4408 auth-timeout, 4410 revoked/expired, 1011
+      // transport and 1013 capacity, and the code is the only signal that
+      // tells those apart after the socket is gone.
+      const code = typeof event?.code === 'number' ? event.code : 1006;
       try { parser.eof(); } catch { finish(new Error('Connection protocol error')); return; }
-      finish(new Error('Gateway closed the connection'));
+      finish(new Error(`Gateway closed the connection (code ${code})`));
     };
     socket.onmessage = event => {
       try {

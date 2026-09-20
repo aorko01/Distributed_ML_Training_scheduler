@@ -93,14 +93,20 @@ def create_app(settings=None, management=None, dialer=None, local=None, backgrou
     async def connect(websocket: WebSocket, resource_id: str, service: str):
         configured = app.state.settings
         origin = websocket.headers.get("origin")
+        started = time.monotonic()
         if websocket.query_params or (origin is None and not configured.allow_cli) or (origin is not None and origin not in configured.origins):
+            # This pre-authentication reject carries no session, ticket or key
+            # material; log the outcome like every other close so a silent
+            # 4403 (origin/query mismatch) stays diagnosable from the log.
+            reason = "query" if websocket.query_params else "origin"
             await websocket.close(code=4403)
+            logger.info("connection session=None outcome=4403 reason=%s duration=%.3f sent=0 received=0",
+                        reason, time.monotonic() - started)
             return
         capacity = app.state.capacity
         auth_reserved = reserved = False
         record = writer = None
         code, counts = 1000, {"sent": 0, "received": 0}
-        started = time.monotonic()
         try:
             await capacity.begin_auth()
             auth_reserved = True

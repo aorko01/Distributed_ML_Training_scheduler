@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import replace
 import json
+import logging
 import time
 from types import SimpleNamespace
 from uuid import uuid4
@@ -108,6 +109,24 @@ def test_rejection_never_dials_and_capacity_released(system, case):
         assert dialer.calls == []
         assert app.state.capacity.unauthenticated == 0
         assert app.state.capacity.active == {}
+
+
+@pytest.mark.parametrize("case,reason", [("origin", "origin"), ("query", "query")])
+def test_pre_auth_reject_is_logged_with_outcome(system, case, reason, caplog):
+    # The pre-authentication 4403 previously closed silently, hiding
+    # origin/query mismatches from the gateway log.
+    management, dialer = Management(system), Dialer()
+    app = create_app(system.settings, management, dialer, Local(), background=False)
+    with caplog.at_level(logging.INFO, logger="interactive_gateway.main"):
+        with TestClient(app) as client:
+            with pytest.raises(WebSocketDisconnect):
+                url = "/v1/connect/resource-a/echo"
+                if case == "query":
+                    url += "?ticket=secret"
+                with client.websocket_connect(url, headers={"Origin": "https://evil.example"} if case == "origin" else {}) as ws:
+                    ws.receive_json()
+    assert "session=None" in caplog.text
+    assert "outcome=4403" in caplog.text and f"reason={reason}" in caplog.text
 
 
 def test_dial_failure_releases_claim_and_capacity(system):
