@@ -104,6 +104,7 @@ FailureCode = Literal[
     "LEASE_LOST",
     "INTERRUPTED",
     "LOCAL_CONFLICT",
+    "TIME_UP",
 ]
 
 

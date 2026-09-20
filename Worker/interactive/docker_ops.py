@@ -380,8 +380,14 @@ class DockerOps:
     def cleanup(self, record):
         # Keep failed interactive runtimes for debugging unless the operator
         # opted into removal via INTERACTIVE_CLEANUP_ON_FAILURE=1. Successful
-        # assignments (no runtime_failure_code) are always cleaned up.
-        if record.get("runtime_failure_code") and not cleanup_on_failure():
+        # assignments (no runtime_failure_code) are always cleaned up, as are
+        # expected TIME_UP expiries: the 10-minute cap is not a debuggable
+        # failure and the containers must be killed on time up.
+        if (
+            record.get("runtime_failure_code")
+            not in (None, "", "TIME_UP")
+            and not cleanup_on_failure()
+        ):
             logger.warning(
                 "Keeping failed interactive containers for debugging "
                 "assignment_id=%s code=%s "

@@ -317,15 +317,25 @@ def fence(db, worker_id, body, cleanup=False):
     return worker, assignment
 
 
-def stop_runtime(runtime, code=None):
+TIME_UP_DETAIL = (
+    "Interactive time limit reached; runtime stopped after time up."
+)
+
+
+def stop_runtime(runtime, code=None, detail=None):
     runtime.desired_state = "STOPPED"
     if runtime.state not in ("STOPPED", "FAILED"):
         runtime.state = "STOPPING"
     if code and not runtime.failure_code:
-        runtime.failure_code, runtime.failure_detail = (
-            code,
-            "Runtime stopped; start a new runtime after cleanup.",
-        )
+        if detail:
+            runtime.failure_code, runtime.failure_detail = code, detail[:256]
+        elif code == "TIME_UP":
+            runtime.failure_code, runtime.failure_detail = code, TIME_UP_DETAIL
+        else:
+            runtime.failure_code, runtime.failure_detail = (
+                code,
+                "Runtime stopped; start a new runtime after cleanup.",
+            )
 
 
 def _apply_inventory_metrics(worker, inventory):
@@ -440,7 +450,7 @@ def heartbeat(db, worker_id, body, settings=None):
                 runtime.lifetime_deadline
                 and utc(runtime.lifetime_deadline) <= timestamp
             ):
-                stop_runtime(runtime)
+                stop_runtime(runtime, "TIME_UP")
             valid = valid and runtime.desired_state == "RUNNING"
             if valid:
                 runtime.health, runtime.health_at = (

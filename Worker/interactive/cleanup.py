@@ -24,8 +24,13 @@ def sweep(state_dir, worker_id, force=False):
         if record.get("released"):
             continue
         # Keep failed interactive runtimes for debugging unless the operator
-        # opted into removal via INTERACTIVE_CLEANUP_ON_FAILURE=1.
-        if record.get("runtime_failure_code") and not cleanup_on_failure():
+        # opted into removal via INTERACTIVE_CLEANUP_ON_FAILURE=1. TIME_UP is
+        # an expected expiry, not a failure: always sweep its containers.
+        if record.get("runtime_failure_code") not in (
+            None,
+            "",
+            "TIME_UP",
+        ) and not cleanup_on_failure():
             continue
         expired = (
             record.get("boot_id") != boot_id

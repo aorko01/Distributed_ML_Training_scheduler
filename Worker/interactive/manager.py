@@ -24,6 +24,50 @@ from .failure_diagnostics import (
 
 logger = logging.getLogger("managed_worker")
 
+#: Default interactive session cap (10 minutes). Overridable via
+#: ``INTERACTIVE_MAX_DURATION_SECONDS`` in the Worker ``.env``. Read on every
+#: check (not cached at import) so a lowered value applies to running
+#: runtimes without a Worker restart. ``0`` disables the local cap (the
+#: Scheduler ``INTERACTIVE_LIFETIME_SECONDS`` deadline still applies).
+DEFAULT_MAX_DURATION_SECONDS = 600
+
+
+def max_duration_seconds() -> int:
+    try:
+        value = int(os.getenv("INTERACTIVE_MAX_DURATION_SECONDS", str(DEFAULT_MAX_DURATION_SECONDS)))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_DURATION_SECONDS
+    return value if value > 0 else 0
+
+
+def time_up_detail(limit_seconds: int) -> str:
+    minutes = max(1, round(limit_seconds / 60))
+    return (
+        "Interactive session time up after %d minute(s); "
+        "containers stopped." % minutes
+    )[:256]
+
+
+def notify_time_up(workload_container, limit_seconds: int) -> None:
+    """Best-effort wall broadcast so live PTY users see why they disconnect.
+
+    Killing the containers alone drops the connection silently; a short
+    ``wall`` message gives the user an explicit time-up notice first.
+    Never raises.
+    """
+    if workload_container is None:
+        return
+    try:
+        message = "Interactive session time up after %d minute(s); closing connection." % max(
+            1, round(limit_seconds / 60)
+        )
+        workload_container.exec_run(
+            ["sh", "-c", "echo %s | wall 2>/dev/null || true" % repr(message)],
+            demux=False,
+        )
+    except Exception:
+        pass
+
 
 class Manager:
     def __init__(self, coordinator, api, ops):
@@ -59,6 +103,7 @@ class Manager:
         root = Path("/run/dml-interactive") / assignment_id
         endpoint_dir = Path("/run/dml-interactive-endpoints") / assignment_id
         stage = "reserve"
+        workload = None
         try:
             root.mkdir(mode=0o750, parents=True, exist_ok=False)
             os.chown(root, 0, 10001)
@@ -202,7 +247,23 @@ class Manager:
             )
             self.coordinator.mode = "INTERACTIVE_ACTIVE"
             stage = "healthy"
+            session_start = time.monotonic()
             while authority():
+                limit = max_duration_seconds()
+                if limit and time.monotonic() - session_start >= limit:
+                    logger.warning(
+                        "Interactive runtime time up assignment_id=%s limit=%ds",
+                        assignment_id,
+                        limit,
+                    )
+                    with suppress(Exception):
+                        await asyncio.to_thread(
+                            notify_time_up, workload, limit
+                        )
+                    # Brief grace so live PTY users receive the wall
+                    # broadcast / disconnect reason before containers stop.
+                    await asyncio.sleep(2)
+                    raise RuntimeFailure("TIME_UP")
                 healthy = (
                     await asyncio.to_thread(self.broker.healthy)
                     and await backend_health()
@@ -219,43 +280,60 @@ class Manager:
                 await asyncio.sleep(1)
         except Exception as exc:
             code = exc.code if isinstance(exc, RuntimeFailure) else "START_FAILED"
-            # Snapshot container logs/inspect to the state dir before STOPPING
-            # and cleanup. Containers alone are weak evidence: a later prune
-            # or INTERACTIVE_CLEANUP_ON_FAILURE=1 removes them, and the
-            # /run/dml-interactive dir is always deleted below.
-            try:
-                journaled = self.coordinator.get(assignment_id)
-            except Exception:
-                journaled = {"assignment_id": assignment_id, "containers": {}}
-            diagnostics = await asyncio.to_thread(
-                collect_failure_diagnostics,
-                journaled,
-                self.ops.client,
-                getattr(self.coordinator, "path", None),
-                stage,
-                code,
-            )
-            detail = short_detail(stage, diagnostics)
-            # Persist before the event request. Cleanup carries the same fenced
-            # code so a transient callback failure cannot downgrade a failed
-            # runtime to an ordinary stop.
-            record = self.coordinator.update(
-                assignment_id,
-                runtime_failure_code=code,
-                runtime_failure_stage=stage,
-                runtime_failure_detail=detail,
-            )
-            logger.error(
-                "Interactive runtime failed assignment_id=%s stage=%s code=%s "
-                "detail=%s diagnostics=%s",
-                assignment_id,
-                stage,
-                code,
-                detail,
-                diagnostics.get("dump_dir")
-                or dump_dir(getattr(self.coordinator, "path", "?"), assignment_id),
-                exc_info=True,
-            )
+            if code == "TIME_UP":
+                limit = max_duration_seconds() or DEFAULT_MAX_DURATION_SECONDS
+                detail = time_up_detail(limit)
+                diagnostics = {"dump_dir": None}
+                record = self.coordinator.update(
+                    assignment_id,
+                    runtime_failure_code=code,
+                    runtime_failure_stage=stage,
+                    runtime_failure_detail=detail,
+                )
+                logger.warning(
+                    "Interactive runtime time up assignment_id=%s stage=%s detail=%s",
+                    assignment_id,
+                    stage,
+                    detail,
+                )
+            else:
+                # Snapshot container logs/inspect to the state dir before STOPPING
+                # and cleanup. Containers alone are weak evidence: a later prune
+                # or INTERACTIVE_CLEANUP_ON_FAILURE=1 removes them, and the
+                # /run/dml-interactive dir is always deleted below.
+                try:
+                    journaled = self.coordinator.get(assignment_id)
+                except Exception:
+                    journaled = {"assignment_id": assignment_id, "containers": {}}
+                diagnostics = await asyncio.to_thread(
+                    collect_failure_diagnostics,
+                    journaled,
+                    self.ops.client,
+                    getattr(self.coordinator, "path", None),
+                    stage,
+                    code,
+                )
+                detail = short_detail(stage, diagnostics)
+                # Persist before the event request. Cleanup carries the same fenced
+                # code so a transient callback failure cannot downgrade a failed
+                # runtime to an ordinary stop.
+                record = self.coordinator.update(
+                    assignment_id,
+                    runtime_failure_code=code,
+                    runtime_failure_stage=stage,
+                    runtime_failure_detail=detail,
+                )
+                logger.error(
+                    "Interactive runtime failed assignment_id=%s stage=%s code=%s "
+                    "detail=%s diagnostics=%s",
+                    assignment_id,
+                    stage,
+                    code,
+                    detail,
+                    diagnostics.get("dump_dir")
+                    or dump_dir(getattr(self.coordinator, "path", "?"), assignment_id),
+                    exc_info=True,
+                )
             with suppress(Exception):
                 record = await asyncio.to_thread(
                     self.progress, record, "STOPPING", {}, code
