@@ -547,6 +547,34 @@ def test_enrolled_outage_never_releases_host(db, monkeypatch):
     )
 
 
+def test_stop_with_already_revoked_enrollment_releases_without_redelete(
+    db, monkeypatch
+):
+    # Regression: DELETE re-arms REVOKING, so deny-then-check could never
+    # observe the background finalizer's REVOKED and livelocked with
+    # management_revoked False (blocking release and every later claim).
+    from app.services import interactive_controller as controller
+
+    owner = make_user(db)
+    w = worker(db)
+    _, runtime = workspace(db, owner.user_id, monkeypatch)
+    assigned = pull(db, w)
+    runtime.enrollment_started = True
+    runtime.enrollment_id = "exact-enrollment"
+    db.commit()
+    runtimes.stop(db, owner.user_id, runtime.id)
+    claims.cleanup(db, w.worker_id, fence(assigned))
+
+    class Revoked:
+        def call(self, method, path, body=None):
+            assert method == "GET", "already-revoked enrollment must not be re-denied"
+            return {"state": "REVOKED"}
+
+    assert controller.reconcile_one(db, Revoked())
+    assert runtime.management_revoked
+    assert db.get(Assignment, assigned["assignment_id"]).released_at
+
+
 def test_bootstrap_persists_id_and_does_not_store_key(db, monkeypatch):
     from app.services import interactive_controller as controller
 

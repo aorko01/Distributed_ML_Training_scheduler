@@ -179,13 +179,20 @@ def reconcile_one(db, management):
             if not enrollment_started:
                 revoked = True
             elif enrollment:
-                try:
-                    management.call("DELETE", "resources/" + resource)
-                except HTTPException as exc:
-                    if exc.status_code != 404:
-                        raise
-                management.call("DELETE", "enrollments/" + enrollment)
+                # Check status BEFORE issuing deletes: DELETE re-arms REVOKING,
+                # so a deny-then-check sequence can never observe the
+                # background finalizer's REVOKED and livelocks with
+                # management_revoked stuck False (blocking release and every
+                # later claim). Only deny when not yet revoked.
                 status = management.call("GET", "enrollments/" + enrollment)
+                if status["state"] not in ("REVOKED", "EXPIRED"):
+                    try:
+                        management.call("DELETE", "resources/" + resource)
+                    except HTTPException as exc:
+                        if exc.status_code != 404:
+                            raise
+                    management.call("DELETE", "enrollments/" + enrollment)
+                    status = management.call("GET", "enrollments/" + enrollment)
                 revoked = status["state"] in ("REVOKED", "EXPIRED")
             else:
                 # Enrollment may have succeeded before Scheduler persisted its ID.
