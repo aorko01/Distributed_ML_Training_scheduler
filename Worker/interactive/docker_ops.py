@@ -14,6 +14,26 @@ from scheduler_protocol import protected_file
 LABEL = "dml.assignment"
 TAILSCALE = "tailscale/tailscale:v1.102.3@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680"
 
+import logging
+
+logger = logging.getLogger("docker_ops")
+
+
+def cleanup_on_failure() -> bool:
+    """True when failed interactive containers should be removed.
+
+    Opt-in via ``INTERACTIVE_CLEANUP_ON_FAILURE=1`` (also accepts
+    ``true``/``yes``). When unset/``0``/``false`` the worker keeps failed
+    interactive containers (workload/sidecar/access) stopped but present
+    so operators can ``docker logs``/``docker inspect`` them for debugging.
+    Successful assignments are always cleaned up regardless of this flag.
+    """
+    return os.getenv("INTERACTIVE_CLEANUP_ON_FAILURE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
 
 class RuntimeFailure(Exception):
     def __init__(self, code):
@@ -234,7 +254,18 @@ class DockerOps:
             c.start()
             self.authority(record)
         except Exception:
-            self.remove_exact(record, c.id)
+            # A start/lease failure leaves a failed container behind. Keep it
+            # for debugging unless INTERACTIVE_CLEANUP_ON_FAILURE is set; the
+            # Manager's finally-block cleanup honors the same flag.
+            if cleanup_on_failure():
+                self.remove_exact(record, c.id)
+            else:
+                logger.warning(
+                    "Keeping failed %s container %s for debugging "
+                    "(INTERACTIVE_CLEANUP_ON_FAILURE not set)",
+                    component,
+                    c.id,
+                )
             raise
         return c
 
@@ -347,6 +378,18 @@ class DockerOps:
         raise RuntimeFailure("START_FAILED")
 
     def cleanup(self, record):
+        # Keep failed interactive runtimes for debugging unless the operator
+        # opted into removal via INTERACTIVE_CLEANUP_ON_FAILURE=1. Successful
+        # assignments (no runtime_failure_code) are always cleaned up.
+        if record.get("runtime_failure_code") and not cleanup_on_failure():
+            logger.warning(
+                "Keeping failed interactive containers for debugging "
+                "assignment_id=%s code=%s "
+                "(set INTERACTIVE_CLEANUP_ON_FAILURE=1 to remove automatically)",
+                record.get("assignment_id"),
+                record.get("runtime_failure_code"),
+            )
+            return
         # Exact assignment selectors recover create-before-journal crash windows.
         objects = self.client.containers.list(
             all=True,

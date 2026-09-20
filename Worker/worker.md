@@ -106,6 +106,12 @@ Set `SCHEDULER_URL` environment variable. Optional:
 - `OBJECT_OUTPUT_BUCKET`: Output bucket name
 - `DOCKER_HUB_USERNAME`: Docker registry credentials
 - Log upload/push intervals
+- `INTERACTIVE_CLEANUP_ON_FAILURE`: when `1`/`true`/`yes`, failed interactive
+  containers (workload/sidecar/access) are removed automatically. When unset/`0`
+  (default) they are kept stopped but present for `docker logs`/`docker inspect`
+  debugging. Successful assignments are always cleaned up. List kept containers
+  with `docker ps -a --filter label=dml.assignment=<assignment-id>` and remove
+  them manually with `docker rm -f <container-id>`.
 
 ## Requirements
 - Python 3.x

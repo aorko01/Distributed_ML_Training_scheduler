@@ -17,9 +17,15 @@ def sweep(state_dir, worker_id, force=False):
     client = docker.from_env(timeout=5)
     with sqlite3.connect(path, timeout=5) as db:
         rows = list(db.execute("SELECT id,data FROM journal"))
+    from .docker_ops import cleanup_on_failure
+
     for assignment_id, data in rows:
         record = json.loads(data)
         if record.get("released"):
+            continue
+        # Keep failed interactive runtimes for debugging unless the operator
+        # opted into removal via INTERACTIVE_CLEANUP_ON_FAILURE=1.
+        if record.get("runtime_failure_code") and not cleanup_on_failure():
             continue
         expired = (
             record.get("boot_id") != boot_id
