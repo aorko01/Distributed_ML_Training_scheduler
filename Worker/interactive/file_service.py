@@ -6,8 +6,12 @@ uses descriptor-relative, no-follow syscalls, so a terminal-created symlink
 cannot turn a file operation into a Worker-host operation.
 """
 import json
+import logging
 import socket
 import textwrap
+
+
+logger = logging.getLogger("file_service")
 
 
 MAX_TEXT = 2 * 1024 * 1024
@@ -67,7 +71,7 @@ def check_version(fd,name,expected):
 def out(value): print(json.dumps({'ok':True,**value},separators=(',',':'),ensure_ascii=False))
 try: req=json.load(sys.stdin)
 except Exception: fail('PROTOCOL_ERROR')
-if not isinstance(req,dict) or set(req)-{'operation','path','target','expected_version','content','cursor'}: fail('PROTOCOL_ERROR')
+if not isinstance(req,dict) or set(req)-{'operation','root','path','target','expected_version','content','cursor'}: fail('PROTOCOL_ERROR')
 op=req.get('operation'); root=req.get('root')
 if not isinstance(root,str): fail('PROTOCOL_ERROR')
 r=rootfd(root)
@@ -182,7 +186,8 @@ class FileService:
                 workdir="/",
             )["Id"]
             stream = self.client.api.exec_start(created, socket=True, tty=False)
-            raw = stream._sock
+            stream_sock = getattr(stream, "_sock", stream)
+            raw = getattr(stream_sock, "_sock", stream_sock)
             raw.sendall(payload)
             raw.shutdown(socket.SHUT_WR)
             output = bytearray()
@@ -212,13 +217,21 @@ class FileService:
             stream.close()
             output = bytes(output)
             inspected = self.client.api.exec_inspect(created)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "FileService exec failed operation=%s container=%.12s: %r",
+                operation, self.container_id, exc,
+            )
             raise FileServiceError() from None
         if inspected.get("ExitCode") != 0 or not isinstance(output, bytes) or len(output) > MAX_TEXT + 32 * 1024:
             raise FileServiceError()
         try:
             result = json.loads(output.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError) as exc:
+            logger.warning(
+                "FileService bad helper output operation=%s container=%.12s: %r",
+                operation, self.container_id, exc,
+            )
             raise FileServiceError() from None
         if not isinstance(result, dict) or result.get("ok") is not True:
             raise FileServiceError(result.get("code") if isinstance(result.get("code"), str) else "UNAVAILABLE")
