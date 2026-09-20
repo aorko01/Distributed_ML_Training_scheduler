@@ -16,6 +16,11 @@ from Access_Container.interactive_access.protocol import (
 from .broker import Broker
 from .docker_ops import RuntimeFailure
 from .endpoint import Endpoint
+from .failure_diagnostics import (
+    collect_failure_diagnostics,
+    dump_dir,
+    short_detail,
+)
 
 logger = logging.getLogger("managed_worker")
 
@@ -53,17 +58,25 @@ class Manager:
         assignment_id = record["assignment_id"]
         root = Path("/run/dml-interactive") / assignment_id
         endpoint_dir = Path("/run/dml-interactive-endpoints") / assignment_id
+        stage = "reserve"
         try:
             root.mkdir(mode=0o750, parents=True, exist_ok=False)
             os.chown(root, 0, 10001)
+            # mkdir's mode is masked by the process umask (systemd UMask=0077
+            # turns 0750 into 0700, locking out the access sidecar running as
+            # 10001:10001 with EACCES on broker.sock). Enforce exact perms.
+            os.chmod(root, 0o750)
             endpoint_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+            os.chmod(endpoint_dir, 0o700)
             token = secrets.token_urlsafe(48).encode()
             token_file = root / "broker.token"
             token_file.write_bytes(token)
             token_file.chmod(0o640)
             os.chown(token_file, 0, 10001)
+            stage = "pull"
             record = await asyncio.to_thread(self.progress, record, "PULLING")
             image, user, workdir = await asyncio.to_thread(self.ops.pull, record)
+            stage = "workload-start"
             record = await asyncio.to_thread(self.progress, record, "STARTING")
             workload = await asyncio.to_thread(
                 self.ops.workload, record, image, user, workdir
@@ -81,6 +94,7 @@ class Manager:
             )
             await self.broker.start()
             # Smoke a real default-shell session before Access or Serve starts.
+            stage = "broker-smoke"
             reader, writer = await asyncio.open_unix_connection(
                 str(root / "broker.sock")
             )
@@ -115,9 +129,11 @@ class Manager:
             finally:
                 writer.close()
                 await writer.wait_closed()
+            stage = "unit-start"
             sidecar, access = await asyncio.to_thread(
                 self.ops.unit, record, root, endpoint_dir
             )
+            stage = "endpoint-wait"
             deadline = time.monotonic() + 120
             while not (endpoint_dir / "tailscaled.sock").exists():
                 if not authority() or time.monotonic() >= deadline:
@@ -126,6 +142,7 @@ class Manager:
             self.endpoint = Endpoint(
                 endpoint_dir / "tailscaled.sock", lambda: self.ops.authority(record)
             )
+            stage = "endpoint-join"
             while True:
                 try:
                     bootstrap = await asyncio.to_thread(self.api.bootstrap, record)
@@ -163,10 +180,15 @@ class Manager:
                 )
                 return result.exit_code == 0
 
+            stage = "backend-wait"
+            # Join/bootstrap may consume the earlier budget; the backend wait
+            # gets its own. Lease fencing still comes from authority().
+            deadline = time.monotonic() + 120
             while not await backend_health():
                 if not authority() or time.monotonic() >= deadline:
                     raise RuntimeFailure("START_FAILED")
                 await asyncio.sleep(0.2)
+            stage = "serve"
             await asyncio.to_thread(self.endpoint.serve, True)
             self.health[assignment_id] = {
                 "workload": True,
@@ -174,10 +196,12 @@ class Manager:
                 "access": True,
                 "endpoint": True,
             }
+            stage = "connecting"
             record = await asyncio.to_thread(
                 self.progress, record, "CONNECTING", self.health[assignment_id]
             )
             self.coordinator.mode = "INTERACTIVE_ACTIVE"
+            stage = "healthy"
             while authority():
                 healthy = (
                     await asyncio.to_thread(self.broker.healthy)
@@ -195,16 +219,41 @@ class Manager:
                 await asyncio.sleep(1)
         except Exception as exc:
             code = exc.code if isinstance(exc, RuntimeFailure) else "START_FAILED"
+            # Snapshot container logs/inspect to the state dir before STOPPING
+            # and cleanup. Containers alone are weak evidence: a later prune
+            # or INTERACTIVE_CLEANUP_ON_FAILURE=1 removes them, and the
+            # /run/dml-interactive dir is always deleted below.
+            try:
+                journaled = self.coordinator.get(assignment_id)
+            except Exception:
+                journaled = {"assignment_id": assignment_id, "containers": {}}
+            diagnostics = await asyncio.to_thread(
+                collect_failure_diagnostics,
+                journaled,
+                self.ops.client,
+                getattr(self.coordinator, "path", None),
+                stage,
+                code,
+            )
+            detail = short_detail(stage, diagnostics)
             # Persist before the event request. Cleanup carries the same fenced
             # code so a transient callback failure cannot downgrade a failed
             # runtime to an ordinary stop.
             record = self.coordinator.update(
-                assignment_id, runtime_failure_code=code
+                assignment_id,
+                runtime_failure_code=code,
+                runtime_failure_stage=stage,
+                runtime_failure_detail=detail,
             )
             logger.error(
-                "Interactive runtime failed assignment_id=%s code=%s",
+                "Interactive runtime failed assignment_id=%s stage=%s code=%s "
+                "detail=%s diagnostics=%s",
                 assignment_id,
+                stage,
                 code,
+                detail,
+                diagnostics.get("dump_dir")
+                or dump_dir(getattr(self.coordinator, "path", "?"), assignment_id),
                 exc_info=True,
             )
             with suppress(Exception):
