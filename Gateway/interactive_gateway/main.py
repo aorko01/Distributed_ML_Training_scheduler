@@ -20,6 +20,10 @@ from .tailnet_dialer import TailnetDialer
 from .tailscale_api import TailscaleAPI
 
 logger = logging.getLogger(__name__)
+# Uvicorn only installs handlers on its own loggers; without this, records
+# from this module propagate to a handler-less root and INFO outcomes
+# (including every connection session=/outcome= line) are silently dropped.
+logging.basicConfig(level=logging.INFO)
 
 
 def create_app(settings=None, management=None, dialer=None, local=None, background=True):

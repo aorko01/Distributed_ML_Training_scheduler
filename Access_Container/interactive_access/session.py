@@ -142,6 +142,17 @@ async def run_session(reader, writer, config, capacity, clock=None):
                     if payload:
                         raise ProtocolError()
                     await write_record(broker, kind, payload, config.write_timeout)
+                    # The broker answers CLOSE with EXIT (or EOF); outgoing()
+                    # owns the broker stream and forwards it. Wait for it
+                    # instead of returning here: returning would let the
+                    # session teardown win the race, cancel outgoing(), and
+                    # drop EXIT, leaving a client that follows the
+                    # OPEN/OPENED/CLOSE/EXIT handshake (e.g. connection
+                    # verification) stuck waiting for a record that never
+                    # arrives; it then reports the clean close as a failure.
+                    # The shield keeps a drain timeout from cancelling the
+                    # relay itself; teardown still owns cancellation after.
+                    await clock.wait(asyncio.shield(outgoing_task), config.broker_timeout)
                     return
                 elif kind != Type.STDIN:
                     raise ProtocolError()
@@ -162,7 +173,10 @@ async def run_session(reader, writer, config, capacity, clock=None):
                 counts['output'] += len(payload)
                 await write_record(writer, kind, payload, config.write_timeout)
 
-        tasks = [asyncio.create_task(incoming()), asyncio.create_task(outgoing())]
+        # Outgoing is created first so incoming() can wait for the broker's
+        # CLOSE answer (see above) without ever sharing the broker stream.
+        outgoing_task = asyncio.create_task(outgoing())
+        tasks = [asyncio.create_task(incoming()), outgoing_task]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()

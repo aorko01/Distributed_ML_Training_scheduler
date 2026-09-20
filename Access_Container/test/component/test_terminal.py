@@ -101,6 +101,30 @@ async def test_real_pty_workload_environment_resize_fragmentation_exit(endpoint)
     await wait_cleanup(service, broker)
 
 
+async def test_close_is_answered_with_exit_before_eof(endpoint):
+    # Regression: the OPEN/OPENED/CLOSE/EXIT handshake (used by connection
+    # verification) requires EXIT after CLOSE. Returning on CLOSE used to let
+    # teardown cancel the relay and drop the broker's EXIT, so the client saw
+    # EOF instead and reported the clean close as a gateway failure.
+    service, broker, _, port, _ = endpoint
+    reader, writer = await open_terminal(port)
+    await write_record(writer, Type.CLOSE)
+    async with asyncio.timeout(3):
+        while True:
+            kind, payload = await read_record(reader)
+            if kind == Type.STDOUT:
+                continue
+            assert kind == Type.EXIT, f'unexpected record {kind}'
+            assert payload == b'{"code":0,"reason":"exited"}'
+            break
+    # EOF must follow EXIT, never replace it.
+    with pytest.raises(EOFError):
+        async with asyncio.timeout(3):
+            await read_record(reader)
+    await close_writer(writer)
+    await wait_cleanup(service, broker)
+
+
 @pytest.mark.parametrize('failure', ['disconnect', 'shutdown', 'broker-crash', 'invalid'])
 async def test_cleanup(endpoint, failure):
     service, broker, _, port, _ = endpoint

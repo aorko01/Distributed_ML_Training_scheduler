@@ -108,6 +108,9 @@ class FakeBroker:
                 while True:
                     kind, payload = await read_record(reader)
                     if kind == Type.CLOSE and not payload:
+                        # Match the real Worker broker: CLOSE tears down the
+                        # shell and is answered with EXIT before EOF.
+                        await write_record(writer, Type.EXIT, json_bytes({'code': 0, 'reason': 'closed'}))
                         return
                     if kind == Type.RESIZE:
                         size = dimensions(payload)
