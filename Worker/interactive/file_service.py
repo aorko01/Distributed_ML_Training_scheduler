@@ -181,7 +181,7 @@ class FileService:
                 stdout=True, stderr=False, tty=False, privileged=False, user=self.user,
                 workdir="/",
             )["Id"]
-            stream = self.client.api.exec_start(created, stdin=True, socket=True, tty=False)
+            stream = self.client.api.exec_start(created, socket=True, tty=False)
             raw = stream._sock
             raw.sendall(payload)
             raw.shutdown(socket.SHUT_WR)
