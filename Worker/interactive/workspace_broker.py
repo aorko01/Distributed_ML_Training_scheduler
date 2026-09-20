@@ -16,6 +16,10 @@ SAFE_OPERATIONS = {"list", "stat", "read", "create_file", "mkdir", "write", "ren
 
 
 class WorkspaceSession:
+    # Serial request model: the broker serves one file operation at a time.
+    # The browser client serializes mutations and caps concurrent reads, so
+    # the session enforces the same bound rather than advertising task
+    # concurrency it does not implement.
     def __init__(self, broker, reader, writer):
         self.broker, self.reader, self.writer = broker, reader, writer
         self.files = FileService(broker.client, broker.container_id, broker.user, broker.workdir)
@@ -23,9 +27,15 @@ class WorkspaceSession:
         self.output = None
         self.pending = None
         self.read_only = False
+        self.send_lock = asyncio.Lock()
+        self.closed = False
+        self.exited = False
 
     async def send(self, kind, value=b""):
-        await write_record(self.writer, kind, value)
+        async with self.send_lock:
+            if self.closed:
+                raise ConnectionError("workspace session closed")
+            await write_record(self.writer, kind, value)
 
     async def run(self, hello):
         require_exact(hello, {"protocol"})
@@ -180,10 +190,16 @@ class WorkspaceSession:
                 await self.output
         self.output = None
         session, self.pty = self.pty, None
-        if session:
-            closed = await asyncio.to_thread(session.close)
+        if session is None or self.exited:
+            return
+        closed = await asyncio.to_thread(session.close)
+        self.exited = True
+        with suppress(ConnectionError):
             await self.send(Type.PTY_EXIT, metadata_bytes({"code": 0 if closed else 1, "reason": "closed" if closed else "unavailable"}))
 
     async def close(self):
+        if self.closed:
+            return
+        self.closed = True
         self.pending = None
         await self.close_pty()

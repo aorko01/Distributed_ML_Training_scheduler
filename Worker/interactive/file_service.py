@@ -53,11 +53,27 @@ def version(st, data=None):
  if data is not None: h.update(data)
  return h.hexdigest()
 def regular(st): return stat.S_ISREG(st.st_mode)
+def dir_version(fd,name):
+ try: st=os.stat(name,dir_fd=fd,follow_symlinks=False)
+ except OSError: fail('NOT_FOUND')
+ if not stat.S_ISDIR(st.st_mode): fail('PROTOCOL_ERROR')
+ try:
+  dfd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+  try: kids=sorted(os.listdir(dfd))
+  finally: os.close(dfd)
+ except OSError: fail('UNAVAILABLE')
+ h=hashlib.sha256(); h.update(('%d:%d'%(st.st_dev,st.st_ino)).encode())
+ for k in kids: h.update(k.encode('utf-8',errors='surrogateescape')); h.update(b'\x00')
+ return h.hexdigest()
 def check_version(fd,name,expected):
  try: st=os.stat(name,dir_fd=fd,follow_symlinks=False)
  except FileNotFoundError:
   if expected is not None: fail('CONFLICT')
   return None
+ if stat.S_ISDIR(st.st_mode):
+  actual=dir_version(fd,name)
+  if expected is not None and expected != actual: fail('CONFLICT')
+  return st
  if not regular(st) or st.st_nlink != 1: fail('UNSAFE_FILE')
  try:
   f=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd)
@@ -100,7 +116,7 @@ try:
   try:
    st=os.stat(name,dir_fd=fd,follow_symlinks=False)
    kind='directory' if stat.S_ISDIR(st.st_mode) else 'file' if regular(st) else 'symlink' if stat.S_ISLNK(st.st_mode) else 'unsupported'
-   if op=='stat': out({'type':kind,'size':st.st_size,'version':version(st) if regular(st) else None})
+   if op=='stat': out({'type':kind,'size':st.st_size,'version':version(st) if regular(st) else dir_version(fd,name) if stat.S_ISDIR(st.st_mode) else None})
    else:
     if not regular(st): fail('UNSUPPORTED_FILE')
     f=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd)

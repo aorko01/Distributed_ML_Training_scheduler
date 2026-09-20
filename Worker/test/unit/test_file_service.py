@@ -134,3 +134,35 @@ def test_socket_shape_variants_are_unwrapped():
         out = FileService(client, "c", "10001", "/workspace").call("list", path="")
         assert out == {"entries": []}
         assert raw.shutdown_how == stdlib_socket.SHUT_WR
+
+
+def test_directory_stat_returns_version_and_guards_rename_delete():
+    """Directory version semantics: stat returns a version; stale rename/delete conflict."""
+    import json
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    def call(tmp, req):
+        proc = subprocess.run(
+            [sys.executable, "-c", HELPER],
+            input=json.dumps(req).encode(),
+            capture_output=True,
+            timeout=15,
+        )
+        return json.loads(proc.stdout.decode())
+
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "d").mkdir()
+    (tmp / "d" / "a.txt").write_text("hi")
+    stat = call(tmp, {"operation": "stat", "root": str(tmp), "path": "d"})
+    assert stat.get("ok") is True and stat.get("type") == "directory"
+    assert isinstance(stat.get("version"), str) and stat["version"]
+    # Stale versions conflict instead of silently overwriting.
+    assert call(tmp, {"operation": "rename", "root": str(tmp), "path": "d", "target": "d2", "expected_version": "stale"}) == {"ok": False, "code": "CONFLICT"}
+    good = call(tmp, {"operation": "rename", "root": str(tmp), "path": "d", "target": "d2", "expected_version": stat["version"]})
+    assert good == {"ok": True}
+    stat2 = call(tmp, {"operation": "stat", "root": str(tmp), "path": "d2"})
+    assert stat2["ok"] is True
+    assert call(tmp, {"operation": "delete", "root": str(tmp), "path": "d2", "expected_version": "stale"}) == {"ok": False, "code": "CONFLICT"}

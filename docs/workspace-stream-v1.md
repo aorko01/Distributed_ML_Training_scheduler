@@ -15,7 +15,10 @@ of bytes. `FILE_END` includes the ID, byte count, and SHA-256.
 
 `FILE_REQUEST` accepts only `list`, `stat`, `read`, `create_file`, `mkdir`,
 `write`, `rename`, and `delete`. Paths are relative to the Worker-pinned
-workload root. Requests and writes carry a content version where applicable.
+workload root. File writes carry the content version from the last successful
+read/write; rename/delete carry the same version for files, and the directory
+version (device/inode plus sorted child names, returned by `stat`) for
+directories. Stale or missing versions yield `CONFLICT`.
 The service allows four reads and one mutation at a time, a directory page of
 200 entries, and editable UTF-8 text files up to 2 MiB. Files that are binary,
 too large, symlinks, devices, FIFOs, sockets, or unsafe hard links are refused.
