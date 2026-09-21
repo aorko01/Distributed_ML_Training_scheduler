@@ -23,7 +23,12 @@ sudo rm -rf /var/www/adminui/*
 sudo cp -r Admin/dist/* /var/www/adminui/
 
 echo "==> Reloading Caddy..."
-sudo systemctl reload caddy
+# reload is graceful; if Caddy is stopped or the notify unit is stale, a plain
+# reload can fail (or be a silent no-op on a dead unit), leaving the freshly
+# copied bundle unreachable. Fall back to a full restart so the new bundle is
+# actually live, then confirm the unit is active.
+sudo systemctl reload caddy || sudo systemctl restart caddy
+sudo systemctl is-active --quiet caddy
 
 echo "==> Done. UIs are live at:"
 echo "    https://distributeml.zulfiker.xyz"
