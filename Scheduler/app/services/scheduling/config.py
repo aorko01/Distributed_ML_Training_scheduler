@@ -53,6 +53,10 @@ def resource_profile():
             x for x in os.getenv("INTERACTIVE_GPU_MODELS", "").split(",") if x
         ],
         "allow_root": os.getenv("INTERACTIVE_ALLOW_ROOT", "0") == "1",
+        # Opt-in workload egress (plan.md Phase 1).  Scheduler-side hint only;
+        # each Worker re-checks its own INTERACTIVE_ALLOW_INTERNET gate and
+        # fails closed to network "none" when its local flag is off.
+        "allow_internet": os.getenv("INTERACTIVE_INTERNET_ENABLED", "0") == "1",
     }
 
     if (
@@ -62,6 +66,8 @@ def resource_profile():
             math.isfinite(profile[key]) and profile[key] > 0
             for key in ("cpu", "memory_gb", "minimum_vram_gb")
         )
+        or not isinstance(profile["allow_internet"], bool)
+        or not isinstance(profile["allow_root"], bool)
         or not 1 <= profile["disk_gb"] <= 1000000
         or profile["pull_headroom_gb"] < 1
         or not 16 <= profile["pids"] <= 4096

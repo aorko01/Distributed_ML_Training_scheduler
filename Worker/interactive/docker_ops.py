@@ -41,6 +41,20 @@ class RuntimeFailure(Exception):
         super().__init__(code)
 
 
+# Opt-in workload egress (plan.md Phase 1).  The Worker keeps a hard local
+# gate: the Scheduler hint in launch_spec.allow_internet is advisory only and
+# a browser value can never enable it.  Default stays offline (`none`).
+def workload_internet_enabled() -> bool:
+    value = os.getenv("INTERACTIVE_ALLOW_INTERNET", "0").strip().lower()
+    return value in ("1", "true", "yes")
+
+
+def workload_network_mode(spec) -> str | None:
+    """None lets docker-py omit the key so the daemon default bridge applies."""
+    allow = bool(spec.get("allow_internet")) and workload_internet_enabled()
+    return None if allow else "none"
+
+
 def canonical_registry_reference(value):
     """Normalize Docker Hub's optional ``docker.io/`` registry prefix.
 
@@ -287,6 +301,13 @@ class DockerOps:
             or inv["free_ram_gb"] < spec["memory_gb"] + 1
         ):
             raise RuntimeFailure("DISK_FULL")
+        network = workload_network_mode(spec)
+        logger.info(
+            "Launching workload assignment_id=%s network=%s gpu_uuid=%s",
+            record["assignment_id"],
+            "bridge" if network is None else network,
+            p["gpu_uuid"],
+        )
         return self.create(
             record,
             "workload",
@@ -300,7 +321,7 @@ class DockerOps:
             working_dir=workdir,
             healthcheck={"test": ["NONE"]},
             init=True,
-            network_mode="none",
+            network_mode=network,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
             pids_limit=spec["pids"],
@@ -361,6 +382,27 @@ class DockerOps:
             pids_limit=64,
         )
         return sidecar, access
+
+    def get_workload(self, record):
+        """Return the exact labelled workload container, or None if absent.
+
+        Never resolves sidecar/access containers: the journaled workload id is
+        re-fetched and its labels re-verified (component + assignment), so a
+        recycled container id or stale journal entry fails closed instead of
+        capturing the wrong container.  Used by the snapshot capture path.
+        """
+        container_id = (record.get("containers") or {}).get("workload")
+        if not container_id:
+            return None
+        try:
+            container = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            return None
+        expected = labels(record, self.worker_id, "workload")
+        actual = container.labels or {}
+        if any(actual.get(key) != value for key, value in expected.items()):
+            raise RuntimeFailure("LOCAL_CONFLICT")
+        return container
 
     def remove_exact(self, record, container_id):
         try:

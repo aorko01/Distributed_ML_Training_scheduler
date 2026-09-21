@@ -11,6 +11,8 @@ from app.schemas.worker_execution_schema import (
     Fence,
     Cleanup,
 )
+from app.schemas.snapshot_artifact_schema import SnapshotFence, SnapshotComplete
+from app.services import snapshot_artifact_service as snapshots
 from app.services.scheduling import claims
 from app.services import interactive_controller
 from app.services.interactive_management_client import ManagementClient
@@ -59,6 +61,21 @@ def result(body: Result, worker=Depends(worker_auth), db=Depends(get_db)):
 @router.post("/cleanup")
 def cleanup(body: Cleanup, worker=Depends(worker_auth), db=Depends(get_db)):
     return claims.cleanup(db, worker, body)
+
+
+@router.post("/saves/{operation_id}/upload-capability")
+def snapshot_capability(operation_id: str, body: SnapshotFence, worker=Depends(worker_auth), db=Depends(get_db)):
+    return snapshots.issue_capability(
+        db, worker, operation_id, body.assignment_id, body.attempt_token, body.generation,
+    )
+
+
+@router.post("/saves/{operation_id}/complete")
+def snapshot_complete(operation_id: str, body: SnapshotComplete, worker=Depends(worker_auth), db=Depends(get_db)):
+    return snapshots.complete(
+        db, worker, operation_id, body.assignment_id, body.attempt_token, body.generation,
+        body.sha256, body.size,
+    )
 
 
 @router.post("/bootstrap")

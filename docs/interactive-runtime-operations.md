@@ -235,3 +235,55 @@ An older Worker/Scheduler must not manage live new-format assignments. Retain th
 additive migration and assignment tombstones for stale-message fencing. No global
 Docker prune, image deletion, volume deletion or Headscale reset is part of runtime
 cleanup. Source image retention follows `interactive-images-operations.md`.
+
+## Opt-in workload egress and durable snapshots (Option B)
+
+Default stays offline: the workload launches with `network_mode=none`, so `pip
+install`, `load_dataset`, `apt`, `curl` and `git` fail with DNS errors. Internet
+is an explicit operator opt-in for new runtimes only.
+
+Worker `/etc/dml/worker.env` (requires restart, new runtimes only):
+
+```ini
+INTERACTIVE_ALLOW_INTERNET=1   # 0 = offline (default). Requires restart.
+```
+
+Scheduler env (requires restart):
+
+```ini
+INTERACTIVE_INTERNET_ENABLED=1  # 0 = offline (default). Advertised as launch_spec.allow_internet.
+WORKSPACE_EDITOR_ENABLED=1
+WORKSPACE_SAVE_ENABLED=1            # only after snapshot capture + Builder import are green
+WORKSPACE_TRAINING_SUBMISSION_ENABLED=1  # only after submission -> batch job is green; requires SAVE
+```
+
+The Scheduler hint is advisory: a Worker with `INTERACTIVE_ALLOW_INTERNET=0`
+fails closed to `none` and reports the mismatch. The browser can never enable
+egress. The UI shows `online`/`offline` from the runtime `allow_internet`
+capability and explains pip failures when off. Gateway stays a byte relay;
+no `--privileged`, host net, published ports, volumes, or env secrets.
+
+Verify:
+
+```sh
+docker inspect dml-<assignment>-workload --format '{{.HostConfig.NetworkMode}} {{.Config.User}} {{.Config.WorkingDir}}'
+docker exec dml-<assignment>-workload pip install matplotlib
+docker exec dml-<assignment>-workload python -c "import matplotlib; print('ok')"
+# after Save for Later:
+docker pull <saved-digest> && docker run --rm --gpus all <saved-digest> python train.py --epochs 1
+```
+
+Persistence is `docker commit --pause` of the exact labelled workload only
+(never sidecar/access), streamed `docker save | gzip` to the private
+`snapshots/<workspace>/<revision>/<attempt>/<sha>.tar.gz` artifact, Builder
+`docker load` + validation (`Os/Arch`, `User 10001:10001`, `WorkingDir
+/workspace`, no `Volumes`, size bounds) + digest-pinned push. The saved image
+contains `/workspace` code + `site-packages` (`/usr/local` + `~/.local`) + any
+HF cache left in the writable layer; processes/env/GPU state are not restored.
+Training executability is a derived image (`FROM <saved-digest>` with exec-form
+`CMD ["python",...]`, cleared `ENTRYPOINT`); the keepalive is never baked in.
+`requirements.txt` edits alone install nothing: `pip install` before Save.
+
+Rollback: set both internet flags `0`; new runtimes go `none` while existing
+bridge runtimes keep running until Stop. Disable save/submission flags to hide
+the buttons without breaking the live editor. Migrations are additive only.

@@ -125,3 +125,9 @@ def release(body: Failure, db: Session = Depends(get_db)):
 @internal_router.post('/logs', dependencies=[Depends(builder_auth)])
 def build_logs(body: Logs, db: Session = Depends(get_db)):
     return service.logs(db, body)
+
+
+@internal_router.get('/snapshot/{operation_id}', dependencies=[Depends(builder_auth)])
+def snapshot_read(operation_id: str, db: Session = Depends(get_db)):
+    from app.services import snapshot_artifact_service as snapshots
+    return snapshots.builder_descriptor(db, operation_id)

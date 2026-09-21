@@ -129,7 +129,7 @@ def test_workload_has_only_selected_gpu_and_no_mount_or_credentials(monkeypatch)
     monkeypatch.setattr("hardware.execution_inventory", lambda *args, **kwargs: inv)
     ops.workload(r, "sha256:image", "1000", "/workspace")
     kwargs = ops.create.call_args.kwargs
-    assert kwargs["network_mode"] == "none" and kwargs["working_dir"] == "/workspace"
+    assert kwargs.get("network_mode") == "none" and kwargs["working_dir"] == "/workspace"
     assert kwargs["device_requests"][0]["DeviceIDs"] == ["GPU-assigned"]
     assert kwargs["cap_drop"] == ["ALL"] and kwargs["init"]
     assert (
@@ -137,6 +137,54 @@ def test_workload_has_only_selected_gpu_and_no_mount_or_credentials(monkeypatch)
         and "environment" not in kwargs
         and "ports" not in kwargs
     )
+
+
+@pytest.mark.parametrize(
+    "flag, offline",
+    [
+        (None, True),
+        ("0", True),
+        ("", True),
+        ("junk", True),
+        ("1", False),
+        ("true", False),
+        ("YES", False),
+        ("yes", False),
+    ],
+)
+def test_workload_network_gate_honors_worker_environment_only(
+    monkeypatch, flag, offline
+):
+    r = record()
+    r["payload"]["launch_spec"]["allow_internet"] = True
+    if flag is None:
+        monkeypatch.delenv("INTERACTIVE_ALLOW_INTERNET", raising=False)
+    else:
+        monkeypatch.setenv("INTERACTIVE_ALLOW_INTERNET", flag)
+    # The Scheduler hint is advisory: launch_spec.allow_internet=True alone must
+    # never open egress; the Worker env gate decides.
+    monkeypatch.delenv("INTERACTIVE_INTERNET_ENABLED", raising=False)
+    coordinator = MagicMock()
+    coordinator.authoritative.return_value = True
+    ops = DockerOps(coordinator, "worker", MagicMock())
+    ops.create = MagicMock()
+    inv = {
+        "complete": True,
+        "gpus": [{"uuid": "GPU-assigned", "busy": False, "processes": []}],
+        "free_disk_gb": 200,
+        "free_ram_gb": 64,
+    }
+    monkeypatch.setattr("hardware.execution_inventory", lambda *args, **kwargs: inv)
+    ops.workload(r, "sha256:image", "1000", "/workspace")
+    kwargs = ops.create.call_args.kwargs
+    if offline:
+        assert kwargs.get("network_mode") == "none"
+    else:
+        # docker-py: network_mode=None means "unset" so the daemon default
+        # bridge applies; the key may be present with a None value.
+        assert kwargs.get("network_mode") is None
+    assert kwargs["cap_drop"] == ["ALL"] and kwargs["init"]
+    assert "volumes" not in kwargs and "ports" not in kwargs
 
 
 def test_busy_gpu_fails_before_create(monkeypatch):

@@ -24,6 +24,15 @@ export interface Runtime {
   state: 'QUEUED' | 'ASSIGNED' | 'PULLING' | 'STARTING' | 'CONNECTING' | 'READY' | 'STOPPING' | 'LOST' | 'STOPPED' | 'FAILED';
   desired_state: 'RUNNING' | 'STOPPED'; failure_detail: string | null; lifetime_deadline: string | null;
   access_service?: 'terminal' | 'workspace'; application_protocol?: 'terminal-stream-v1' | 'workspace-stream-v1'; editor_capable?: boolean;
+  allow_internet?: boolean;
+}
+export interface WorkspaceSave {
+  id: string; workspace_id: string; runtime_id: string; generation: number; state: string;
+  target_revision_id: string | null; failure_code: string | null; failure_detail: string | null;
+}
+export interface TrainingSubmission {
+  id: string; workspace_id: string; runtime_id: string; state: string; job_id: string | null;
+  failure_code: string | null; failure_detail: string | null;
 }
 export interface ConnectionGrant {
   wss_url: string; ticket: string; expires_at: string; runtime_id: string; generation: number;
@@ -74,6 +83,17 @@ export const interactive = {
   detail: (id: string) => request<Workspace>(`/${encodeURIComponent(id)}`),
   logs: (id: string) => request<{ lines: string[]; state: string }>(`/${encodeURIComponent(id)}/build-logs`),
   cancel: (id: string) => request<Workspace>(`/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  saveWorkspace: (runtimeId: string, key: string, generation: number, parentRevisionId: string) =>
+    request<WorkspaceSave>(`/runtimes/${encodeURIComponent(runtimeId)}/saves`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify({ generation, parent_revision_id: parentRevisionId }),
+    }, '/interactive'),
+  saveStatus: (saveId: string) => request<WorkspaceSave>(`/saves/${encodeURIComponent(saveId)}`, {}, '/interactive'),
+  submitTraining: (runtimeId: string, key: string, generation: number, parentRevisionId: string, settings: { name: string; command: string; resume_command?: string | null; priority?: string }) =>
+    request<TrainingSubmission>(`/runtimes/${encodeURIComponent(runtimeId)}/training-submissions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify({ generation, parent_revision_id: parentRevisionId, settings }),
+    }, '/interactive'),
   create: (input: Creation, key: string) => {
     const { path, init } = creationRequest(input, key);
     return request<Workspace>(path, init);

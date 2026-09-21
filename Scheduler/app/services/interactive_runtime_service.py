@@ -40,9 +40,17 @@ PUBLIC_FIELDS = (
 
 
 def public(runtime):
-    return (
+    item = (
         {field: getattr(runtime, field) for field in PUBLIC_FIELDS} if runtime else None
     )
+    if item is not None:
+        # Operator egress capability for the web terminal (plan.md Phase 1).
+        # Derived from the pinned launch_spec; the browser can never set it.
+        try:
+            item["allow_internet"] = bool((runtime.launch_spec or {}).get("allow_internet"))
+        except Exception:
+            item["allow_internet"] = False
+    return item
 
 
 def owned_runtime(db, owner, runtime_id):

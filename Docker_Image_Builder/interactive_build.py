@@ -15,6 +15,11 @@ import interactive_api as api
 from docker_ops import _run_cancellable_docker_build, _get_build_lock, _remove_local_image, _terminate_process, _is_auth_error, _is_transient_build_error
 
 MAX_UPLOAD = 64 * 1024 * 1024
+MAX_SNAPSHOT = 8 * 1024 * 1024 * 1024
+# Local staging name for the exact loaded snapshot before it is retagged to
+# the immutable per-revision tag. Never pushed; never-User controlled.
+SNAPSHOT_CLEAN_REFERENCE = 'dml-snapshot-clean'
+SNAPSHOT_CLEAN_TAG = 'ready'
 MAX_EXPANDED = 512 * 1024 * 1024
 MAX_FILES = 10000
 DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
@@ -141,7 +146,127 @@ def resolve(client, reference, cancel):
     return repository + '@' + digest
 
 
+def download(item):
+    """Stream the private snapshot artifact for a SNAPSHOT work item.
+
+    Yields raw bytes; the caller enforces size/hash bounds. Separated for
+    unit-test patching at the module boundary (same style as run_command).
+    """
+    import requests
+    from urllib.parse import quote
+    from config import OBJECT_STORE_URL, OBJECT_STORE_BUCKET
+    key = item.get('source_object_key')
+    if not key or '..' in key.split('/') or key.startswith('/'):
+        raise BuildFailure('system')
+    with requests.get(
+        f'{OBJECT_STORE_URL}/objects/{OBJECT_STORE_BUCKET}/{quote(key, safe="/")}',
+        stream=True, timeout=(5, 30),
+    ) as response:
+        response.raise_for_status()
+        for chunk in response.iter_content(65536):
+            if chunk:
+                yield chunk
+
+
+def validate_training_command(command):
+    """Exec-form training command allowlist: python only, no shell escapes."""
+    if not isinstance(command, (list, tuple)) or not command:
+        raise BuildFailure('user')
+    if command[0] not in ('python', 'python3'):
+        raise BuildFailure('user')
+    for token in command:
+        if not isinstance(token, str) or not token or len(token) > 512:
+            raise BuildFailure('user')
+        if '\n' in token or '\r' in token or '\x00' in token:
+            raise BuildFailure('user')
+    if any(t.strip().startswith('-') and False for t in command):
+        raise BuildFailure('user')
+    return list(command)
+
+
+def import_snapshot(item, client, platform, user, workdir, training_command=None):
+    """Load a Worker-captured artifact, validate portability, push digest tag.
+
+    Never feeds the bytes to the ZIP extractor and never reruns pip install:
+    the saved filesystem (code + site-packages) is the portable image. Returns
+    the digest-pinned reference ``repository@sha256:...``.
+    """
+    import hashlib
+    import io as _io
+    if training_command is not None:
+        training_command = validate_training_command(training_command)
+    expected_platform = platform
+    # Stream artifact with hash/size verification (never whole image in RAM
+    # beyond this bounded buffer; production artifacts are gzip tarballs).
+    sha = hashlib.sha256()
+    size = 0
+    data = bytearray()
+    for chunk in download(item):
+        sha.update(chunk)
+        size += len(chunk)
+        if size > MAX_SNAPSHOT:
+            raise BuildFailure('system')
+        data.extend(chunk)
+    if item.get('snapshot_sha256') and sha.hexdigest() != item['snapshot_sha256']:
+        raise BuildFailure('system')
+    if item.get('snapshot_size') and size != item['snapshot_size']:
+        raise BuildFailure('system')
+    loaded = client.images.load(bytes(data))
+    if not loaded or len(loaded) != 1:
+        raise BuildFailure('system')
+    loaded_id = getattr(loaded[0], 'id', None) or ''
+    if not loaded_id:
+        raise BuildFailure('system')
+    image = client.images.get(loaded_id)
+    attrs = image.attrs or {}
+    if attrs.get('Os', '') + '/' + attrs.get('Architecture', '') != expected_platform:
+        raise BuildFailure('system')
+    config = attrs.get('Config') or {}
+    if config.get('User', '') != user or config.get('WorkingDir', '') != workdir:
+        raise BuildFailure('system')
+    if config.get('Volumes'):
+        raise BuildFailure('system')
+    # Normalize through the exact staging name so the retag below is exact.
+    client.api.tag(loaded_id, SNAPSHOT_CLEAN_REFERENCE, SNAPSHOT_CLEAN_TAG)
+    staged = client.images.get(SNAPSHOT_CLEAN_REFERENCE + ':' + SNAPSHOT_CLEAN_TAG)
+    if getattr(staged, 'id', loaded_id) != loaded_id:
+        raise BuildFailure('system')
+    if training_command is not None:
+        dockerfile_text = (
+            f'FROM {SNAPSHOT_CLEAN_REFERENCE}:{SNAPSHOT_CLEAN_TAG}\n'
+            'ENTRYPOINT []\n'
+            f'CMD {json.dumps(training_command, separators=(",", ":"))}\n'
+            f'USER {user}\n'
+            f'WORKDIR {workdir}\n'
+        )
+        context = _io.BytesIO(dockerfile_text.encode())
+        client.api.build(fileobj=context, rm=True, forcerm=True, tag=tag_for(item))
+    tag = tag_for(item)
+    repository, tag_name = tag.rsplit(':', 1)
+    client.api.tag(loaded_id, repository, tag_name)
+    run_command(['push', tag], lambda: False)
+    digest = client.images.get_registry_data(tag).attrs['Descriptor']['digest']
+    if not DIGEST.fullmatch(digest):
+        raise BuildFailure('system')
+    return repository + '@' + digest
+
+
 def build(client, item, cancel):
+    # SNAPSHOT never touches the ZIP extractor: the artifact is an exact
+    # committed filesystem (code + site-packages), not an upload archive.
+    if item.get('origin') == 'SNAPSHOT':
+        check(cancel)
+        api.log(item, 'Importing workspace snapshot')
+        digest_ref = import_snapshot(
+            item, client,
+            item.get('platform', 'linux/amd64'),
+            item.get('user', '10001:10001'),
+            item.get('workdir', '/workspace'),
+            training_command=item.get('training_command'),
+        )
+        check(cancel)
+        tag = tag_for(item)
+        return {'image_tag': tag, 'image_digest_ref': digest_ref, 'resolved_base_digest': digest_ref}
     tag = tag_for(item)
     with tempfile.TemporaryDirectory(prefix='interactive-build-') as temporary:
         root = Path(temporary)

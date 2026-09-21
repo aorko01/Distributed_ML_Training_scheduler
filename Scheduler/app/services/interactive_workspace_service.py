@@ -197,9 +197,14 @@ def claim(db, builder_id):
                 rev.attempt_count,
                 rev.origin,
             )
+            meta = rev.source_image_metadata or {}
             return {'kind': 'interactive', 'id': rev.id, 'revision_id': rev.id, 'workspace_id': item.id,
                     'revision_number': rev.revision_number, 'origin': rev.origin, 'source_job_id': item.source_job_id,
                     'source_object_key': rev.source_object_key, 'source_image_tag': rev.source_image_tag,
+                    'snapshot_operation_id': rev.snapshot_operation_id,
+                    'snapshot_sha256': meta.get('sha256'), 'snapshot_size': meta.get('size'),
+                    'platform': meta.get('platform', 'linux/amd64'), 'user': meta.get('user', '10001:10001'),
+                    'workdir': meta.get('workdir', '/workspace'),
                     'base_image': resolve_base_image(rev.requested_base_image), 'builder_id': builder_id, 'attempt_id': attempt_id}
     return None
 

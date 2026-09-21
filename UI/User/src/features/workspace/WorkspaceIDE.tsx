@@ -42,6 +42,7 @@ export default function WorkspaceIDE() {
   const [editorText, setEditorText] = useState('');
   const [lineCol, setLineCol] = useState('Ln 1, Col 1');
   const [savingAll, setSavingAll] = useState(false);
+  const [durableState, setDurableState] = useState<string | null>(null);
   const [maxTerm, setMaxTerm] = useState(false);
   const [prompt, setPrompt] = useState<null | { kind: 'createFile' | 'createFolder' | 'rename' | 'delete' | 'closeDirty' | 'conflict' | 'stop'; dir?: string; path?: string }>(null);
   const [promptValue, setPromptValue] = useState('');
@@ -472,9 +473,65 @@ export default function WorkspaceIDE() {
   const dirtyFor = useCallback((p: string) => { const f = snap.files[p]; if (!f) return false; return (models.getText(p) ?? f.savedText) !== f.savedText; }, [models, snap.files]);
   const header = useMemo(() => ({ name: snap.workspace?.name ?? 'Workspace', runtimeState: snap.runtime?.state ?? snap.phase }), [snap.workspace, snap.runtime, snap.phase]);
 
+  const saveForLater = useCallback(async () => {
+    const rt = snapRef.current.runtime;
+    if (!rt) return;
+    const storageKey = `dml-save-key:${rt.id}:${rt.generation}`;
+    let key = sessionStorage.getItem(storageKey);
+    if (!key) {
+      key = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/[^A-Za-z0-9_-]/g, '').padEnd(16, '0').slice(0, 64);
+      sessionStorage.setItem(storageKey, key);
+    }
+    setDurableState('Saving');
+    try {
+      const op = await interactive.saveWorkspace(rt.id, key, rt.generation, rt.revision_id);
+      setDurableState(op.state);
+      const poll = async () => {
+        try {
+          const st = await interactive.saveStatus(op.id);
+          setDurableState(st.state);
+          if (['REQUESTED', 'CAPTURING', 'UPLOADING', 'PUBLISH_QUEUED', 'PUBLISHING'].includes(st.state)) {
+            window.setTimeout(() => void poll(), 3000);
+          } else if (st.state === 'SUCCEEDED') {
+            dispatch({ type: 'notice', notice: notice('success', 'Revision saved. Start a new runtime from it to continue.') });
+          } else if (st.state === 'FAILED') {
+            dispatch({ type: 'notice', notice: notice('error', st.failure_detail || 'Save failed') });
+          }
+        } catch { /* reload-safe: status stays visible on next load */ }
+      };
+      void poll();
+    } catch (e) {
+      setDurableState(null);
+      dispatch({ type: 'notice', notice: notice('error', e instanceof Error ? e.message : 'Save failed') });
+    }
+  }, []);
+
+  const submitTraining = useCallback(async () => {
+    const rt = snapRef.current.runtime;
+    if (!rt) return;
+    const storageKey = `dml-submit-key:${rt.id}:${rt.generation}`;
+    let key = sessionStorage.getItem(storageKey);
+    if (!key) {
+      key = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/[^A-Za-z0-9_-]/g, '').padEnd(16, '0').slice(0, 64);
+      sessionStorage.setItem(storageKey, key);
+    }
+    setDurableState('Saving');
+    try {
+      const sub = await interactive.submitTraining(rt.id, key, rt.generation, rt.revision_id, {
+        name: `${snapRef.current.workspace?.name ?? 'workspace'} training`,
+        command: 'python train.py',
+      });
+      setDurableState(sub.state);
+      dispatch({ type: 'notice', notice: notice('info', 'Training submission queued. Track it under training submissions.') });
+    } catch (e) {
+      setDurableState(null);
+      dispatch({ type: 'notice', notice: notice('error', e instanceof Error ? e.message : 'Submit failed') });
+    }
+  }, []);
+
   return (
     <div className="ide-shell" data-testid="workspace-ide">
-      <IDETitleBar workspaceId={id ?? ''} name={header.name} runtimeState={header.runtimeState} liveOnly phase={snap.phase} dirtyCount={dirtyCount} saving={savingAll} onSaveAll={() => void saveAll()} onReconnect={reconnect} onStop={() => void stopRuntime()} />
+      <IDETitleBar workspaceId={id ?? ''} name={header.name} runtimeState={header.runtimeState} liveOnly phase={snap.phase} dirtyCount={dirtyCount} saving={savingAll} onSaveAll={() => void saveAll()} onReconnect={reconnect} onStop={() => void stopRuntime()} internetEnabled={snap.runtime?.allow_internet} saveEnabled={snap.runtime?.editor_capable === true} submitEnabled={snap.runtime?.editor_capable === true} saveState={durableState} onSaveForLater={() => void saveForLater()} onSubmitTraining={() => void submitTraining()} />
       {(snap.phase === 'disconnected' || snap.phase === 'reconnecting' || snap.phase === 'fatal') && (
         <div className="ide-banner" role="alert">
           <span>{snap.message}{snap.closeCode !== null ? ` (code ${snap.closeCode})` : ''} · Unsaved work is kept in memory.</span>
