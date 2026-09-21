@@ -2,6 +2,9 @@
 // Instantiated lazily only when the terminal host is mounted and measurable.
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+// Xterm ships without its layout CSS applied by default; without this import
+// the viewport/canvas render as a small unstyled box.
+import '@xterm/xterm/css/xterm.css';
 import type { TermHandle } from './adapters';
 
 export interface XtermHandle extends TermHandle {

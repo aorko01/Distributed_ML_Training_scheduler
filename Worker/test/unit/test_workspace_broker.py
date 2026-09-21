@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from Access_Container.interactive_access.protocol import Type
+from Access_Container.interactive_access.workspace_protocol import metadata_bytes
 from interactive.workspace_broker import WorkspaceSession
 
 
@@ -112,5 +113,75 @@ def test_pty_open_after_exit_allows_restart():
         fresh.send = fake_send  # type: ignore[method-assign]
         assert fresh.pty is None and fresh.exited is False
         assert sent.count(Type.PTY_EXIT) == 1
+
+    asyncio.run(scenario())
+
+
+def test_pty_write_failure_ends_terminal_not_session():
+    async def scenario():
+        session, _ = make_session()
+        sent = []
+
+        async def fake_send(kind, value=b""):
+            sent.append(kind)
+
+        session.send = fake_send  # type: ignore[method-assign]
+
+        class DeadPty:
+            def write(self, _data):
+                raise OSError("broken shell")
+
+            def close(self):
+                return True
+
+        session.pty = DeadPty()
+        records = [(Type.PTY_STDIN, b"ls\n"), (Type.CLOSE, b"")]
+
+        async def fake_read(_reader):
+            if records:
+                return records.pop(0)
+            await asyncio.sleep(3600)
+
+        with patch("interactive.workspace_broker.read_record", side_effect=fake_read):
+            # Must not raise: the dead shell ends the terminal (PTY_EXIT)
+            # while the session itself survives for files + editor.
+            await session.run({"protocol": "workspace-stream-v1"})
+        assert Type.PTY_EXIT in sent
+        assert session.pty is None
+
+    asyncio.run(scenario())
+
+
+def test_pty_resize_failure_is_ignored():
+    async def scenario():
+        session, _ = make_session()
+        sent = []
+
+        async def fake_send(kind, value=b""):
+            sent.append(kind)
+
+        session.send = fake_send  # type: ignore[method-assign]
+
+        class FlakyPty:
+            def resize(self, _value):
+                raise OSError("transient docker-API failure")
+
+        pty = FlakyPty()
+        session.pty = pty
+        records = [
+            (Type.PTY_RESIZE, metadata_bytes({"columns": 100, "rows": 30})),
+            (Type.CLOSE, b""),
+        ]
+
+        async def fake_read(_reader):
+            if records:
+                return records.pop(0)
+            await asyncio.sleep(3600)
+
+        with patch("interactive.workspace_broker.read_record", side_effect=fake_read):
+            await session.run({"protocol": "workspace-stream-v1"})
+        # Resize failure is swallowed: no exit, shell handle intact.
+        assert Type.PTY_EXIT not in sent
+        assert session.pty is pty
 
     asyncio.run(scenario())

@@ -60,6 +60,29 @@ export default function WorkspaceIDE() {
   const handleTermResize = useCallback((c: number, r: number) => { connRef.current?.resize(c, r); }, []);
   const { setTerminalHeight } = panels;
   const handleTermHeight = useCallback((h: number) => { setTerminalHeight(h); }, [setTerminalHeight]);
+  // One-shot restart: the "+" button while a shell is running closes it and
+  // reopens a fresh shell once the backend acknowledges the exit.
+  const restartRequested = useRef(false);
+  const openTerminal = useCallback(() => {
+    const conn = connRef.current;
+    if (!conn) return;
+    const st = (conn as unknown as { ptyState?: string; pty?: string }).ptyState
+      ?? (conn as unknown as { pty?: string }).pty;
+    if (st === 'open') {
+      restartRequested.current = true;
+      try { conn.closePty(); } catch { restartRequested.current = false; }
+      return;
+    }
+    if (st === 'opening' || st === 'closing') return;
+    try {
+      const h = termHandle.current;
+      conn.openPty(h?.cols() ?? 80, h?.rows() ?? 24);
+    } catch { /* ignore */ }
+  }, []);
+  const closeTerminal = useCallback(() => {
+    restartRequested.current = false;
+    try { connRef.current?.closePty(); } catch { /* ignore */ }
+  }, []);
   const dirtyCount = snap.dirtyCount;
   useBeforeUnloadDirtyGuard(dirtyCount > 0);
   useRouteDirtyGuard(dirtyCount > 0);
@@ -196,7 +219,21 @@ export default function WorkspaceIDE() {
       if (lower.includes('drain') || lower.includes('stopp') || lower.includes('unavailable')) dispatch({ type: 'notice', notice: notice('info', `Workspace state: ${v}`) });
     },
     onPtyOutput: (d) => { termLines.current?.write(d); },
-    onPtyExit: () => { dispatch({ type: 'pty', state: 'exited', exit: connRef.current?.ptyExit ?? { code: 0, reason: 'exited' } }); },
+    onPtyExit: (info) => {
+      const exit = connRef.current?.ptyExit ?? info ?? { code: 0, reason: 'exited' };
+      dispatch({ type: 'pty', state: 'exited', exit });
+      // Never leave a blank terminal: print why the shell went away and how
+      // to get a new one. Without this a failed launch looks identical to a
+      // shell that silently drops command output.
+      try { termHandle.current?.write(`\r\n[terminal ${exit.code === 0 ? 'closed' : 'exited'} (code ${exit.code}, ${exit.reason}) — press + for a new shell]\r\n`); } catch { /* ignore */ }
+      if (restartRequested.current) {
+        restartRequested.current = false;
+        try {
+          const h = termHandle.current;
+          connRef.current?.openPty(h?.cols() ?? 80, h?.rows() ?? 24);
+        } catch { /* ignore */ }
+      }
+    },
     onPtyState: (s) => {
       dispatch({ type: 'pty', state: s });
       if (s === 'open' || s === 'opening') dispatch({ type: 'ptyActive', active: true });
@@ -378,8 +415,8 @@ export default function WorkspaceIDE() {
               collapsed={false}
               maximized={maxTerm}
               height={maxTerm ? undefined : panels.terminalHeight}
-              onOpen={() => { const h = termHandle.current; connRef.current?.openPty(h?.cols() ?? 80, h?.rows() ?? 24); }}
-              onClosePty={() => connRef.current?.closePty()}
+              onOpen={openTerminal}
+              onClosePty={closeTerminal}
               onClear={() => termHandle.current?.clear()}
               onToggleCollapse={panels.toggleTerminal}
               onToggleMax={() => setMaxTerm((v) => !v)}

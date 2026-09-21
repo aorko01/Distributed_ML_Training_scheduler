@@ -1292,13 +1292,17 @@ tr.job-row:hover { background: linear-gradient(90deg, rgba(57, 169, 255, 0.095),
 .ide-terminal-actions { display: flex; gap: .15rem; }
 .ide-terminal-actions button { background: transparent; border: 0; color: var(--ide-muted); border-radius: 4px; padding: .3rem; cursor: pointer; min-width: 28px; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; }
 .ide-terminal-actions button:hover { color: var(--ide-text); background: var(--ide-active); }
-.ide-terminal-body { flex: 1; min-height: 100px; position: relative; display: flex; flex-direction: column; }
+.ide-terminal-body { flex: 1; min-height: 100px; display: flex; flex-direction: column; overflow: hidden; }
 .ide-terminal.is-max .ide-terminal-body { min-height: 300px; }
-.ide-terminal-lines { position: absolute; inset: 0; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--ide-code); font-size: 12.5px; color: #c7d2e2; padding: .5rem .7rem; }
+/* Exactly one surface is visible: the xterm host stays hidden until the live
+   terminal is ready (the mount code unhides it inline to measure it), and the
+   fallback lines are hidden once xterm takes over. */
+.ide-terminal-xterm { flex: 1; min-height: 100px; padding: .4rem .5rem; overflow: hidden; }
+.ide-terminal:not(.has-xterm) .ide-terminal-xterm { display: none; }
+.ide-terminal-xterm .xterm { height: 100%; padding: 0; }
+.ide-terminal.has-xterm .ide-terminal-lines { display: none; }
+.ide-terminal-lines { flex: 1; min-height: 60px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--ide-code); font-size: 12.5px; color: #c7d2e2; padding: .5rem .7rem; }
 .ide-terminal-lines:empty { display: none; }
-.ide-terminal.has-xterm .ide-terminal-lines { visibility: hidden; pointer-events: none; }
-.ide-terminal-xterm { flex: 1; min-height: 100px; padding: .4rem .5rem; }
-.ide-terminal-xterm .xterm { height: 100%; }
 .ide-terminal-input { margin: 0 .5rem .5rem; background: rgba(8, 12, 18, 0.62); border: 1px solid #303b4d; border-radius: 8px; color: #ebf2fb; padding: .5rem .7rem; font-family: var(--ide-code); font-size: 12.5px; }
 .ide-terminal-input:focus { border-color: var(--accent-primary); outline: none; box-shadow: 0 0 0 3px rgba(57, 169, 255, 0.12); }
 .ide-terminal-input:disabled { opacity: .5; }

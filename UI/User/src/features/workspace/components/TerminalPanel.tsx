@@ -21,13 +21,22 @@ interface Props {
 }
 
 // Xterm surface with a DOM-lines fallback. Production browsers lazily mount
-// the real Xterm.js terminal (local bundle, FitAddon, debounced resize);
-// jsdom/component tests use the lightweight fallback through the same
-// TermHandle interface so transport behaviour stays under test.
+// the real Xterm.js terminal (local bundle + bundled xterm.css, FitAddon,
+// debounced resize); jsdom/component tests use the lightweight fallback
+// through the same TermHandle interface so transport behaviour stays under
+// test. Exactly one surface is visible at a time: the xterm host is hidden
+// until the live terminal is ready, and the fallback lines/input are removed
+// once it is, so PTY output can never land on an invisible surface.
 export function TerminalPanel({ pty, exit, collapsed, maximized, height, onOpen, onClosePty, onClear, onToggleCollapse, onToggleMax, onInput, onResize, onHeightChange, register }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const linesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const liveRef = useRef<{ focus(): void } | null>(null);
+  // Last dims actually reported to the backend. Fit can fire repeatedly
+  // (panel drags, fonts, observer loops) — resending identical PTY_RESIZE
+  // frames on every fire storms the worker with exec_resize calls, and one
+  // transient docker-API failure there used to cost the whole session.
+  const lastDims = useRef<{ c: number; r: number } | null>(null);
   const [xtermReady, setXtermReady] = useState(false);
   const label = pty === 'open' ? 'running' : pty === 'opening' ? 'starting' : pty === 'closing' ? 'closing' : pty === 'exited' ? `exited (${exit?.code ?? 0})` : 'closed';
   const onInputRef = useRef(onInput);
@@ -37,7 +46,8 @@ export function TerminalPanel({ pty, exit, collapsed, maximized, height, onOpen,
   const registerRef = useRef(register);
   registerRef.current = register;
 
-  const focusInput = () => {
+  const focusSurface = () => {
+    if (liveRef.current) { try { liveRef.current.focus(); } catch { /* ignore */ } return; }
     inputRef.current?.focus();
   };
 
@@ -71,6 +81,10 @@ export function TerminalPanel({ pty, exit, collapsed, maximized, height, onOpen,
     if (!isJsdom) {
       const mount = () => {
         if (cancelled || !host.isConnected) return;
+        // The host is hidden by CSS until xterm is ready; unhide it inline
+        // so it is measurable. On failure the inline style is reset so the
+        // fallback surface keeps the full panel height.
+        host.style.display = 'block';
         const rect = host.getBoundingClientRect();
         // The panel animates open; retry a few frames until it is measurable
         // instead of giving up and leaving a dead fallback surface.
@@ -79,12 +93,13 @@ export function TerminalPanel({ pty, exit, collapsed, maximized, height, onOpen,
           requestAnimationFrame(mount);
           return;
         }
-        if (rect.width < 2 || rect.height < 2) return;
+        if (rect.width < 2 || rect.height < 2) { host.style.display = ''; return; }
         void import('../xtermAdapter.js').then((m) => {
           if (cancelled || !host.isConnected) return;
           const h = m.createXterm(host);
-          if (!h || cancelled) { try { h?.dispose(); } catch { /* ignore */ } return; }
+          if (!h || cancelled) { try { h?.dispose(); } catch { /* ignore */ } host.style.display = ''; return; }
           xterm = h;
+          liveRef.current = h;
           const live: TermHandle = {
             write: (data) => {
               try { h.write(data); } catch { /* ignore */ }
@@ -100,14 +115,23 @@ export function TerminalPanel({ pty, exit, collapsed, maximized, height, onOpen,
           registerRef.current(live);
           setXtermReady(true);
           h.onData((d) => onInputRef.current(d));
+          const emitSize = () => {
+            let c = 0, r = 0;
+            try { c = h.cols(); r = h.rows(); } catch { return; }
+            if (c <= 0 || r <= 0) return;
+            const prev = lastDims.current;
+            if (prev && prev.c === c && prev.r === r) return;
+            lastDims.current = { c, r };
+            onResizeRef.current(c, r);
+          };
           try { h.fit(); } catch { /* ignore */ }
-          if (h.cols() > 0) onResizeRef.current(h.cols(), h.rows());
+          emitSize();
           ro = new ResizeObserver(() => {
             if (timer) clearTimeout(timer);
-            timer = setTimeout(() => { try { h.fit(); } catch { /* ignore */ } if (h.cols() > 0) onResizeRef.current(h.cols(), h.rows()); }, 120);
+            timer = setTimeout(() => { try { h.fit(); } catch { /* ignore */ } emitSize(); }, 120);
           });
           try { ro.observe(host); } catch { /* ignore */ }
-        }).catch(() => undefined);
+        }).catch(() => { host.style.display = ''; });
       };
       requestAnimationFrame(mount);
     }
@@ -117,6 +141,8 @@ export function TerminalPanel({ pty, exit, collapsed, maximized, height, onOpen,
       try { ro?.disconnect(); } catch { /* ignore */ }
       try { (xterm as unknown as { dispose?: () => void })?.dispose?.(); } catch { /* ignore */ }
       xterm = null;
+      liveRef.current = null;
+      lastDims.current = null;
       setXtermReady(false);
       registerRef.current(null);
     };
@@ -162,11 +188,13 @@ export function TerminalPanel({ pty, exit, collapsed, maximized, height, onOpen,
           <button type="button" aria-label="Collapse terminal" title="Collapse terminal" onClick={onToggleCollapse}><X size={14} /></button>
         </span>
       </div>
-      <div className="ide-terminal-body" onClick={focusInput}>
+      <div className="ide-terminal-body" onClick={focusSurface}>
         <div className="ide-terminal-xterm" ref={hostRef} />
-        <div className="ide-terminal-lines" ref={linesRef} aria-hidden="true" />
-        <input ref={inputRef} className="ide-terminal-input" aria-label="Terminal input" placeholder={pty === 'open' ? 'Type here and press Enter…' : 'Start the terminal to type…'} disabled={pty !== 'open'}
-          onKeyDown={(e) => { if (e.key === 'Enter') { const el = e.currentTarget; const v = el.value; el.value = ''; if (v) onInput(`${v}\n`); } }} />
+        <div className="ide-terminal-lines" ref={linesRef} aria-hidden={xtermReady} />
+        {!xtermReady && (
+          <input ref={inputRef} className="ide-terminal-input" aria-label="Terminal input" placeholder={pty === 'open' ? 'Type here and press Enter…' : 'Start the terminal to type…'} disabled={pty !== 'open'}
+            onKeyDown={(e) => { if (e.key === 'Enter') { const el = e.currentTarget; const v = el.value; el.value = ''; if (v) onInput(`${v}\n`); } }} />
+        )}
       </div>
     </section>
   );

@@ -65,7 +65,13 @@ class WorkspaceSession:
                     # Stray keystrokes racing open/close must not kill the
                     # whole workspace socket; there is no shell to take them.
                     continue
-                await asyncio.to_thread(self.pty.write, payload)
+                try:
+                    await asyncio.to_thread(self.pty.write, payload)
+                except Exception:
+                    # Broken shell (EIO, timed-out sendall on a full pty,
+                    # exec gone) ends the terminal, not the session: files
+                    # and editor stay connected and the UI can open a shell.
+                    await self.close_pty()
             elif kind == Type.PTY_RESIZE:
                 if not self.pty:
                     continue
@@ -73,7 +79,13 @@ class WorkspaceSession:
                 require_exact(value, {"columns", "rows"})
                 if type(value["columns"]) is not int or type(value["rows"]) is not int or not 1 <= value["columns"] <= 500 or not 1 <= value["rows"] <= 300:
                     raise ProtocolError()
-                await asyncio.to_thread(self.pty.resize, value)
+                try:
+                    await asyncio.to_thread(self.pty.resize, value)
+                except Exception:
+                    # Transient docker-API failure (or a just-exited exec);
+                    # the pump observes EOF and reports the real exit, so a
+                    # failed resize must not take down the session.
+                    continue
             elif kind == Type.PTY_CLOSE and not payload:
                 await self.close_pty()
             elif kind == Type.CLOSE and not payload:
@@ -188,7 +200,12 @@ class WorkspaceSession:
                     continue
                 if not data:
                     break
-                await self.send(Type.PTY_STDOUT, data)
+                try:
+                    await self.send(Type.PTY_STDOUT, data)
+                except ConnectionError:
+                    # Session is going away; stop pumping quietly instead of
+                    # surfacing a task exception.
+                    break
         finally:
             await self.close_pty()
 
