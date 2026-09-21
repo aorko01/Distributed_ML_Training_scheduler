@@ -260,26 +260,32 @@ class Broker:
                 if kind == Type.PROBE and not payload:
                     await write_record(writer, Type.READY)
                     return
-                if kind == Type.HELLO:
-                    # Workspace clients have their own state machine.  Do not
-                    # reinterpret a terminal OPEN/CLOSE as file operations.
-                    if self.busy:
-                        await write_record(writer, Type.ERROR, json_bytes({"code": "BUSY"}))
-                        return
-                    from .workspace_broker import WorkspaceSession
-                    from Access_Container.interactive_access.workspace_protocol import metadata
-
-                    self.busy, reserved = True, True
-                    workspace = WorkspaceSession(self, reader, writer)
-                    try:
-                        await workspace.run(metadata(payload))
-                    except (EOFError, ConnectionError):
-                        log.debug("workspace peer went away container=%.12s", self.container_id)
-                        raise
-                    except ProtocolError:
-                        log.warning("workspace protocol error container=%.12s", self.container_id)
-                        raise
+            if kind == Type.HELLO:
+                # Workspace clients have their own state machine.  Do not
+                # reinterpret a terminal OPEN/CLOSE as file operations.
+                # NOTE: the session itself must run WITHOUT the 5s handshake
+                # deadline above: that timeout bounds only the initial read.
+                # Running workspace.run() under it cancelled every session at
+                # ~5s (shutdown/cancelled + handshake TimeoutError), which the
+                # access layer surfaced as PROTOCOL_ERROR/BACKEND_EOF.
+                if self.busy:
+                    await write_record(writer, Type.ERROR, json_bytes({"code": "BUSY"}))
                     return
+                from .workspace_broker import WorkspaceSession
+                from Access_Container.interactive_access.workspace_protocol import metadata
+
+                self.busy, reserved = True, True
+                workspace = WorkspaceSession(self, reader, writer)
+                try:
+                    await workspace.run(metadata(payload))
+                except (EOFError, ConnectionError):
+                    log.debug("workspace peer went away container=%.12s", self.container_id)
+                    raise
+                except ProtocolError:
+                    log.warning("workspace protocol error container=%.12s", self.container_id)
+                    raise
+                return
+            async with asyncio.timeout(5):
                 if kind != Type.OPEN:
                     raise ProtocolError()
                 value = dimensions(payload, opening=True)
