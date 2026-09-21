@@ -15,8 +15,16 @@ export function createXterm(host: HTMLElement, opts: { fontSize?: number } = {})
   const rect = host.getBoundingClientRect();
   if (rect.width < 2 || rect.height < 2) return null;
   const term = new Terminal({
-    theme: { background: '#1e1e1e', foreground: '#cccccc', cursor: '#aeafad' },
-    fontFamily: 'Menlo, Consolas, monospace',
+    theme: {
+      background: '#080b10',
+      foreground: '#c7d2e2',
+      cursor: '#39a9ff',
+      cursorAccent: '#080b10',
+      selectionBackground: 'rgba(57, 169, 255, 0.35)',
+      black: '#080b10',
+      white: '#c7d2e2',
+    },
+    fontFamily: "'JetBrains Mono', Menlo, Consolas, monospace",
     fontSize: opts.fontSize ?? 13,
     allowTransparency: false,
     scrollback: 5000,

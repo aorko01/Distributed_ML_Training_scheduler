@@ -59,12 +59,16 @@ class WorkspaceSession:
             elif kind == Type.PTY_OPEN:
                 await self.pty_open(metadata(payload))
             elif kind == Type.PTY_STDIN:
-                if not self.pty or self.read_only:
+                if self.read_only:
                     raise ProtocolError()
+                if not self.pty:
+                    # Stray keystrokes racing open/close must not kill the
+                    # whole workspace socket; there is no shell to take them.
+                    continue
                 await asyncio.to_thread(self.pty.write, payload)
             elif kind == Type.PTY_RESIZE:
                 if not self.pty:
-                    raise ProtocolError()
+                    continue
                 value = metadata(payload)
                 require_exact(value, {"columns", "rows"})
                 if type(value["columns"]) is not int or type(value["rows"]) is not int or not 1 <= value["columns"] <= 500 or not 1 <= value["rows"] <= 300:
@@ -166,8 +170,13 @@ class WorkspaceSession:
         try:
             self.pty = await asyncio.to_thread(DockerSession, self.broker.client, self.broker.container_id, self.broker.user, self.broker.workdir, value["columns"], value["rows"])
         except Exception:
-            await self.send(Type.ERROR, metadata_bytes({"code": "UNAVAILABLE"}))
+            # A failed shell launch must surface as a terminal exit, not a
+            # socket-level ERROR: the latter tears down files + editor too.
+            self.pty = None
+            with suppress(ConnectionError):
+                await self.send(Type.PTY_EXIT, metadata_bytes({"code": 1, "reason": "unavailable"}))
             return
+        self.exited = False
         await self.send(Type.PTY_OPENED, metadata_bytes({"protocol": "workspace-stream-v1"}))
         self.output = asyncio.create_task(self.pump_pty())
 

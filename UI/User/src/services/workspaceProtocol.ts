@@ -242,7 +242,8 @@ export class WorkspaceConnection {
       return;
     }
     if (type === WorkspaceType.PTY_STDOUT) {
-      if (this.pty !== 'open') throw new WorkspaceError('PROTOCOL_ERROR', 'Unexpected terminal output');
+      // Output racing open/close must not kill the whole workspace socket.
+      if (this.pty === 'closed' || this.pty === 'exited') throw new WorkspaceError('PROTOCOL_ERROR', 'Unexpected terminal output');
       try { this.onPtyOutput?.(data.slice()); } catch { /* keep socket up */ }
       return;
     }
@@ -374,9 +375,9 @@ export class WorkspaceConnection {
     try { this.send(WorkspaceType.PTY_OPEN, metadataBytes({ shell: 'default', columns, rows })); }
     catch (error) { this.setPty('closed'); throw error instanceof Error ? error : new WorkspaceError('UNAVAILABLE', 'Workspace disconnected', true); }
   }
-  ptyInput(data: string): void { if (this.pty !== 'open') return; if (!data) return; this.send(WorkspaceType.PTY_STDIN, encoder.encode(data)); }
-  ptyBinary(data: Uint8Array): void { if (this.pty !== 'open') return; if (!data.length) return; this.send(WorkspaceType.PTY_STDIN, data); }
-  resize(columns: number, rows: number): void { if (this.pty !== 'open') return; if (!Number.isInteger(columns) || !Number.isInteger(rows) || columns < 1 || columns > 500 || rows < 1 || rows > 300) return; this.send(WorkspaceType.PTY_RESIZE, metadataBytes({ columns, rows })); }
+  ptyInput(data: string): void { if (this.pty !== 'open') return; if (!data) return; try { this.send(WorkspaceType.PTY_STDIN, encoder.encode(data)); } catch { /* socket gone */ } }
+  ptyBinary(data: Uint8Array): void { if (this.pty !== 'open') return; if (!data.length) return; try { this.send(WorkspaceType.PTY_STDIN, data); } catch { /* socket gone */ } }
+  resize(columns: number, rows: number): void { if (this.pty !== 'open') return; if (!Number.isInteger(columns) || !Number.isInteger(rows) || columns < 1 || columns > 500 || rows < 1 || rows > 300) return; try { this.send(WorkspaceType.PTY_RESIZE, metadataBytes({ columns, rows })); } catch { /* socket gone */ } }
   closePty(): void {
     if (this.pty === 'closed' || this.pty === 'exited' || this.pty === 'closing') return;
     this.setPty('closing');

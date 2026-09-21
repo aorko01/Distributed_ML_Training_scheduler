@@ -49,6 +49,17 @@ export default function WorkspaceIDE() {
   const termLines = useRef<{ write(d: Uint8Array | string): void; clear(): void } | null>(null);
   const termHandle = useRef<{ write(d: Uint8Array | string): void; clear(): void; focus(): void; cols(): number; rows(): number; paste(t: string): void } | null>(null);
   const panels = useResizablePanels();
+  // Stable terminal callbacks: TerminalPanel mounts its xterm surface once
+  // (effect deps [collapsed] only). Inline closures here would tear the
+  // surface down on every keystroke and drop PTY output.
+  const registerTerminal = useCallback((h: { write(d: Uint8Array | string): void; clear(): void; focus(): void; cols(): number; rows(): number; paste(t: string): void } | null) => {
+    termHandle.current = h;
+    termLines.current = h;
+  }, []);
+  const handleTermInput = useCallback((data: string) => { connRef.current?.ptyInput(data); }, []);
+  const handleTermResize = useCallback((c: number, r: number) => { connRef.current?.resize(c, r); }, []);
+  const { setTerminalHeight } = panels;
+  const handleTermHeight = useCallback((h: number) => { setTerminalHeight(h); }, [setTerminalHeight]);
   const dirtyCount = snap.dirtyCount;
   useBeforeUnloadDirtyGuard(dirtyCount > 0);
   useRouteDirtyGuard(dirtyCount > 0);
@@ -186,7 +197,19 @@ export default function WorkspaceIDE() {
     },
     onPtyOutput: (d) => { termLines.current?.write(d); },
     onPtyExit: () => { dispatch({ type: 'pty', state: 'exited', exit: connRef.current?.ptyExit ?? { code: 0, reason: 'exited' } }); },
-    onPtyState: (s) => { dispatch({ type: 'pty', state: s }); if (s === 'open' || s === 'opening') dispatch({ type: 'ptyActive', active: true }); },
+    onPtyState: (s) => {
+      dispatch({ type: 'pty', state: s });
+      if (s === 'open' || s === 'opening') dispatch({ type: 'ptyActive', active: true });
+      // Fit-time resizes during 'opening' are dropped by the transport guard;
+      // re-sync the measured size once the shell is actually open so `ls`
+      // output wraps to the real terminal width.
+      if (s === 'open') {
+        try {
+          const h = termHandle.current;
+          if (h && h.cols() > 0) connRef.current?.resize(h.cols(), h.rows());
+        } catch { /* best effort */ }
+      }
+    },
   });
   const snapRef = useRef(snap);
   snapRef.current = snap;
@@ -360,9 +383,10 @@ export default function WorkspaceIDE() {
               onClear={() => termHandle.current?.clear()}
               onToggleCollapse={panels.toggleTerminal}
               onToggleMax={() => setMaxTerm((v) => !v)}
-              onInput={(data) => connRef.current?.ptyInput(data)}
-              onResize={(c, r) => connRef.current?.resize(c, r)}
-              register={(h) => { termHandle.current = h; termLines.current = h; }}
+              onInput={handleTermInput}
+              onResize={handleTermResize}
+              onHeightChange={handleTermHeight}
+              register={registerTerminal}
             />
           )}
         </main>
