@@ -110,7 +110,7 @@ def create_app(settings=None, management=None, dialer=None, local=None, backgrou
         capacity = app.state.capacity
         auth_reserved = reserved = False
         record = writer = None
-        code, counts = 1000, {"sent": 0, "received": 0}
+        code, counts, reason = 1000, {"sent": 0, "received": 0}, "pre-auth"
         try:
             await capacity.begin_auth()
             auth_reserved = True
@@ -139,19 +139,19 @@ def create_app(settings=None, management=None, dialer=None, local=None, backgrou
             async with asyncio.timeout(min(3, remaining)):
                 reader, writer = await app.state.dialer.dial(ip, port)
             await websocket.send_json({"type": "ready", "protocol": "tcp-stream-v1"})
-            code, counts = await relay(websocket, reader, writer, record, app.state.management, configured)
+            code, counts, reason = await relay(websocket, reader, writer, record, app.state.management, configured)
         except (InvalidTicket, ValidationError, ValueError, KeyError, TypeError):
-            code = 4401
+            code, reason = 4401, "auth-rejected"
         except TimeoutError:
-            code = 1011 if record else 4408
+            code, reason = (1011, "dial-timeout") if record else (4408, "auth-timeout")
         except CapacityError:
-            code = 1013
+            code, reason = 1013, "at-capacity"
         except ManagementError as error:
-            code = 4410 if error.status in (404, 409, 410) else 4403 if error.status in (401, 403) else 1013
+            code, reason = (4410, f"claim-denied:{error.status}") if error.status in (404, 409, 410) else (4403, f"claim-denied:{error.status}") if error.status in (401, 403) else (1013, "management-error")
         except (OSError, RuntimeError, WebSocketDisconnect):
-            code = 1011
+            code, reason = 1011, "transport-error"
         except asyncio.CancelledError:
-            code = 1001
+            code, reason = 1001, "shutdown"
             raise
         finally:
             if writer:
@@ -172,7 +172,7 @@ def create_app(settings=None, management=None, dialer=None, local=None, backgrou
                             await app.state.management.release(record["session_id"])
             with suppress(RuntimeError, WebSocketDisconnect):
                 await websocket.close(code=code)
-            logger.info("connection session=%s outcome=%s duration=%.3f sent=%s received=%s", record.get("session_id") if record else None, code,
+            logger.info("connection session=%s outcome=%s reason=%s duration=%.3f sent=%s received=%s", record.get("session_id") if record else None, code, reason,
                         time.monotonic() - started, counts["sent"], counts["received"])
     return app
 

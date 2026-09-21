@@ -34,11 +34,13 @@ class Writer:
 
 
 class Management:
-    def __init__(self, error=None, hang=False):
-        self.error, self.hang = error, hang
+    def __init__(self, error=None, hang=False, renewed_version=None):
+        self.error, self.hang, self.renewed_version = error, hang, renewed_version
     async def renew(self, session):
         if self.hang:
             await asyncio.Future()
+        if self.renewed_version is not None:
+            return {"version": self.renewed_version, "lease_expires_at": utc(time.time() + 5)}
         raise self.error or ManagementError()
 
 
@@ -53,10 +55,11 @@ async def test_binary_stream_eof_and_backpressure():
     reader.feed_data(payload)
     await asyncio.sleep(0.02)
     reader.feed_eof()
-    code, counts = await task
+    code, counts, reason = await task
     assert code == 1000 and writer.output == [payload] and writer.drained == 1
     assert b"".join(ws.output) == payload
     assert counts == {"sent": len(payload), "received": len(payload)}
+    assert reason == "backend-eof"
 
 
 @pytest.mark.asyncio
@@ -73,9 +76,24 @@ async def test_deadlines_and_failure_cancel_siblings(case):
                            {"type": "websocket.receive", "text": "secret"} if case == "text" else
                            {"type": "websocket.receive", "bytes": b"x" * 65537})
     started = time.monotonic()
-    code, _ = await asyncio.wait_for(task, 0.5)
+    code, _, reason = await asyncio.wait_for(task, 0.5)
     assert time.monotonic() - started < 0.3
     assert code == (1000 if case in ("idle", "disconnect") else 4403 if case in ("text", "oversize") else 4410)
+    expected = {"outage": "lease-expired", "hung": "lease-expired", "revoked": "renew-denied:410",
+                "idle": "idle-timeout", "absolute": "lease-expired", "text": "text-frame",
+                "oversize": "oversize-frame:65537", "disconnect": "client-disconnect"}[case]
+    assert reason == expected
+
+
+@pytest.mark.asyncio
+async def test_version_mismatch_reports_reason():
+    ws, reader, writer = Websocket(), asyncio.StreamReader(), Writer()
+    settings = SimpleNamespace(frame_max=65536, renewal_interval=0.01, idle_timeout=5)
+    record = {"session_id": "s", "version": "v", "lease_expires_at": utc(time.time() + 5), "deadline": utc(time.time() + 5)}
+    task = asyncio.create_task(relay(ws, reader, writer, record, Management(renewed_version="v2"), settings))
+    code, _, reason = await asyncio.wait_for(task, 0.5)
+    assert code == 4410
+    assert reason == "version-mismatch:v2"
 
 
 @pytest.mark.asyncio

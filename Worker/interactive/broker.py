@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import suppress
 import hmac
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -18,6 +19,9 @@ from Access_Container.interactive_access.protocol import (
     json_bytes,
     dimensions,
 )
+
+
+log = logging.getLogger("broker")
 
 
 class UnsafeSession(Exception):
@@ -267,7 +271,14 @@ class Broker:
 
                     self.busy, reserved = True, True
                     workspace = WorkspaceSession(self, reader, writer)
-                    await workspace.run(metadata(payload))
+                    try:
+                        await workspace.run(metadata(payload))
+                    except (EOFError, ConnectionError):
+                        log.debug("workspace peer went away container=%.12s", self.container_id)
+                        raise
+                    except ProtocolError:
+                        log.warning("workspace protocol error container=%.12s", self.container_id)
+                        raise
                     return
                 if kind != Type.OPEN:
                     raise ProtocolError()
@@ -291,7 +302,7 @@ class Broker:
                 )
                 try:
                     session = await asyncio.shield(launch)
-                except BaseException:
+                except BaseException as exc:
 
                     def reap(future):
                         try:
@@ -301,6 +312,7 @@ class Broker:
                             self.on_failure()
 
                     launch.add_done_callback(reap)
+                    log.error("terminal pty launch failed %s container=%.12s", type(exc).__name__, self.container_id)
                     self.on_failure()
                     raise
                 if not self.authority():
@@ -354,6 +366,10 @@ class Broker:
             closed = await asyncio.to_thread(session.close)
             session = None
             if not closed:
+                # Shell/exec teardown could not be proved; the workload was
+                # stopped to guarantee no late shell survives. The runtime is
+                # unhealthy from here on; the manager will tear it down.
+                log.error("terminal UNCLEAN close; workload container stopped container=%.12s", self.container_id)
                 self.on_failure()
                 await write_record(
                     writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"})
@@ -362,14 +378,16 @@ class Broker:
                 await write_record(
                     writer, Type.EXIT, json_bytes({"code": 0, "reason": "closed"})
                 )
-        except (ProtocolError, TimeoutError):
+        except (ProtocolError, TimeoutError) as exc:
+            log.warning("broker handshake failed %s container=%.12s", type(exc).__name__, self.container_id)
             with suppress(Exception):
                 await write_record(
                     writer, Type.ERROR, json_bytes({"code": "PROTOCOL_ERROR"})
                 )
         except (EOFError, ConnectionError, asyncio.CancelledError):
             pass
-        except Exception:
+        except Exception as exc:
+            log.error("broker connection failed %s container=%.12s", type(exc).__name__, self.container_id, exc_info=True)
             self.on_failure()
             with suppress(Exception):
                 await write_record(
@@ -389,6 +407,7 @@ class Broker:
                     await workspace.close()
             if session:
                 if not await asyncio.to_thread(session.close):
+                    log.error("terminal teardown UNCLEAN close; workload container stopped container=%.12s", self.container_id)
                     self.on_failure()
             if reserved:
                 self.busy = False

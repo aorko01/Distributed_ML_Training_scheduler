@@ -1,5 +1,6 @@
 """WorkspaceSession: PTY lifecycle, send serialization, idempotent shutdown."""
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -185,3 +186,60 @@ def test_pty_resize_failure_is_ignored():
         assert session.pty is pty
 
     asyncio.run(scenario())
+
+
+def test_pty_write_failure_is_logged_with_cause(caplog):
+    async def scenario():
+        session, _ = make_session()
+        sent = []
+
+        async def fake_send(kind, value=b""):
+            sent.append(kind)
+
+        session.send = fake_send  # type: ignore[method-assign]
+
+        class DeadPty:
+            def write(self, _data):
+                raise OSError("broken shell")
+
+            def close(self):
+                return True
+
+        session.pty = DeadPty()
+        records = [(Type.PTY_STDIN, b"exit\n"), (Type.CLOSE, b"")]
+
+        async def fake_read(_reader):
+            if records:
+                return records.pop(0)
+            await asyncio.sleep(3600)
+
+        with caplog.at_level(logging.WARNING, logger="workspace_broker"):
+            with patch("interactive.workspace_broker.read_record", side_effect=fake_read):
+                await session.run({"protocol": "workspace-stream-v1"})
+        assert Type.PTY_EXIT in sent
+
+    asyncio.run(scenario())
+    assert "pty write failed" in caplog.text and "OSError" in caplog.text
+
+
+def test_unclean_pty_close_logs_workload_stop(caplog):
+    async def scenario():
+        session, _ = make_session()
+        sent = []
+
+        async def fake_send(kind, value=b""):
+            sent.append(kind)
+
+        session.send = fake_send  # type: ignore[method-assign]
+
+        class StuckPty:
+            def close(self):
+                return False  # teardown unprovable: workload was stopped
+
+        session.pty = StuckPty()
+        with caplog.at_level(logging.WARNING, logger="workspace_broker"):
+            await session.close_pty()
+        assert sent == [Type.PTY_EXIT]
+
+    asyncio.run(scenario())
+    assert "UNCLEAN" in caplog.text and "workload container stopped" in caplog.text

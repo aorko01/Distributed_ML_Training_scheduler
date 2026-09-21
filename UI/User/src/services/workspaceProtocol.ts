@@ -86,6 +86,21 @@ export function describeCloseCode(code: number): string {
   return `Workspace disconnected (code ${code})`;
 }
 
+const WorkspaceTypeName = Object.freeze(Object.fromEntries(
+  Object.entries(WorkspaceType).map(([name, value]) => [value, name]),
+) as Record<number, string>);
+
+export interface DisconnectInfo {
+  message: string;
+  closeCode: number | null;
+  pty: PtyState;
+  pending: number;
+  sentRecords: number;
+  receivedRecords: number;
+  lastSent: string | null;
+  lastReceived: string | null;
+}
+
 type Pending = { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void; operation: string; path: string; streaming: boolean; chunks: Uint8Array[]; sequence: number; timer: ReturnType<typeof setTimeout> | null; settled: boolean };
 
 const KNOWN = new Set<number>([WorkspaceType.READY, WorkspaceType.RESULT, WorkspaceType.CHUNK, WorkspaceType.END, WorkspaceType.PTY_OPENED, WorkspaceType.PTY_STDOUT, WorkspaceType.PTY_EXIT, WorkspaceType.STATE, WorkspaceType.ERROR]);
@@ -152,6 +167,11 @@ export class WorkspaceConnection {
   private capabilitiesValue: WorkspaceCapabilities | null = null;
   private pty: PtyState = 'closed';
   private ptyExitInfo: { code: number; reason: string } | null = null;
+  private sentRecords = 0;
+  private receivedRecords = 0;
+  private lastSent: string | null = null;
+  private lastReceived: string | null = null;
+  private disconnectInfoValue: DisconnectInfo | null = null;
   onPtyOutput: ((data: Uint8Array) => void) | null = null;
   onPtyExit: ((info: { code: number; reason: string }) => void) | null = null;
   onPtyState: ((state: PtyState) => void) | null = null;
@@ -164,6 +184,10 @@ export class WorkspaceConnection {
   get serverCapabilities(): WorkspaceCapabilities | null { return this.capabilitiesValue; }
   get lastCloseCode(): number | null { return this.closeCodeValue; }
   get isClosed(): boolean { return this.closedFlag; }
+  /** Structured snapshot of the most recent disconnect; correlate its
+   *  closeCode/lastReceived with the gateway (`reason=`) and access
+   *  (`outcome= … last_client/last_server=`) log lines. */
+  get disconnectInfo(): DisconnectInfo | null { return this.disconnectInfoValue; }
   async connect(signal?: AbortSignal): Promise<void> {
     if (this.grant.protocol !== 'tcp-stream-v1' || this.grant.workspace_protocol !== 'workspace-stream-v1') throw new WorkspaceError('PROTOCOL_ERROR', 'Workspace unavailable');
     this.epoch += 1;
@@ -195,8 +219,17 @@ export class WorkspaceConnection {
     await this.readyPromise;
   }
   private setPty(next: PtyState): void { this.pty = next; try { this.onPtyState?.(next); } catch { /* listener errors stay local */ } }
+  private noteSent(type: number, bytes: number): void {
+    this.sentRecords += 1;
+    this.lastSent = `${WorkspaceTypeName[type] ?? type}:${bytes}B`;
+  }
+  private noteReceived(type: number, bytes: number): void {
+    this.receivedRecords += 1;
+    this.lastReceived = `${WorkspaceTypeName[type] ?? type}:${bytes}B`;
+  }
   private fail(error: Error, epoch?: number): void {
     if (typeof epoch === 'number' && epoch !== this.epoch) return;
+    const first = !this.firstError;
     if (!this.firstError) this.firstError = error;
     if (!this.readySettled) { this.readySettled = true; this.rejectReady?.(this.firstError); }
     for (const [, item] of [...this.pending]) { if (!item.settled) { item.settled = true; if (item.timer) clearTimeout(item.timer); item.reject(this.firstError); } }
@@ -204,6 +237,23 @@ export class WorkspaceConnection {
     const socket = this.socket; this.socket = null;
     if (socket) { try { socket.onopen = null; socket.onmessage = null; socket.onerror = null; socket.onclose = null; } catch { /* ignore */ } try { if (socket.readyState === WebSocket.OPEN) socket.close(); } catch { /* ignore */ } }
     this.closedFlag = true;
+    if (first) {
+      const info: DisconnectInfo = {
+        message: error instanceof Error ? error.message : String(error),
+        closeCode: (error as WorkspaceError).closeCode ?? this.closeCodeValue,
+        pty: this.pty,
+        pending: this.pending.size,
+        sentRecords: this.sentRecords,
+        receivedRecords: this.receivedRecords,
+        lastSent: this.lastSent,
+        lastReceived: this.lastReceived,
+      };
+      this.disconnectInfoValue = info;
+      // One structured line per disconnect: paste this alongside the
+      // gateway (`outcome=… reason=…`) and access
+      // (`outcome=… last_client/last_server=…`) lines to trace the drop.
+      try { console.warn('[workspace] disconnect', info); } catch { /* logging is best effort */ }
+    }
   }
   private settleReady(): void { if (this.readySettled) return; this.readySettled = true; this.resolveReady?.(); }
   private feed(input: Uint8Array): void {
@@ -217,6 +267,7 @@ export class WorkspaceConnection {
       const size = new DataView(joined.buffer, joined.byteOffset + offset + 2, 4).getUint32(0);
       if (version !== 1 || size > MAX_PAYLOAD || !KNOWN.has(type)) throw new WorkspaceError('PROTOCOL_ERROR', 'Workspace protocol error');
       if (joined.length - offset < size + 6) break;
+      this.noteReceived(type, size);
       this.receive(type, joined.slice(offset + 6, offset + 6 + size));
       if (this.closedFlag) { this.partial = new Uint8Array(0); return; }
       offset += size + 6;
@@ -257,7 +308,12 @@ export class WorkspaceConnection {
       return;
     }
     if (type === WorkspaceType.STATE) { const state = decodeObject(data); try { this.onState?.(state); } catch { /* keep socket up */ } return; }
-    if (type === WorkspaceType.ERROR) { const body = decodeObject(data); throw toWorkspaceError(body.code, 'Workspace unavailable'); }
+    if (type === WorkspaceType.ERROR) {
+      const body = decodeObject(data);
+      const code = typeof body.code === 'string' ? body.code : 'UNKNOWN';
+      try { console.warn('[workspace] server error', { code, pty: this.pty, lastSent: this.lastSent, lastReceived: this.lastReceived }); } catch { /* best effort */ }
+      throw toWorkspaceError(body.code, 'Workspace unavailable');
+    }
     if (type === WorkspaceType.RESULT) {
       const result = decodeObject(data);
       const id = result.id;
@@ -311,7 +367,9 @@ export class WorkspaceConnection {
   private send(type: number, payload?: Uint8Array<ArrayBufferLike>): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new WorkspaceError('UNAVAILABLE', 'Workspace disconnected', true);
+    const bytes = payload?.length ?? 0;
     socket.send(record(type, payload));
+    this.noteSent(type, bytes);
   }
   private armTimeout(id: string, timeoutMs: number, operation: string, path: string): void {
     const pending = this.pending.get(id);

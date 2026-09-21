@@ -2,6 +2,8 @@
 import asyncio
 from contextlib import suppress
 import hashlib
+import logging
+import time
 
 from Access_Container.interactive_access.protocol import Type, ProtocolError, read_record, write_record
 from Access_Container.interactive_access.workspace_protocol import (
@@ -10,6 +12,9 @@ from Access_Container.interactive_access.workspace_protocol import (
 )
 from .broker import DockerSession, UnsafeSession
 from .file_service import FileService, FileServiceError
+
+
+log = logging.getLogger("workspace_broker")
 
 
 SAFE_OPERATIONS = {"list", "stat", "read", "create_file", "mkdir", "write", "rename", "delete"}
@@ -30,6 +35,25 @@ class WorkspaceSession:
         self.send_lock = asyncio.Lock()
         self.closed = False
         self.exited = False
+        # Disconnect-tracing counters. Payload bytes and file contents are
+        # never logged, only operation names, record kinds, and sizes.
+        self.started = time.monotonic()
+        self.file_ops = 0
+        self.stdin_bytes = 0
+        self.stdout_bytes = 0
+        self.pty_opens = 0
+        self.last_kind = '-'
+
+    def _cid(self):
+        try:
+            return str(self.broker.container_id)[:12]
+        except Exception:
+            return '?'
+
+    def _summary(self):
+        return "container=%.12s file_ops=%d stdin=%d stdout=%d pty_opens=%d pty=%s last=%s" % (
+            self._cid(), self.file_ops, self.stdin_bytes, self.stdout_bytes,
+            self.pty_opens, 'open' if self.pty else 'none', self.last_kind)
 
     async def send(self, kind, value=b""):
         async with self.send_lock:
@@ -38,60 +62,90 @@ class WorkspaceSession:
             await write_record(self.writer, kind, value)
 
     async def run(self, hello):
-        require_exact(hello, {"protocol"})
-        if hello["protocol"] != "workspace-stream-v1" or not self.broker.healthy():
-            raise ProtocolError()
-        await self.send(Type.WORKSPACE_READY, metadata_bytes({
-            "protocol": "workspace-stream-v1", "root": self.broker.workdir,
-            "capabilities": ["files", "pty"], "text_file_limit": TEXT_FILE_LIMIT,
-            "chunk_limit": CONTENT_CHUNK_LIMIT,
-        }))
-        while self.broker.authority() and not self.broker.stopping:
-            kind, payload = await read_record(self.reader)
-            if kind == Type.FILE_REQUEST:
-                await self.file_request(metadata(payload))
-            elif kind == Type.FILE_CHUNK:
-                await self.file_chunk(unpack_chunk(payload))
-            elif kind == Type.FILE_END:
-                await self.file_end(metadata(payload))
-            elif kind == Type.CANCEL:
-                await self.cancel(metadata(payload))
-            elif kind == Type.PTY_OPEN:
-                await self.pty_open(metadata(payload))
-            elif kind == Type.PTY_STDIN:
-                if self.read_only:
-                    raise ProtocolError()
-                if not self.pty:
-                    # Stray keystrokes racing open/close must not kill the
-                    # whole workspace socket; there is no shell to take them.
-                    continue
-                try:
-                    await asyncio.to_thread(self.pty.write, payload)
-                except Exception:
-                    # Broken shell (EIO, timed-out sendall on a full pty,
-                    # exec gone) ends the terminal, not the session: files
-                    # and editor stay connected and the UI can open a shell.
-                    await self.close_pty()
-            elif kind == Type.PTY_RESIZE:
-                if not self.pty:
-                    continue
-                value = metadata(payload)
-                require_exact(value, {"columns", "rows"})
-                if type(value["columns"]) is not int or type(value["rows"]) is not int or not 1 <= value["columns"] <= 500 or not 1 <= value["rows"] <= 300:
-                    raise ProtocolError()
-                try:
-                    await asyncio.to_thread(self.pty.resize, value)
-                except Exception:
-                    # Transient docker-API failure (or a just-exited exec);
-                    # the pump observes EOF and reports the real exit, so a
-                    # failed resize must not take down the session.
-                    continue
-            elif kind == Type.PTY_CLOSE and not payload:
-                await self.close_pty()
-            elif kind == Type.CLOSE and not payload:
-                return
-            else:
+        try:
+            require_exact(hello, {"protocol"})
+            if hello["protocol"] != "workspace-stream-v1" or not self.broker.healthy():
+                log.warning("workspace hello rejected protocol=%r healthy=%s %s",
+                            hello.get("protocol"), self.broker.healthy(), self._summary())
                 raise ProtocolError()
+            await self.send(Type.WORKSPACE_READY, metadata_bytes({
+                "protocol": "workspace-stream-v1", "root": self.broker.workdir,
+                "capabilities": ["files", "pty"], "text_file_limit": TEXT_FILE_LIMIT,
+                "chunk_limit": CONTENT_CHUNK_LIMIT,
+            }))
+        except ProtocolError:
+            raise
+        except Exception as exc:
+            log.warning("workspace hello failed %s %s", type(exc).__name__, self._summary())
+            raise
+        outcome, detail = 'clean', 'closed by peer'
+        try:
+            while self.broker.authority() and not self.broker.stopping:
+                kind, payload = await read_record(self.reader)
+                self.last_kind = getattr(kind, 'name', str(kind))
+                if kind == Type.FILE_REQUEST:
+                    await self.file_request(metadata(payload))
+                elif kind == Type.FILE_CHUNK:
+                    await self.file_chunk(unpack_chunk(payload))
+                elif kind == Type.FILE_END:
+                    await self.file_end(metadata(payload))
+                elif kind == Type.CANCEL:
+                    await self.cancel(metadata(payload))
+                elif kind == Type.PTY_OPEN:
+                    await self.pty_open(metadata(payload))
+                elif kind == Type.PTY_STDIN:
+                    if self.read_only:
+                        raise ProtocolError()
+                    if not self.pty:
+                        # Stray keystrokes racing open/close must not kill the
+                        # whole workspace socket; there is no shell to take them.
+                        continue
+                    self.stdin_bytes += len(payload)
+                    try:
+                        await asyncio.to_thread(self.pty.write, payload)
+                    except Exception as exc:
+                        # Broken shell (EIO, timed-out sendall on a full pty,
+                        # exec gone) ends the terminal, not the session: files
+                        # and editor stay connected and the UI can open a shell.
+                        log.warning("workspace pty write failed %s stdin_bytes=%d %s; closing terminal only",
+                                    type(exc).__name__, len(payload), self._summary())
+                        await self.close_pty()
+                elif kind == Type.PTY_RESIZE:
+                    if not self.pty:
+                        continue
+                    value = metadata(payload)
+                    require_exact(value, {"columns", "rows"})
+                    if type(value["columns"]) is not int or type(value["rows"]) is not int or not 1 <= value["columns"] <= 500 or not 1 <= value["rows"] <= 300:
+                        raise ProtocolError()
+                    try:
+                        await asyncio.to_thread(self.pty.resize, value)
+                    except Exception as exc:
+                        # Transient docker-API failure (or a just-exited exec);
+                        # the pump observes EOF and reports the real exit, so a
+                        # failed resize must not take down the session.
+                        log.warning("workspace pty resize failed %s %sx%s %s; ignoring",
+                                    type(exc).__name__, value["columns"], value["rows"], self._summary())
+                        continue
+                elif kind == Type.PTY_CLOSE and not payload:
+                    await self.close_pty()
+                elif kind == Type.CLOSE and not payload:
+                    return
+                else:
+                    raise ProtocolError()
+        except (EOFError, ConnectionError) as exc:
+            outcome, detail = 'peer-eof', '%s last=%s' % (type(exc).__name__, self.last_kind)
+        except ProtocolError:
+            outcome, detail = 'protocol-error', 'last=%s' % self.last_kind
+            raise
+        except asyncio.CancelledError:
+            outcome, detail = 'shutdown', 'cancelled'
+            raise
+        finally:
+            if not self.broker.authority() or self.broker.stopping:
+                outcome, detail = 'lost-authority', detail
+            level = log.warning if outcome not in ('clean',) else log.info
+            level("workspace session end outcome=%s detail=%s duration=%.1fs %s",
+                  outcome, detail, time.monotonic() - self.started, self._summary())
 
     async def result(self, identifier, **value):
         await self.send(Type.FILE_RESULT, metadata_bytes({"id": identifier, **value}))
@@ -110,6 +164,7 @@ class WorkspaceSession:
             path(value["path"])
         if operation == "rename":
             path(value.get("target"))
+        self.file_ops += 1
         if operation == "write":
             if self.read_only or self.pending is not None or type(value.get("size")) is not int or not 0 <= value["size"] <= TEXT_FILE_LIMIT:
                 raise ProtocolError()
@@ -126,6 +181,7 @@ class WorkspaceSession:
         try:
             result = await asyncio.to_thread(self.files.call, operation, **args)
         except FileServiceError as exc:
+            log.debug("workspace file op=%s path=%r error=%s %s", operation, value.get("path"), exc.code, self._summary())
             await self.result(identifier, error=exc.code)
             return
         if operation != "read":
@@ -181,14 +237,18 @@ class WorkspaceSession:
             raise ProtocolError()
         try:
             self.pty = await asyncio.to_thread(DockerSession, self.broker.client, self.broker.container_id, self.broker.user, self.broker.workdir, value["columns"], value["rows"])
-        except Exception:
+        except Exception as exc:
             # A failed shell launch must surface as a terminal exit, not a
             # socket-level ERROR: the latter tears down files + editor too.
+            log.warning("workspace pty launch failed %s %sx%s %s",
+                        type(exc).__name__, value["columns"], value["rows"], self._summary(), exc_info=True)
             self.pty = None
             with suppress(ConnectionError):
                 await self.send(Type.PTY_EXIT, metadata_bytes({"code": 1, "reason": "unavailable"}))
             return
         self.exited = False
+        self.pty_opens += 1
+        log.info("workspace pty opened %sx%s %s", value["columns"], value["rows"], self._summary())
         await self.send(Type.PTY_OPENED, metadata_bytes({"protocol": "workspace-stream-v1"}))
         self.output = asyncio.create_task(self.pump_pty())
 
@@ -199,7 +259,9 @@ class WorkspaceSession:
                 if data is None:
                     continue
                 if not data:
+                    log.debug("workspace pty EOF %s", self._summary())
                     break
+                self.stdout_bytes += len(data)
                 try:
                     await self.send(Type.PTY_STDOUT, data)
                 except ConnectionError:
@@ -220,6 +282,14 @@ class WorkspaceSession:
             return
         closed = await asyncio.to_thread(session.close)
         self.exited = True
+        if closed:
+            log.info("workspace pty exited clean %s", self._summary())
+        else:
+            # Docker has no exec-kill API: close() could not prove the shell
+            # and its children were gone, so it stopped the exact workload
+            # container. The runtime is now unhealthy; the UI will disconnect
+            # and the manager will tear the assignment down.
+            log.error("workspace pty UNCLEAN close; workload container stopped %s", self._summary())
         with suppress(ConnectionError):
             await self.send(Type.PTY_EXIT, metadata_bytes({"code": 0 if closed else 1, "reason": "closed" if closed else "unavailable"}))
 

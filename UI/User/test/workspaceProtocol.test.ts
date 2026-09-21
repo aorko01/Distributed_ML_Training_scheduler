@@ -200,3 +200,21 @@ it('close rejects every pending operation exactly once', async () => {
   await ra; await rb;
   expect(connection.isClosed).toBe(true);
 });
+
+it('records a structured disconnect diagnostic for traceability', async () => {
+  const { connection, socket } = await connected();
+  connection.openPty(80, 24);
+  socket.onmessage?.({ data: record(WorkspaceType.PTY_OPENED, metadataBytes({ protocol: 'workspace-stream-v1' })) });
+  expect(connection.disconnectInfo).toBeNull();
+  // Server-side session failure surfaces as ERROR and tears the socket down.
+  socket.onmessage?.({ data: record(WorkspaceType.ERROR, metadataBytes({ code: 'UNAVAILABLE' })) });
+  await tick();
+  expect(connection.isClosed).toBe(true);
+  const info = connection.disconnectInfo;
+  expect(info).not.toBeNull();
+  expect(info?.pty).toBe('open');
+  expect(info?.lastReceived).toMatch(/^ERROR:/);
+  expect(info?.receivedRecords).toBeGreaterThan(0);
+  expect(info?.sentRecords).toBeGreaterThan(0);
+  connection.close();
+});
