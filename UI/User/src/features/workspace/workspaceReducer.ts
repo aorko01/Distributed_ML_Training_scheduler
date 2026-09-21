@@ -9,6 +9,7 @@ export type Action =
   | { type: 'toggle'; dir: string }
   | { type: 'select'; path: string | null }
   | { type: 'opened'; path: string; version: string; text: string }
+  | { type: 'externalUpdate'; path: string; version: string; text: string }
   | { type: 'saved'; path: string; version: string; text: string }
   | { type: 'saving'; path: string; saving: boolean; error?: string | null }
   | { type: 'fileError'; path: string; error: string | null }
@@ -78,6 +79,13 @@ export function reducer(prev: WorkspaceSnapshot, action: Action): WorkspaceSnaps
       const files = { ...prev.files, [action.path]: { path: action.path, version: action.version, savedText: action.text, conflict: null, saving: false, error: null } };
       const tabs = prev.tabs.includes(action.path) ? prev.tabs : [...prev.tabs, action.path];
       return { ...prev, files, tabs, active: action.path, selected: action.path };
+    }
+    case 'externalUpdate': {
+      // Silent reload of an open file changed outside the editor (terminal,
+      // another client). Unlike 'opened' this never steals the active tab.
+      const f = prev.files[action.path]; if (!f) return prev;
+      const files = { ...prev.files, [action.path]: { ...f, version: action.version, savedText: action.text, conflict: null, saving: false, error: null } };
+      return { ...prev, files };
     }
     case 'saved': {
       const f = prev.files[action.path]; if (!f) return prev;

@@ -87,10 +87,28 @@ export default function WorkspaceIDE() {
   useBeforeUnloadDirtyGuard(dirtyCount > 0);
   useRouteDirtyGuard(dirtyCount > 0);
   const connected = snap.phase === 'connected';
+  // Explorer + open tabs are a cached snapshot of the remote filesystem, and
+  // the shell shares that filesystem: `touch`, `mkdir`, `rm`, `mv`, `git
+  // checkout`, build output, etc. never pass through the file protocol, so
+  // nothing would invalidate the cache. Re-listing is idempotent and cheap
+  // (one bounded Docker exec per directory), so sync visible state whenever
+  // the terminal goes idle, on shell exit, periodically, and on focus — the
+  // same moments a local editor re-reads the disk.
+  const listInFlight = useRef(new Set<string>());
+  const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (syncTimer.current) clearTimeout(syncTimer.current); }, []);
 
   const refreshDir = useCallback(async (dir: string, cursor: number | null, append: boolean) => {
     const conn = connRef.current;
     if (!conn) return;
+    // Serialize full (non-append) listings per directory: pagination legs
+    // (append=true) belong to the listing that started them, while concurrent
+    // manual + automatic refreshes of the same dir would otherwise interleave
+    // pages from two different snapshots.
+    if (!append) {
+      if (listInFlight.current.has(dir)) return;
+      listInFlight.current.add(dir);
+    }
     try {
       dispatch({ type: 'dirLoading', dir, loading: true });
       const extra: Record<string, unknown> = {};
@@ -101,6 +119,7 @@ export default function WorkspaceIDE() {
       dispatch({ type: 'children', dir, entries, nextCursor: next, append });
       if (next !== null && next !== undefined) await refreshDir(dir, next, true);
     } catch (e) { dispatch({ type: 'dirLoading', dir, loading: false, error: e instanceof Error ? e.message : 'Could not list directory' }); }
+    finally { if (!append) listInFlight.current.delete(dir); }
   }, []);
 
   const openFile = useCallback(async (path: string) => {
@@ -115,6 +134,82 @@ export default function WorkspaceIDE() {
       setEditorText(text);
     } catch (e) { dispatch({ type: 'notice', notice: notice('error', e instanceof Error ? `${baseName(path)}: ${e.message}` : 'Could not open file') }); }
   }, [models, snap.files]);
+
+  // Reconcile open tabs with the server: files may have been created,
+  // modified, or deleted by the terminal while the explorer cache and editor
+  // models still hold the old snapshot. Clean tabs reload silently (like a
+  // local editor); dirty tabs keep the user's edits and are flagged as
+  // conflicted instead of being overwritten.
+  const syncOpenFiles = useCallback(async () => {
+    const conn = connRef.current;
+    if (!conn || snapRef.current.phase !== 'connected') return;
+    for (const path of Object.keys(snapRef.current.files)) {
+      const file = snapRef.current.files[path];
+      if (!file) continue;
+      let value: Record<string, unknown>;
+      try {
+        value = await conn.request('stat', path);
+      } catch (e) {
+        if ((e as { code?: string })?.code !== 'NOT_FOUND') continue;
+        const cur = snapRef.current.files[path];
+        if (!cur) continue;
+        const localText = models.getText(path) ?? cur.savedText;
+        if (localText === cur.savedText) {
+          models.remove(path);
+          dispatch({ type: 'closedTab', path });
+          dispatch({ type: 'notice', notice: notice('info', `${baseName(path)} was deleted outside the editor`) });
+        } else {
+          dispatch({ type: 'fileError', path, error: 'Deleted outside the editor' });
+          dispatch({ type: 'notice', notice: notice('error', `${baseName(path)} was deleted outside the editor. Save to restore it, or close without saving.`) });
+        }
+        continue;
+      }
+      if (connRef.current !== conn || snapRef.current.phase !== 'connected') return;
+      const serverVersion = typeof value.version === 'string' ? value.version : '';
+      const cur = snapRef.current.files[path];
+      if (!cur || !serverVersion || serverVersion === cur.version) continue;
+      const localText = models.getText(path) ?? cur.savedText;
+      if (localText === cur.savedText) {
+        try {
+          const latest = await conn.request('read', path);
+          if (connRef.current !== conn || snapRef.current.phase !== 'connected') return;
+          const text = String(latest.content ?? '');
+          models.setText(path, text);
+          dispatch({ type: 'externalUpdate', path, version: String(latest.version ?? serverVersion), text });
+          if (snapRef.current.active === path) setEditorText(text);
+        } catch { /* keep the stale copy; the next cycle retries */ }
+      } else {
+        dispatch({ type: 'conflict', path, serverText: cur.savedText, serverVersion });
+        dispatch({ type: 'notice', notice: notice('info', `${baseName(path)} changed outside the editor. Your edits are preserved.`) });
+      }
+    }
+  }, [models]);
+
+  // Re-list the root plus every expanded directory (non-append, so deletions
+  // vanish) and reconcile open tabs. Sequential to bound concurrent Docker
+  // execs on the worker; per-dir in-flight guards make overlapping manual
+  // and automatic syncs collapse instead of interleaving.
+  const syncVisible = useCallback(async () => {
+    const conn = connRef.current;
+    if (!conn || snapRef.current.phase !== 'connected') return;
+    const dirs = new Set<string>(['']);
+    for (const [key, node] of Object.entries(snapRef.current.nodes)) {
+      if (node.type === 'directory' && node.expanded) dirs.add(key);
+    }
+    for (const dir of dirs) {
+      if (connRef.current !== conn || snapRef.current.phase !== 'connected') return;
+      await refreshDir(dir, null, false);
+    }
+    await syncOpenFiles();
+  }, [refreshDir, syncOpenFiles]);
+
+  // Debounced sync after terminal output settles: a streaming command (build,
+  // test run, `cat`) emits continuously, and only the pause afterwards means
+  // the filesystem may have changed.
+  const scheduleSync = useCallback((delayMs: number) => {
+    if (syncTimer.current) clearTimeout(syncTimer.current);
+    syncTimer.current = setTimeout(() => { syncTimer.current = null; void syncVisible(); }, delayMs);
+  }, [syncVisible]);
 
   const doSave = useCallback(async (path: string): Promise<boolean> => {
     const conn = connRef.current;
@@ -218,7 +313,7 @@ export default function WorkspaceIDE() {
       else if (lower.includes('read_write') || lower.includes('writable')) dispatch({ type: 'readOnly', readOnly: false });
       if (lower.includes('drain') || lower.includes('stopp') || lower.includes('unavailable')) dispatch({ type: 'notice', notice: notice('info', `Workspace state: ${v}`) });
     },
-    onPtyOutput: (d) => { termLines.current?.write(d); },
+    onPtyOutput: (d) => { termLines.current?.write(d); scheduleSync(1200); },
     onPtyExit: (info) => {
       const exit = connRef.current?.ptyExit ?? info ?? { code: 0, reason: 'exited' };
       dispatch({ type: 'pty', state: 'exited', exit });
@@ -226,6 +321,9 @@ export default function WorkspaceIDE() {
       // to get a new one. Without this a failed launch looks identical to a
       // shell that silently drops command output.
       try { termHandle.current?.write(`\r\n[terminal ${exit.code === 0 ? 'closed' : 'exited'} (code ${exit.code}, ${exit.reason}) — press + for a new shell]\r\n`); } catch { /* ignore */ }
+      // A finished command is the most likely moment the filesystem changed
+      // (rm/mv/build/git); sync immediately instead of waiting for idle.
+      void syncVisible();
       if (restartRequested.current) {
         restartRequested.current = false;
         try {
@@ -254,6 +352,18 @@ export default function WorkspaceIDE() {
 
   useEffect(() => { models.onChange(() => { const t = { ...models.textsRef.current }; dispatch({ type: 'edited', texts: t }); const active = snapRef.current.active; if (active) { const v = t[active]; if (v !== undefined) setEditorText(v); } }); }, [models]);
   useEffect(() => { dispatch({ type: 'phase', phase: 'loading', message: 'Connecting…' }); void connectRef.current?.(0); return () => { link.disconnect(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Catch changes from anywhere else (background jobs, another client) and
+  // refresh when the user comes back, like a local editor does on focus.
+  useEffect(() => {
+    if (!connected) return;
+    const timer = setInterval(() => { void syncVisible(); }, 15000);
+    return () => clearInterval(timer);
+  }, [connected, syncVisible]);
+  useEffect(() => {
+    const onFocus = () => { if (snapRef.current.phase === 'connected') void syncVisible(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [syncVisible]);
 
   const closeTab = useCallback((path: string) => {
     const file = snapRef.current.files[path];
@@ -376,7 +486,7 @@ export default function WorkspaceIDE() {
         {panels.explorerOpen && (
           <aside className="ide-side" style={{ width: panels.explorerWidth }}>
             <ExplorerPanel snap={snap} wsName={header.name} connected={connected} ops={{
-              onToggleDir: (p) => { const n = snap.nodes[p]; if (!n) return; if (!n.expanded && (!n.children || n.children.length === 0)) void refreshDir(p, null, false); dispatch({ type: 'toggle', dir: p }); },
+              onToggleDir: (p) => { const n = snap.nodes[p]; if (!n) return; if (!n.expanded) void refreshDir(p, null, false); dispatch({ type: 'toggle', dir: p }); },
               onOpenFile: (p) => void openFile(p),
               onRefreshDir: (p) => void refreshDir(snap.nodes[p]?.type === 'file' ? parentPath(p) : p, null, false),
               onRefreshRoot: () => void refreshDir('', null, false),
