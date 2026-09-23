@@ -65,6 +65,7 @@ def run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_build_excluded_builder_id VARCHAR",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_build_excluded_until TIMESTAMPTZ",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS image_tag VARCHAR",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS packages VARCHAR",
         "ALTER TABLE workers ADD COLUMN IF NOT EXISTS is_testing BOOLEAN",
     ]
     with engine.begin() as conn:

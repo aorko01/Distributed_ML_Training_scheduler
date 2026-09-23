@@ -1,9 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
 import { submitJob } from '../services/jobs';
 import InteractiveCreate from './InteractiveCreate';
-import { UploadCloud, CheckCircle2, AlertTriangle } from 'lucide-react';
+import {
+  UploadCloud, CheckCircle2, Boxes, Cpu, Package, TerminalSquare, FileArchive, Sparkles, X,
+} from 'lucide-react';
+
+const parsePackagesPreview = (text: string): string[] =>
+  text
+    .replace(/,/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((t) => !t.startsWith('#'));
 
 const BatchForm: React.FC = () => {
   const [jobName, setJobName] = useState('');
@@ -14,7 +24,9 @@ const BatchForm: React.FC = () => {
   const [selectedCuda, setSelectedCuda] = useState<CudaVariant | null>(null);
   const [bashScript, setBashScript] = useState('python train.py --epochs 100 --batch-size 32');
   const [resumeCommand, setResumeCommand] = useState('');
+  const [packages, setPackages] = useState('');
   const [zipFile, setZipFile] = useState<File | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [requestPriority, setRequestPriority] = useState(false);
@@ -66,11 +78,25 @@ const BatchForm: React.FC = () => {
     }
   };
 
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      if (!file.name.toLowerCase().endsWith('.zip')) {
+        setSubmitError('Please attach a .zip archive.');
+        return;
+      }
+      setZipFile(file);
+      setSubmitError('');
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!jobName || !selectedPyTorch || !selectedCuda) return;
     if (!zipFile) {
-      setSubmitError('Please attach your workspace archive (.zip) before submitting.');
+      setSubmitError('Please attach your workspace archive (.zip) before creating the workspace.');
       return;
     }
 
@@ -84,31 +110,54 @@ const BatchForm: React.FC = () => {
         pytorchVersion: selectedPyTorch,
         cudaVersion: selectedCuda.cuda,
         dockerBaseImage: selectedCuda.tag,
+        packages: packages.trim() || undefined,
         requestForPriority: requestPriority,
         reasonForPriority: requestPriority ? priorityReason : undefined,
       }, zipFile);
-      navigate(`/jobs/${job.id}`);
+      navigate(`/builds/${job.id}`);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Failed to submit job.');
+      setSubmitError(err instanceof Error ? err.message : 'Failed to create workspace.');
     } finally {
       setSubmitting(false);
     }
   };
 
   const availableCudas = versions.find(v => v.version === selectedPyTorch)?.cudaVersions || [];
+  const packagePreview = useMemo(() => parsePackagesPreview(packages), [packages]);
 
   return (
-    <div className="fade-in" style={{ maxWidth: '800px', margin: '0 auto' }}>
-      <h1>Submit New Job</h1>
-      
-      <div className="card">
+    <div className="fade-in ws-add">
+      <div className="ws-hero">
+        <div className="ws-hero-copy">
+          <span className="ws-eyebrow"><Sparkles size={14} /> New workspace</span>
+          <h1>Add Workspace</h1>
+          <p>
+            Pick a PyTorch / CUDA base image, drop in your code archive, and list the
+            Python packages to install. We build the image for you — no
+            <code> requirements.txt </code> needed inside the zip.
+          </p>
+          <div className="ws-steps">
+            <span className="ws-step"><Boxes size={14} /> 1 · Environment</span>
+            <span className="ws-step"><FileArchive size={14} /> 2 · Code</span>
+            <span className="ws-step"><Package size={14} /> 3 · Packages</span>
+            <span className="ws-step"><TerminalSquare size={14} /> 4 · Command</span>
+          </div>
+        </div>
+        <div className="ws-hero-card">
+          <div className="ws-hero-row"><Cpu size={16} /><span>Base</span><strong>PT {selectedPyTorch || '—'} / CUDA {selectedCuda?.cuda || '—'}</strong></div>
+          <div className="ws-hero-row"><FileArchive size={16} /><span>Archive</span><strong>{zipFile ? zipFile.name : 'No file yet'}</strong></div>
+          <div className="ws-hero-row"><Package size={16} /><span>Packages</span><strong>{packagePreview.length > 0 ? `${packagePreview.length} listed` : 'None — base image only'}</strong></div>
+        </div>
+      </div>
+
+      <div className="card ws-card">
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label className="form-label">Job Name</label>
-            <input 
-              type="text" 
-              className="form-input" 
-              placeholder="e.g. ResNet50_Training" 
+            <label className="form-label">Workspace name</label>
+            <input
+              type="text"
+              className="form-input"
+              placeholder="e.g. ResNet50_Training"
               value={jobName}
               onChange={e => setJobName(e.target.value)}
               required
@@ -117,8 +166,8 @@ const BatchForm: React.FC = () => {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
             <div className="form-group">
-              <label className="form-label">PyTorch Version</label>
-              <select 
+              <label className="form-label">PyTorch version</label>
+              <select
                 className="form-select"
                 value={selectedPyTorch}
                 onChange={handlePyTorchChange}
@@ -137,8 +186,8 @@ const BatchForm: React.FC = () => {
               )}
             </div>
             <div className="form-group">
-              <label className="form-label">CUDA / cuDNN Version</label>
-              <select 
+              <label className="form-label">CUDA / cuDNN version</label>
+              <select
                 className="form-select"
                 value={selectedCuda?.tag ?? ''}
                 onChange={e => {
@@ -153,16 +202,25 @@ const BatchForm: React.FC = () => {
                   <option key={c.tag} value={c.tag}>CUDA {c.cuda} / cuDNN {c.cudnn}</option>
                 ))}
               </select>
+              {selectedCuda && (
+                <p className="ws-hint">Base image: <code>{selectedCuda.tag}</code></p>
+              )}
             </div>
           </div>
 
           <div className="form-group">
-            <label className="form-label">Workspace Archive (.zip)</label>
-            <div className="upload-zone" onClick={handleFileClick}>
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                style={{ display: 'none' }} 
+            <label className="form-label">Workspace archive (.zip)</label>
+            <div
+              className={`upload-zone ${dragActive ? 'drag-active' : ''}`}
+              onClick={handleFileClick}
+              onDragOver={e => { e.preventDefault(); setDragActive(true); }}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={handleDrop}
+            >
+              <input
+                type="file"
+                ref={fileInputRef}
+                style={{ display: 'none' }}
                 accept=".zip"
                 onChange={handleFileChange}
               />
@@ -176,77 +234,89 @@ const BatchForm: React.FC = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                   <UploadCloud size={48} color="var(--accent-primary)" style={{ marginBottom: '1rem' }} />
                   <p style={{ color: 'var(--text-primary)', fontWeight: 500 }}>Click to upload or drag and drop</p>
-                  <p style={{ fontSize: '0.875rem' }}>ZIP file containing your training scripts and data</p>
+                  <p style={{ fontSize: '0.875rem' }}>ZIP with your training scripts and data — no requirements.txt needed</p>
                 </div>
               )}
-            </div>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '0.5rem',
-                marginTop: '0.75rem',
-                padding: '0.75rem',
-                backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                border: '1px solid rgba(245, 158, 11, 0.35)',
-                borderRadius: '6px',
-                color: 'var(--status-warning, #f59e0b)',
-                fontSize: '0.825rem',
-                lineHeight: 1.5,
-              }}
-            >
-              <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: '0.15rem' }} />
-              <span>
-                Your ZIP must include a <strong>requirements.txt</strong>. Please pin <strong>absolute package
-                versions</strong> compatible with the selected PyTorch {selectedPyTorch || ''} and CUDA{' '}
-                {selectedCuda?.cuda || ''} to avoid version mismatch failures — Docker image building can take a
-                significant amount of time.
-              </span>
             </div>
           </div>
 
           <div className="form-group">
-            <label className="form-label">Run Command (Bash)</label>
-            <textarea 
+            <label className="form-label">Python packages to install</label>
+            <textarea
+              className="form-textarea ws-packages"
+              value={packages}
+              onChange={e => setPackages(e.target.value)}
+              placeholder={'numpy\npandas==2.0.3\nscikit-learn torchmetrics'}
+              spellCheck={false}
+            />
+            <p className="ws-hint">
+              One package per line (or space / comma separated), with optional version pins like
+              <code> pandas==2.0.3</code>. Installed with <code>pip install</code> during image build.
+              Leave empty to use the base image as-is.
+            </p>
+            {packagePreview.length > 0 && (
+              <div className="ws-chips">
+                {packagePreview.map((pkg) => (
+                  <span key={pkg} className="ws-chip">
+                    <Package size={12} /> {pkg}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${pkg}`}
+                      onClick={() => {
+                        const remaining = parsePackagesPreview(packages).filter((p) => p !== pkg);
+                        setPackages(remaining.join('\n'));
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Run command (Bash)</label>
+            <textarea
               className="form-textarea"
               value={bashScript}
               onChange={e => setBashScript(e.target.value)}
               placeholder="python train.py"
               required
             ></textarea>
-            <p style={{ fontSize: '0.75rem', marginTop: '0.5rem' }}>This command will be executed inside the container root of your extracted zip file.</p>
+            <p className="ws-hint">This command will be executed inside the container root of your extracted zip file.</p>
           </div>
 
           <div className="form-group">
-            <label className="form-label">Resume Checkpoint Command (Bash)</label>
-            <textarea 
+            <label className="form-label">Resume checkpoint command (Bash)</label>
+            <textarea
               className="form-textarea"
               value={resumeCommand}
               onChange={e => setResumeCommand(e.target.value)}
               placeholder="python train.py --resume checkpoint.pt"
             ></textarea>
-            <p style={{ fontSize: '0.75rem', marginTop: '0.5rem' }}>Optional. Command used to resume from a saved checkpoint. Will be stored with the job for later use.</p>
+            <p className="ws-hint">Optional. Command used to resume from a saved checkpoint. Will be stored with the workspace for later use.</p>
           </div>
 
           <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
-              <input 
-                type="checkbox" 
-                checked={requestPriority} 
-                onChange={(e) => setRequestPriority(e.target.checked)} 
+              <input
+                type="checkbox"
+                checked={requestPriority}
+                onChange={(e) => setRequestPriority(e.target.checked)}
               />
               Request High Priority
             </label>
-            
+
             {requestPriority && (
               <div style={{ marginTop: '0.5rem', animation: 'fadeIn 0.2s ease-out' }}>
-                <label className="form-label">Reason for Priority</label>
-                <textarea 
+                <label className="form-label">Reason for priority</label>
+                <textarea
                   className="form-input"
                   style={{ minHeight: '60px' }}
                   value={priorityReason}
                   onChange={e => setPriorityReason(e.target.value)}
-                  placeholder="Explain why this job should be prioritized..."
+                  placeholder="Explain why this workspace should be prioritized..."
                 ></textarea>
               </div>
             )}
@@ -270,7 +340,7 @@ const BatchForm: React.FC = () => {
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '2rem' }}>
             <button type="button" className="btn btn-secondary" onClick={() => navigate(-1)}>Cancel</button>
             <button type="submit" className="btn btn-primary" disabled={submitting || loadingVersions}>
-              {submitting ? 'Submitting...' : 'Submit Job'}
+              {submitting ? 'Creating...' : 'Add Workspace'}
             </button>
           </div>
         </form>
@@ -282,9 +352,9 @@ const BatchForm: React.FC = () => {
 const SubmitJob: React.FC = () => {
   const [params, setParams] = useSearchParams();
   const mode = params.get('mode') === 'interactive' ? 'interactive' : 'batch';
-  return <><div className="card"><label className="form-label" htmlFor="submission-mode">Create</label>
+  return <><div className="card ws-mode"><label className="form-label" htmlFor="submission-mode">Create</label>
     <select id="submission-mode" className="form-select" value={mode} onChange={e => setParams({ mode: e.target.value })}>
-      <option value="batch">Batch job</option><option value="interactive">Interactive workspace</option>
+      <option value="batch">Workspace (batch job)</option><option value="interactive">Interactive workspace</option>
     </select></div>{mode === 'batch' ? <BatchForm /> : <InteractiveCreate />}</>;
 };
 export default SubmitJob;

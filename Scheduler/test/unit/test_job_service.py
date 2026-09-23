@@ -52,6 +52,23 @@ class TestCreateJob:
         assert job.reason_for_priority == "deadline"
         assert job.resume_command == "python resume.py"
 
+    def test_create_job_persists_packages(self, db):
+        user = make_user(db)
+        job = job_service.create_job(
+            db,
+            {
+                "id": "job-pkg",
+                "user_id": user.user_id,
+                "object_key": "job-pkg/a.zip",
+                "command": "python train.py",
+                "docker_base_image": "img",
+                "packages": "numpy pandas==2.0.3",
+            },
+        )
+        assert job.packages == "numpy pandas==2.0.3"
+        fetched = job_service.get_user_job_by_id(db, user.user_id, "job-pkg")
+        assert fetched is not None and fetched["packages"] == "numpy pandas==2.0.3"
+
 
 class TestStateTransitions:
     def test_not_runnable_to_pending(self, db):

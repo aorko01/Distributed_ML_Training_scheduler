@@ -109,18 +109,54 @@ def ensure_logged_in(client: docker.DockerClient) -> bool:
             return True
         return docker_login(client)
 
-def generate_dockerfile(project_dir: str, command: str, base_image: str) -> str:
+def parse_packages_text(packages: str | None) -> list[str]:
+    """Parse the Add Workspace packages text field into pip arguments.
+
+    Accepts newlines, commas and extra whitespace (e.g. ``"numpy\\npandas==1.5"``
+    or ``"numpy, pandas scikit-learn"``). Strips comments (``# ...``) and
+    drops empty tokens. Returned tokens are passed straight to pip.
+    """
+    if not packages:
+        return []
+    tokens: list[str] = []
+    for chunk in str(packages).replace(",", " ").split():
+        token = chunk.strip()
+        if not token or token.startswith("#"):
+            continue
+        # Inline trailing comment, e.g. "numpy  # needed for data".
+        if "#" in token:
+            token = token.split("#", 1)[0].strip()
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def generate_dockerfile(
+    project_dir: str,
+    command: str,
+    base_image: str,
+    packages: str | list[str] | None = None,
+) -> str:
     if "\n" in base_image or "\r" in base_image or not base_image.strip():
         raise ValueError(f"Invalid base_image: {base_image!r}")
     if command and ("\n" in command or "\r" in command):
         raise ValueError("Invalid command: must be a single line")
+    if isinstance(packages, str):
+        package_list = parse_packages_text(packages)
+    else:
+        package_list = [p for p in (packages or []) if str(p).strip()]
     has_requirements = os.path.isfile(os.path.join(project_dir, "requirements.txt"))
     lines = [
         f"FROM {base_image}", "",
         "WORKDIR /workspace", "",
         "COPY . /workspace/", ""
     ]
-    if has_requirements:
+    if package_list:
+        # User-supplied packages from the Add Workspace form take precedence;
+        # quote each token so version pins / extras survive the shell.
+        quoted = " ".join(f"'{p}'" for p in package_list)
+        lines += [f"RUN pip install --no-cache-dir {quoted}", ""]
+    elif has_requirements:
         lines += ["RUN pip install --no-cache-dir -r requirements.txt", ""]
     
     if command:
@@ -375,6 +411,7 @@ def build_push_and_clean(
     base_image: str,
     build_attempt_id: str | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    packages: str | list[str] | None = None,
 ) -> tuple[str, str] | None:
     """Build, push and clean up the job image.
 
@@ -398,7 +435,7 @@ def build_push_and_clean(
             else:
                 shutil.copy2(src, dst)
 
-        dockerfile_content = generate_dockerfile(project_dir, command, base_image)
+        dockerfile_content = generate_dockerfile(project_dir, command, base_image, packages)
         with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile_content)
 
@@ -410,11 +447,17 @@ def build_push_and_clean(
         last_upload_time = None
 
         # Emit a diagnostic header so users have full context for debugging.
+        _pkg_preview = (
+            " ".join(parse_packages_text(packages) if isinstance(packages, str)
+                     else [str(p) for p in (packages or [])])
+            or "(none — zip bundled requirements.txt used if present)"
+        )
         emit_build_lines(job_id, build_log_buffer, [
             "=" * 60,
             f"Job {job_id}: building Docker image",
             f"Target image : {image_tag}",
             f"Base image   : {base_image}",
+            f"Packages     : {_pkg_preview}",
             f"Command      : {command or '(default Docker CMD)'}",
             "--- generated Dockerfile ---",
             dockerfile_content,

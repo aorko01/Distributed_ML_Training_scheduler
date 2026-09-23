@@ -400,11 +400,22 @@ class TestJobsRoutes:
         job = make_job(db, user.user_id)
         client = self._client(db, user)
         with patch.object(
-            jobs_route.log_service, "fetch_build_log_from_object_store",
+            jobs_route.log_service, "fetch_training_log_from_object_store",
             return_value="content",
         ):
             resp = client.get(f"/{job.id}/logs")
         assert resp.json()["content"] == "content"
+
+    def test_get_job_build_logs(self, db):
+        user = make_user(db)
+        job = make_job(db, user.user_id)
+        client = self._client(db, user)
+        with patch.object(
+            jobs_route.log_service, "fetch_build_log_from_object_store",
+            return_value="build-content",
+        ):
+            resp = client.get(f"/{job.id}/build-logs")
+        assert resp.json()["content"] == "build-content"
 
     def test_get_job_logs_not_found(self, db):
         user = make_user(db)
@@ -427,6 +438,44 @@ class TestJobsRoutes:
                 data={"command": "python train.py", "docker_base_image": "img"},
             )
         assert resp.json()["object_key"] == "jid/a.zip"
+
+    def test_submit_job_accepts_packages_without_requirements(self, db):
+        """Workspaces take packages from the text field; the zip needs no
+        requirements.txt anymore."""
+        from app.models.job_model import Job
+
+        user = make_user(db)
+        client = self._client(db, user)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("train.py", "print(1)")
+        with patch.object(
+            jobs_route, "save_to_object_store",
+            return_value={"object_key": "jid/b.zip", "files": []},
+        ) as mock_save:
+            resp = client.post(
+                "/submit_job",
+                files={"zip_file": ("b.zip", buf.getvalue(), "application/zip")},
+                data={
+                    "command": "python train.py",
+                    "docker_base_image": "img",
+                    "packages": "numpy pandas==2.0.3",
+                },
+            )
+        assert resp.status_code == 200
+        # No requirements.txt gate is enforced at submit time.
+        assert mock_save.call_args[1].get("require_files") in (None, [])
+        stored = db.query(Job).filter(Job.id == resp.json()["id"]).first()
+        assert stored is not None and stored.packages == "numpy pandas==2.0.3"
+
+    def test_ingest_logs_build_stream(self, db):
+        client = self._client(db)
+        with patch.object(
+            jobs_route.log_service, "publish_log_lines",
+            new=AsyncMock(return_value=None),
+        ) as mock_publish:
+            assert client.post("/logs/j1?stream=build", json={"lines": ["a"]}).json() == {"ok": True}
+            assert mock_publish.call_args[1].get("stream") == "build"
 
     def test_submit_job_store_failure(self, db):
         user = make_user(db)

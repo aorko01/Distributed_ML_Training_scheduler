@@ -66,7 +66,7 @@ class TestSendLogLines:
         ) as mock_post:
             api.send_log_lines("j1", ["a", "b"])
         url = mock_post.call_args[0][0]
-        assert url == f"{api.SCHEDULER_LOG_URL}/j1"
+        assert url == f"{api.SCHEDULER_LOG_URL}/j1?stream=build"
         assert mock_post.call_args[1]["json"] == {"lines": ["a", "b"]}
 
     def test_failure_swallowed(self):

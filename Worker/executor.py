@@ -596,8 +596,9 @@ class JobExecutor:
             rel_path = key[len(job_id) + 1:] if key.startswith(f"{job_id}/") else key
             if not rel_path:
                 continue
-            # build.log is a build artifact, not training state; skip it.
-            if os.path.basename(rel_path) == "build.log":
+            # build.log / training.log are log artifacts, not training state;
+            # skip them when restoring checkpoints.
+            if os.path.basename(rel_path) in ("build.log", "training.log"):
                 continue
 
             dest = os.path.join(job_output_dir, rel_path)
@@ -759,6 +760,11 @@ class JobExecutor:
     def _append_build_log(
         self, job_id: str, store: ObjectStore, log_buffer: list[str], force: bool = False
     ):
+        """Persist training stdout to ``{job_id}/training.log``.
+
+        Build output lives in ``{job_id}/build.log`` (written by the image
+        builder) so the Builds page and the training view stay separate.
+        """
         if not log_buffer:
             return
 
@@ -776,7 +782,11 @@ class JobExecutor:
             return
 
         if build_log_base is None:
-            existing = store.download(f"{job_id}/build.log")
+            existing = store.download(f"{job_id}/training.log")
+            if existing is None:
+                # Jobs created before the log split appended training output
+                # to build.log; continue from there instead of truncating.
+                existing = store.download(f"{job_id}/build.log")
             build_log_base = (
                 existing.decode("utf-8", errors="replace") if existing else ""
             )
@@ -787,7 +797,7 @@ class JobExecutor:
         content += "\n".join(log_buffer) + "\n"
 
         if store.upload_bytes(
-            f"{job_id}/build.log", content.encode("utf-8"), "text/plain"
+            f"{job_id}/training.log", content.encode("utf-8"), "text/plain"
         ):
             state.build_log_base = build_log_base
             state.last_log_upload = now

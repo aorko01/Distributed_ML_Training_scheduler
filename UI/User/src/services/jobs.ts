@@ -16,6 +16,7 @@ export interface Job {
   device: string;
   queuePosition?: number;
   resumeCommand?: string;
+  packages?: string;
 }
 
 interface BackendJob {
@@ -26,6 +27,7 @@ interface BackendJob {
   command: string;
   resume_command: string | null;
   docker_base_image: string;
+  packages?: string | null;
   config: unknown;
   status: string;
   priority: string;
@@ -84,6 +86,7 @@ const mapJob = (job: BackendJob): Job => {
     gpuHours: job.gpu_hour ?? 0,
     device: parseDevice(job),
     resumeCommand: job.resume_command ?? undefined,
+    packages: job.packages ?? undefined,
   };
 };
 
@@ -158,6 +161,7 @@ export interface SubmitJobPayload {
   pytorchVersion: string;
   cudaVersion: string;
   dockerBaseImage: string;
+  packages?: string;
   requestForPriority: boolean;
   reasonForPriority?: string;
 }
@@ -176,6 +180,9 @@ export const submitJob = async (
     formData.append('resume_command', jobData.resumeCommand);
   }
   formData.append('docker_base_image', jobData.dockerBaseImage);
+  if (jobData.packages?.trim()) {
+    formData.append('packages', jobData.packages.trim());
+  }
   formData.append('request_for_priority', String(jobData.requestForPriority));
   if (jobData.reasonForPriority) {
     formData.append('reason_for_priority', jobData.reasonForPriority);
@@ -267,6 +274,25 @@ export const fetchJobLogs = async (id: string): Promise<LogLine[]> => {
   }
 };
 
+export const fetchJobBuildLogs = async (id: string): Promise<LogLine[]> => {
+  try {
+    const data = await api.get<{ content?: string } | { error: string }>(
+      `/jobs/${id}/build-logs`,
+    );
+    if (hasError(data)) return [];
+    const content = (data.content ?? '').replace(/\r\n/g, '\n').trim();
+    if (!content) return [];
+    const now = new Date().toISOString();
+    return content.split('\n').filter(Boolean).map((text) => ({
+      type: classifyLogLine(text),
+      text,
+      timestamp: now,
+    }));
+  } catch {
+    return [];
+  }
+};
+
 interface StreamLogEntry {
   id: string;
   line: string;
@@ -288,6 +314,21 @@ export const streamJobLogs = (
   id: string,
   options: StreamJobLogsOptions,
 ): (() => void) => {
+  return streamLogChannel(id, 'training', options);
+};
+
+export const streamJobBuildLogs = (
+  id: string,
+  options: StreamJobLogsOptions,
+): (() => void) => {
+  return streamLogChannel(id, 'build', options);
+};
+
+const streamLogChannel = (
+  id: string,
+  channel: 'training' | 'build',
+  options: StreamJobLogsOptions,
+): (() => void) => {
   const wsBaseUrl = API_BASE_URL.replace(/^http/, 'ws').replace(/\/+$/, '');
   const token = getToken() ?? '';
 
@@ -304,7 +345,7 @@ export const streamJobLogs = (
     if (lastStreamId) params.set('after', lastStreamId);
 
     ws = new WebSocket(
-      `${wsBaseUrl}/jobs/${encodeURIComponent(id)}/logs/stream?${params.toString()}`,
+      `${wsBaseUrl}/jobs/${encodeURIComponent(id)}/${channel === 'build' ? 'build-logs' : 'logs'}/stream?${params.toString()}`,
     );
 
     ws.onmessage = (event) => {
@@ -353,7 +394,8 @@ export const streamJobLogs = (
 
   // Redis stream history is sent in the socket's initial message. Connecting
   // immediately keeps a slow/unavailable object store from delaying live logs.
-  // Finished jobs still load their complete build.log through fetchJobLogs().
+  // Finished jobs still load their complete log file through fetchJobLogs()
+  // (training) or fetchJobBuildLogs() (build).
   connect();
 
   return () => {

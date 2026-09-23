@@ -70,6 +70,7 @@ async def submit_job(
     command: str = Form(...),
     resume_command: str = Form(""),
     docker_base_image: str = Form(...),
+    packages: str = Form(""),
     vram_required: float | None = Form(None),
     request_for_priority: bool = Form(False),
     reason_for_priority: str = Form(""),
@@ -81,10 +82,13 @@ async def submit_job(
     try:
         file_content = await zip_file.read()
 
+        # Workspaces no longer need to bundle a requirements.txt: extra pip
+        # packages come from the `packages` text field and are installed by
+        # the image builder. Validate the zip structure only.
         result = save_to_object_store(
             file_content=file_content,
             filename=zip_file.filename,
-            require_files=["requirements.txt"],
+            require_files=None,
             job_id=job_id
         )
 
@@ -107,6 +111,7 @@ async def submit_job(
         "command": command,
         "resume_command": resume_command.strip() or None,
         "docker_base_image": docker_base_image,
+        "packages": packages.strip() or None,
         "config": None,
         "vram_required": vram_required,
         "priority": priority,
@@ -118,11 +123,17 @@ async def submit_job(
 
 
 @router.post("/logs/{job_id}")
-async def ingest_job_logs(job_id: str, request: LogLinesRequest):
+async def ingest_job_logs(job_id: str, request: LogLinesRequest, stream: str = "build"):
     """Ingest realtime log lines from the Docker Image Builder / Worker
-    and append them to the job's Redis stream."""
+    and append them to the job's Redis stream.
+
+    ``stream`` selects the destination: ``"build"`` (default here because the
+    image builder is the only caller of this endpoint) or ``"training"``.
+    Workers publish training logs through the authenticated
+    ``/internal/workers/v1/logs`` endpoint instead.
+    """
     try:
-        await log_service.publish_log_lines(job_id, request.lines)
+        await log_service.publish_log_lines(job_id, request.lines, stream=stream)
         return {"ok": True}
     except HTTPException:
         raise
@@ -514,8 +525,30 @@ def get_job_logs(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Return the full build.log stored in the object store for a job.
-    Used for finished jobs and as the 'previous logs' shown before realtime."""
+    """Return the job's *training* logs from the object store.
+
+    Build output lives under ``/{job_id}/build-logs`` so the dashboard job
+    view shows training output only.
+    """
+    try:
+        job = job_service.get_user_job_by_id(db, current_user.user_id, job_id)
+        if job is None:
+            return {"error": "Job not found"}
+        content = log_service.fetch_training_log_from_object_store(job_id)
+        return {"job_id": job_id, "status": job["status"], "content": content}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/{job_id}/build-logs")
+def get_job_build_logs(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Return the workspace image-build log (``{job_id}/build.log``)."""
     try:
         job = job_service.get_user_job_by_id(db, current_user.user_id, job_id)
         if job is None:
@@ -528,16 +561,8 @@ def get_job_logs(
         return {"error": str(e)}
 
 
-@router.websocket("/{job_id}/logs/stream")
-async def job_logs_stream(websocket: WebSocket, job_id: str):
-    """Stream a job's logs in realtime.
-
-    On first connect (no `after` query param) it sends the full Redis stream
-    history via an `init` message, then forwards new entries as `log` messages.
-    On reconnect a client passes `?after=<last stream id>` to resume without
-    re-sending already-seen lines. A `done` message is sent when the job
-    reaches a terminal status.
-    """
+async def _serve_log_stream(websocket: WebSocket, job_id: str, stream: str):
+    """Shared realtime log streamer for training vs build streams."""
     await websocket.accept()
 
     db = SessionLocal()
@@ -561,13 +586,13 @@ async def job_logs_stream(websocket: WebSocket, job_id: str):
         if after:
             last_id = after
         else:
-            history = await log_service.get_log_stream_history(job_id)
+            history = await log_service.get_log_stream_history(job_id, stream=stream)
             if history:
                 last_id = history[-1]["id"]
             await websocket.send_json({"type": "init", "lines": history})
 
         while True:
-            messages = await log_service.read_log_stream(job_id, last_id)
+            messages = await log_service.read_log_stream(job_id, last_id, stream=stream)
             for message in messages:
                 last_id = message["id"]
                 await websocket.send_json({"type": "log", **message})
@@ -592,6 +617,25 @@ async def job_logs_stream(websocket: WebSocket, job_id: str):
         pass
     finally:
         db.close()
+
+
+@router.websocket("/{job_id}/logs/stream")
+async def job_logs_stream(websocket: WebSocket, job_id: str):
+    """Stream a job's *training* logs in realtime.
+
+    On first connect (no `after` query param) it sends the full Redis stream
+    history via an `init` message, then forwards new entries as `log` messages.
+    On reconnect a client passes `?after=<last stream id>` to resume without
+    re-sending already-seen lines. A `done` message is sent when the job
+    reaches a terminal status.
+    """
+    await _serve_log_stream(websocket, job_id, stream="training")
+
+
+@router.websocket("/{job_id}/build-logs/stream")
+async def job_build_logs_stream(websocket: WebSocket, job_id: str):
+    """Stream a workspace's image-build logs in realtime (see Builds page)."""
+    await _serve_log_stream(websocket, job_id, stream="build")
 
 
 @router.get("/{job_id}")

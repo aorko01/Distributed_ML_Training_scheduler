@@ -6,6 +6,8 @@ import Register from './pages/Register';
 import Profile from './pages/Profile';
 import Dashboard from './pages/Dashboard';
 import SubmitJob from './pages/SubmitJob';
+import Builds from './pages/Builds';
+import BuildDetails from './pages/BuildDetails';
 import InteractiveDetails from './pages/InteractiveDetails';
 import InteractiveWorkspaces from './pages/InteractiveWorkspaces';
 import InteractiveEditor from './pages/InteractiveEditor';
@@ -36,6 +38,8 @@ function App() {
         }>
           <Route index element={<Dashboard />} />
           <Route path="submit" element={<SubmitJob />} />
+          <Route path="builds" element={<Builds />} />
+          <Route path="builds/:id" element={<BuildDetails />} />
           <Route path="interactive" element={<InteractiveWorkspaces />} />
           <Route path="interactive/:id" element={<InteractiveDetails />} />
           <Route path="interactive/:id/editor" element={<InteractiveEditor />} />

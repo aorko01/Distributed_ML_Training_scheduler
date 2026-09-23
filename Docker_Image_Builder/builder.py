@@ -128,14 +128,13 @@ def _sanitize_job_id(job_id: str) -> str:
 
 def find_project_dir(extracted_dir: str) -> str:
     # Prefer a directory (or the root) that actually looks like a project:
-    # contains requirements.txt or at least one .py file. Otherwise fall back
-    # to the previous behaviour (alphabetically first subdir, else root) so
-    # existing callers/tests keep working.
+    # contains at least one .py file. requirements.txt is optional now that
+    # extra packages come from the Add Workspace packages field. Otherwise
+    # fall back to the previous behaviour (alphabetically first subdir, else
+    # root) so existing callers/tests keep working.
     try:
         entries = sorted(os.listdir(extracted_dir))
     except OSError:
-        return extracted_dir
-    if os.path.isfile(os.path.join(extracted_dir, "requirements.txt")):
         return extracted_dir
     for entry in entries:
         if entry.startswith("__") or entry.startswith("."):
@@ -148,8 +147,10 @@ def find_project_dir(extracted_dir: str) -> str:
             continue
         candidate = os.path.join(extracted_dir, entry)
         if os.path.isdir(candidate):
-            if os.path.isfile(os.path.join(candidate, "requirements.txt")):
-                return candidate
+            for _root, _dirs, files in os.walk(candidate):
+                if any(f.endswith(".py") for f in files):
+                    return candidate
+                break
     for entry in entries:
         if entry.startswith("__") or entry.startswith("."):
             continue
@@ -253,6 +254,7 @@ def worker_loop(
             object_key = job.get("object_key")
             command = job.get("command", "")
             base_image = job.get("docker_base_image")
+            packages = job.get("packages")
             attempt_id = job.get("image_build_attempt_id")
 
             if not job_id or not object_key or not base_image or not attempt_id:
@@ -286,6 +288,7 @@ def worker_loop(
                         if registry is not None
                         else False
                     ),
+                    packages=packages,
                 )
             except Exception as e:
                 logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)

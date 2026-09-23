@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   downloadJobOutput,
   fetchJobById,
@@ -62,13 +62,16 @@ const JobDetails: React.FC = () => {
       setLogs([]);
 
       if (isFinished) {
-        // Finished jobs: logs come purely from the object store.
+        // Finished jobs: training logs come purely from the object store
+        // ({job_id}/training.log, with a build.log fallback for legacy jobs).
         const stored = await fetchJobLogs(id);
         if (!cancelled) setLogs(stored);
         return;
       }
 
-      // Running jobs: the socket sends Redis history first, then live lines.
+      // Running jobs: the socket sends the training Redis stream history
+      // first, then live lines. Build output streams separately on the
+      // Builds page and never lands in this terminal.
       stopStream = streamJobLogs(id, {
         onLog: (line) => {
           if (!cancelled) setLogs((prev) => [...prev, line]);
@@ -306,6 +309,27 @@ const JobDetails: React.FC = () => {
                   </div>
                 </div>
               )}
+            {job.packages && (
+              <div>
+                <div
+                  style={{
+                    color: "var(--text-secondary)",
+                    fontSize: "0.75rem",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Packages
+                </div>
+                <div style={{ fontSize: "0.85rem", wordBreak: "break-word" }}>{job.packages}</div>
+              </div>
+            )}
+            <Link
+              to={`/builds/${job.id}`}
+              className="btn btn-secondary"
+              style={{ textDecoration: "none", justifyContent: "center" }}
+            >
+              View image build log
+            </Link>
           </div>
         </div>
 
@@ -317,8 +341,8 @@ const JobDetails: React.FC = () => {
             minHeight: "500px",
           }}
         >
-          <h3 style={{ marginBottom: "1rem" }}>Live Logs</h3>
-          <LogTerminal logs={logs} jobId={job.id} />
+          <h3 style={{ marginBottom: "1rem" }}>Training logs</h3>
+          <LogTerminal logs={logs} jobId={job.id} title={`training — job ${job.id}`} />
         </div>
       </div>
     </div>

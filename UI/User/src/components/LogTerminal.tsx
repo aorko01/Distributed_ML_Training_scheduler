@@ -9,9 +9,10 @@ interface LogLine {
 interface LogTerminalProps {
   logs: LogLine[];
   jobId: string;
+  title?: string;
 }
 
-const LogTerminal: React.FC<LogTerminalProps> = ({ logs, jobId }) => {
+const LogTerminal: React.FC<LogTerminalProps> = ({ logs, jobId, title }) => {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = React.useState(true);
 
@@ -52,7 +53,7 @@ const LogTerminal: React.FC<LogTerminalProps> = ({ logs, jobId }) => {
           <div className="mac-btn minimize"></div>
           <div className="mac-btn maximize"></div>
         </div>
-        <div className="terminal-title">bash - job {jobId}</div>
+        <div className="terminal-title">{title ?? `bash - job ${jobId}`}</div>
       </div>
       <div className="terminal-body" ref={bodyRef} onScroll={handleScroll}>
         {logs.map((log, index) => (

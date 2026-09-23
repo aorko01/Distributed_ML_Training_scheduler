@@ -102,7 +102,7 @@ async def logs(body: Logs, worker=Depends(worker_auth), db=Depends(get_db)):
     job_id = assignment.job_id
     db.commit()
     try:
-        await publish_log_lines(job_id, body.lines)
+        await publish_log_lines(job_id, body.lines, stream="training")
     except Exception:
         raise HTTPException(503, "Log stream unavailable") from None
     return {"accepted": True}

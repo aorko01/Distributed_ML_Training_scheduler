@@ -61,6 +61,36 @@ class TestGenerateDockerfile:
         assert "pip install" not in out
         assert 'CMD ["python"]' in out
 
+    def test_packages_text_takes_precedence_over_requirements(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("torch==1.0")
+        out = docker_ops.generate_dockerfile(
+            str(tmp_path), "python train.py", "base:1", "numpy pandas==2.0.3"
+        )
+        assert "RUN pip install --no-cache-dir 'numpy' 'pandas==2.0.3'" in out
+        assert "requirements.txt" not in out
+
+    def test_packages_accepts_commas_and_lists(self, tmp_path):
+        out = docker_ops.generate_dockerfile(
+            str(tmp_path), "", "base:1", "numpy, pandas scikit-learn"
+        )
+        assert "'numpy' 'pandas' 'scikit-learn'" in out
+        out_list = docker_ops.generate_dockerfile(
+            str(tmp_path), "", "base:1", ["torchmetrics"]
+        )
+        assert "'torchmetrics'" in out_list
+
+
+class TestParsePackagesText:
+    def test_splits_lines_commas_and_spaces(self):
+        assert docker_ops.parse_packages_text("numpy\npandas==2.0.3") == ["numpy", "pandas==2.0.3"]
+        assert docker_ops.parse_packages_text("numpy, pandas scikit-learn") == [
+            "numpy", "pandas", "scikit-learn",
+        ]
+
+    def test_empty_and_none(self):
+        assert docker_ops.parse_packages_text("") == []
+        assert docker_ops.parse_packages_text(None) == []
+
 
 class TestSaveDebugCopy:
     def test_copies_tree(self, tmp_path):

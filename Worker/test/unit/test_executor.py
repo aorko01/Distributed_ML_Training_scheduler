@@ -589,8 +589,20 @@ class TestFlushAndAppendLogs:
             state = executor._get_job_log_state("j")
             state.build_log_base = None
             executor._append_build_log("j", store, ["l1", "l2"], force=True)
+        assert store.upload_bytes.call_args[0][0] == "j/training.log"
         content = store.upload_bytes.call_args[0][1].decode()
         assert "base-line" in content and "l1" in content
+
+    def test_append_seeds_from_training_log_first(self, executor):
+        store = MagicMock()
+        store.download.side_effect = lambda key: "train-base".encode() if key == "j/training.log" else None
+        store.upload_bytes.return_value = True
+        with patch.object(executor_module.runtime_config, "get", return_value=60.0):
+            state = executor._get_job_log_state("j")
+            state.build_log_base = None
+            executor._append_build_log("j", store, ["l1"], force=True)
+        assert store.download.call_args_list[0][0][0] == "j/training.log"
+        assert "train-base" in store.upload_bytes.call_args[0][1].decode()
 
     def test_append_failure_keeps_last_upload_none(self, executor):
         store = MagicMock()

@@ -33,6 +33,11 @@ class Job(Base):
     command = Column(String, nullable=False)
     resume_command = Column(String, nullable=True)
     docker_base_image = Column(String, nullable=False)
+    # Extra pip packages requested at workspace creation time (free-text field
+    # from the Add Workspace form, e.g. "numpy pandas scikit-learn==1.3").
+    # Installed by the image builder via `pip install`; the uploaded zip no
+    # longer needs to bundle a requirements.txt.
+    packages = Column(String, nullable=True)
     config = Column(JSON, nullable=True)
 
     priority = Column(

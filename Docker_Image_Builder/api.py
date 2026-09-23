@@ -19,12 +19,16 @@ def download_job_archive(object_key: str) -> bytes:
     return response.content
 
 def send_log_lines(job_id: str, lines: list[str]) -> None:
-    """Stream build log lines to the scheduler for realtime UI display."""
+    """Stream build log lines to the scheduler for realtime UI display.
+
+    Build output goes to the dedicated ``build`` stream so the Builds page
+    shows image logs while the dashboard job view shows training logs only.
+    """
     if not lines:
         return
     try:
         response = requests.post(
-            f"{SCHEDULER_LOG_URL}/{job_id}",
+            f"{SCHEDULER_LOG_URL}/{job_id}?stream=build",
             json={"lines": lines},
             timeout=5,
         )
