@@ -15,7 +15,7 @@ logger = logging.getLogger("uvicorn.error")
 
 LEASE_SECONDS = 45
 MAX_ATTEMPTS = 3
-IMAGE_JOB_STATES = {JobStatus.VRAM_ESTIMATION_PENDING, JobStatus.RUNNABLE, JobStatus.IN_PROGRESS, JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.RETRY_NEEDED}
+IMAGE_JOB_STATES = {JobStatus.IMAGE_READY, JobStatus.VRAM_ESTIMATION_PENDING, JobStatus.RUNNABLE, JobStatus.IN_PROGRESS, JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.RETRY_NEEDED}
 # User build output can contain arbitrary secrets. Publish bounded stage logs only;
 # never persist raw pip/Docker output on this new path.
 SAFE_LOG_LINES = {'Resolving base image', 'Building workload image', 'Pushing workload image', 'Image ready', 'Build failed', 'Build cancelled'}

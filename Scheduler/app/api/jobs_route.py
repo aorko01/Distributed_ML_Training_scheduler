@@ -16,6 +16,7 @@ from app.schemas.job_schema import (
     ImageBuildAttemptRequest,
     ImageBuildReadyRequest,
     JobIDRequest,
+    TrainingSubmissionRequest,
     VramEstimationReport,
     JobFailureReport,
     JobResumeRequest,
@@ -67,7 +68,7 @@ def _ws_authenticate(websocket: WebSocket, db: Session) -> User | None:
 async def submit_job(
     zip_file: UploadFile = File(...),
     name: str = Form(""),
-    command: str = Form(...),
+    command: str = Form(""),
     resume_command: str = Form(""),
     docker_base_image: str = Form(...),
     packages: str = Form(""),
@@ -77,6 +78,12 @@ async def submit_job(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
+    """Create a workspace and build its image.
+
+    Image building and training are decoupled: ``command``/``resume_command``
+    are optional here and normally omitted — the entry command is submitted
+    later from the Training page once the image is ready.
+    """
     job_id = str(uuid.uuid4())  # Generate ONE shared ID here
 
     try:
@@ -108,7 +115,7 @@ async def submit_job(
         "user_id": current_user.user_id,
         "object_key": result["object_key"],
         "name": name.strip() or None,
-        "command": command,
+        "command": command.strip() or None,
         "resume_command": resume_command.strip() or None,
         "docker_base_image": docker_base_image,
         "packages": packages.strip() or None,
@@ -143,12 +150,20 @@ async def ingest_job_logs(job_id: str, request: LogLinesRequest, stream: str = "
         raise HTTPException(status_code=503, detail="Log stream unavailable") from e
 
 
-@router.post("/update_job_to_vram_estimation_pending")
-def update_job_to_vram_estimation_pending(
+@router.post("/mark_image_ready")
+@router.post("/update_job_to_vram_estimation_pending", include_in_schema=False)
+def mark_image_ready(
     request: ImageBuildReadyRequest, db: Session = Depends(get_db)
 ):
+    """Record a successful image build for a workspace.
+
+    Jobs that already carry an entry command move on to VRAM estimation as
+    before, while build-only workspaces wait in ``IMAGE_READY`` until training
+    is submitted.  ``/update_job_to_vram_estimation_pending`` is kept as the
+    legacy alias used by already deployed image builders.
+    """
     try:
-        job = job_service.set_job_vram_estimation_pending(
+        job = job_service.set_job_image_ready(
             db,
             request.job_id,
             request.builder_id,
@@ -157,6 +172,41 @@ def update_job_to_vram_estimation_pending(
         )
         return {"job_id": job.id, "status": job.status.value}
 
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/{job_id}/training")
+def submit_training(
+    job_id: str,
+    request: TrainingSubmissionRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Submit the entry/resume command for an already built workspace image.
+
+    This is the Training page's submit action and decouples training from image
+    building: the job keeps its built image and re-enters the pipeline at VRAM
+    estimation, then trains on a worker.
+    """
+    try:
+        job = job_service.submit_training(
+            db,
+            current_user.user_id,
+            job_id,
+            command=request.command,
+            resume_command=request.resume_command,
+            priority=request.priority,
+            reason_for_priority=request.reason_for_priority,
+        )
+        return {
+            "job_id": job.id,
+            "status": job.status.value,
+            "command": job.command,
+            "resume_command": job.resume_command,
+        }
     except HTTPException:
         raise
     except Exception as e:

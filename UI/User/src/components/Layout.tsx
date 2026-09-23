@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, Server, LogOut, Activity, User, Hammer } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, Server, LogOut, Activity, User, Hammer, Rocket } from 'lucide-react';
 import { logout } from '../services/auth';
 
 const Layout: React.FC = () => {
@@ -57,6 +57,13 @@ const Layout: React.FC = () => {
           >
             <Hammer size={20} />
             Builds
+          </NavLink>
+          <NavLink
+            to="/training"
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+          >
+            <Rocket size={20} />
+            Training
           </NavLink>
           <NavLink 
             to="/machines" 

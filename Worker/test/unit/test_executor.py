@@ -292,6 +292,35 @@ class TestHandleTraining:
         mock_run.assert_called_once()
         mock_mon_cls.return_value.start.assert_called_once()
 
+    def test_entry_command_is_applied_at_run_time(self, executor, tmp_path):
+        """Images are built without a command; the submitted one runs here."""
+        with (
+            patch.object(executor_module, "OUTPUT_DIR", str(tmp_path)),
+            patch.object(JobExecutor, "_remove_output_dir", return_value=True),
+            patch.object(executor_module.os, "makedirs"),
+            patch.object(JobExecutor, "_prepare_output_mount", return_value=("/ws", set())),
+            patch.object(executor_module, "ObjectStore"),
+            patch.object(executor_module, "OutputFileMonitor"),
+            patch.object(JobExecutor, "_run_container") as mock_run,
+        ):
+            executor.handle_training("j1", "img", "python train.py --epochs 3")
+        assert mock_run.call_args.kwargs["command_args"] == [
+            "sh", "-c", "python train.py --epochs 3"
+        ]
+
+    def test_missing_command_falls_back_to_image_default(self, executor, tmp_path):
+        with (
+            patch.object(executor_module, "OUTPUT_DIR", str(tmp_path)),
+            patch.object(JobExecutor, "_remove_output_dir", return_value=True),
+            patch.object(executor_module.os, "makedirs"),
+            patch.object(JobExecutor, "_prepare_output_mount", return_value=("/ws", set())),
+            patch.object(executor_module, "ObjectStore"),
+            patch.object(executor_module, "OutputFileMonitor"),
+            patch.object(JobExecutor, "_run_container") as mock_run,
+        ):
+            executor.handle_training("j1", "img", None)
+        assert mock_run.call_args.kwargs["command_args"] is None
+
 
 class TestHandleRetry:
     def test_resume_success_returns_early(self, executor):
@@ -644,6 +673,22 @@ class TestProcessJob:
         ):
             executor.process_job({"id": "j1", "flag": "training"})
         mock_train.assert_called_once()
+
+    def test_training_flag_forwards_entry_command(self, executor):
+        with (
+            patch.object(JobExecutor, "pull_docker_image", return_value=True),
+            patch.object(executor_module, "save_running_job"),
+            patch.object(JobExecutor, "handle_training") as mock_train,
+        ):
+            executor.process_job({
+                "id": "j1",
+                "flag": "training",
+                "image_tag": "repo/j1:build-attempt-1",
+                "command": "python train.py",
+            })
+        mock_train.assert_called_once_with(
+            "j1", "repo/j1:build-attempt-1", "python train.py"
+        )
 
     def test_vram_flag(self, executor):
         with (

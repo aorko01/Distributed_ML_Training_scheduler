@@ -450,7 +450,7 @@ class JobExecutor:
         with self._job_logs_lock:
             self._job_logs.pop(job_id, None)
 
-    def handle_training(self, job_id: str, image_name: str):
+    def handle_training(self, job_id: str, image_name: str, command: str | None = None):
         started_at = time.time()
         logger.info("Training job received for job %s.", job_id)
         record_event("info", f"Job {job_id} training started")
@@ -467,10 +467,18 @@ class JobExecutor:
         monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
         monitor.start()
 
+        # Image building and training are decoupled: the image is built without
+        # an entry command, so the command submitted from the Training page is
+        # applied here at run time (same shell-form semantics as a Docker CMD).
+        if not command:
+            logger.warning(
+                "Job %s has no entry command; running the image's default CMD.", job_id
+            )
         self._reset_log_state(job_id)
         self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
             monitor, started_at,
+            command_args=["sh", "-c", command] if command else None,
         )
 
     def handle_retry(self, job_id: str, image_name: str,
@@ -525,7 +533,7 @@ class JobExecutor:
 
         logger.info("Job %s: starting fresh training run.", job_id)
         record_event("info", f"Job {job_id} starting fresh training run")
-        self.handle_training(job_id, image_name)
+        self.handle_training(job_id, image_name, original_command)
 
     def _resume_attempt(self, job_id: str, image_name: str,
                         job_output_dir: str, store: ObjectStore,
@@ -836,7 +844,9 @@ class JobExecutor:
                 self.handle_vram_estimation(job_id, image_name, job.get("command", ""))
             elif flag == "training":
                 save_running_job(job_id)
-                self.handle_training(job_id, image_name)
+                # The entry command travels with the job: images are built
+                # without one and the command is applied at run time.
+                self.handle_training(job_id, image_name, job.get("command"))
             elif flag == "retry":
                 save_running_job(job_id)
                 self.handle_retry(job_id, image_name, job.get("resume_command"),

@@ -10,7 +10,8 @@ import {
   type LogLine,
 } from "../services/jobs";
 import LogTerminal from "../components/LogTerminal";
-import { ArrowLeft, Download, Loader2 } from "lucide-react";
+import CopyButton from "../components/CopyButton";
+import { ArrowLeft, Download, Loader2, Rocket } from "lucide-react";
 
 const JobDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -122,11 +123,15 @@ const JobDetails: React.FC = () => {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "Pending":
-        return <span className="badge badge-pending">Pending</span>;
+        return <span className="badge badge-pending">Queued</span>;
       case "Building":
         return <span className="badge badge-building">Building</span>;
+      case "ImageReady":
+        return <span className="badge badge-ready">Image ready</span>;
+      case "Estimating":
+        return <span className="badge badge-building">Estimating VRAM</span>;
       case "Running":
-        return <span className="badge badge-running">Running</span>;
+        return <span className="badge badge-running">Training</span>;
       case "Retrying":
         return <span className="badge badge-retrying">Retrying</span>;
       case "Completed":
@@ -197,6 +202,20 @@ const JobDetails: React.FC = () => {
         </div>
       </div>
 
+      {job.status === "ImageReady" && (
+        <div className="card ws-next-step" style={{ marginBottom: "1.5rem" }}>
+          <Rocket size={18} />
+          <div>
+            <strong>Image ready — no training command yet</strong>
+            <p>
+              This workspace was built without an entry command. Provide the entry and
+              resume commands on the <Link to={`/training?job=${encodeURIComponent(job.id)}`}>Training page</Link>{" "}
+              to run VRAM estimation and start training.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div
         style={{
           display: "grid",
@@ -237,7 +256,10 @@ const JobDetails: React.FC = () => {
               >
                 ID
               </div>
-              <div style={{ fontFamily: "monospace" }}>{job.id}</div>
+              <div className="build-detail-id">
+                <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{job.id}</span>
+                <CopyButton value={job.id} title={`Copy job id ${job.id}`} />
+              </div>
             </div>
             <div>
               <div

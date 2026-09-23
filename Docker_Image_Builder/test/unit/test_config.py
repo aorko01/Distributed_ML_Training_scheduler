@@ -33,9 +33,7 @@ class TestSchedulerUrls:
         assert config.SCHEDULER_QUEUE_URL == (
             "http://h:8000/jobs/unbuilt_jobs"
         )
-        assert config.SCHEDULER_UPDATE_URL.endswith(
-            "/jobs/update_job_to_vram_estimation_pending"
-        )
+        assert config.SCHEDULER_UPDATE_URL.endswith("/jobs/mark_image_ready")
         assert config.SCHEDULER_FAILURE_URL.endswith("/jobs/mark_failed")
         assert config.SCHEDULER_LOG_URL.endswith("/jobs/logs")
         assert config.SCHEDULER_BUILDER_HEARTBEAT_URL.endswith(

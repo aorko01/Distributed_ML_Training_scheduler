@@ -21,8 +21,8 @@ from app.schemas.worker_schema import WorkerInfo, WorkerResource
 class TestJobStatusEnum:
     def test_all_expected_members(self):
         assert {s.value for s in JobStatus} == {
-            "NOT_RUNNABLE", "VRAM_ESTIMATION_PENDING", "RUNNABLE", "IN_PROGRESS",
-            "IMAGE_BUILDING", "COMPLETED", "FAILED", "RETRY_NEEDED",
+            "NOT_RUNNABLE", "IMAGE_READY", "VRAM_ESTIMATION_PENDING", "RUNNABLE",
+            "IN_PROGRESS", "IMAGE_BUILDING", "COMPLETED", "FAILED", "RETRY_NEEDED",
         }
 
     def test_priority_members(self):

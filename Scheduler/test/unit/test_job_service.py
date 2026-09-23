@@ -71,17 +71,25 @@ class TestCreateJob:
 
 
 class TestStateTransitions:
-    def test_not_runnable_to_pending(self, db):
+    def test_image_ready_without_command_waits_for_training(self, db):
+        """Build-only workspaces stop at IMAGE_READY instead of estimating VRAM."""
+        user = make_user(db)
+        job = make_job(db, user.user_id, status=JobStatus.IMAGE_BUILDING, command=None)
+        out = job_service.set_job_image_ready(db, job.id)
+        assert out.status == JobStatus.IMAGE_READY
+
+    def test_image_ready_with_command_goes_to_vram_estimation(self, db):
+        """Legacy jobs that already carry a command keep the old behaviour."""
         user = make_user(db)
         job = make_job(db, user.user_id, status=JobStatus.IMAGE_BUILDING)
-        out = job_service.set_job_vram_estimation_pending(db, job.id)
+        out = job_service.set_job_image_ready(db, job.id)
         assert out.status == JobStatus.VRAM_ESTIMATION_PENDING
 
-    def test_pending_requires_not_runnable(self, db):
+    def test_image_ready_requires_image_building(self, db):
         user = make_user(db)
         job = make_job(db, user.user_id, status=JobStatus.RUNNABLE)
         with pytest.raises(Exception, match="Job is not in IMAGE_BUILDING state"):
-            job_service.set_job_vram_estimation_pending(db, job.id)
+            job_service.set_job_image_ready(db, job.id)
 
     def test_pending_to_runnable(self, db):
         user = make_user(db)
@@ -97,7 +105,7 @@ class TestStateTransitions:
 
     def test_missing_job_raises(self, db):
         with pytest.raises(Exception, match="Job not found"):
-            job_service.set_job_vram_estimation_pending(db, "nope")
+            job_service.set_job_image_ready(db, "nope")
         with pytest.raises(Exception, match="Job not found"):
             job_service.set_job_runnable(db, "nope")
         with pytest.raises(Exception, match="Job not found"):
@@ -111,6 +119,94 @@ class TestStateTransitions:
         assert out.vram_required == 4.0
         assert out.ram_required == 8.0
         assert out.step_time == 1.5
+
+
+class TestSubmitTraining:
+    """Training is submitted for an already built image (decoupled workflow)."""
+
+    def test_submit_arms_image_ready_job(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_READY,
+            command=None,
+            image_tag="repo/job:build-attempt-1",
+        )
+        out = job_service.submit_training(
+            db,
+            user.user_id,
+            job.id,
+            command="python train.py --epochs 10",
+            resume_command="python train.py --resume ckpt.pt",
+            priority=JobPriority.REQUESTED,
+            reason_for_priority="deadline",
+        )
+        assert out.status == JobStatus.VRAM_ESTIMATION_PENDING
+        assert out.command == "python train.py --epochs 10"
+        assert out.resume_command == "python train.py --resume ckpt.pt"
+        assert out.priority == JobPriority.REQUESTED
+        assert out.reason_for_priority == "deadline"
+
+    def test_submit_clears_previous_measurements(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_READY,
+            command=None,
+            image_tag="repo/job:build-attempt-1",
+            vram_required=12.0,
+            ram_required=24.0,
+            step_time=0.5,
+            failure_reason="old failure",
+        )
+        out = job_service.submit_training(db, user.user_id, job.id, "python train.py")
+        assert (out.vram_required, out.ram_required, out.step_time) == (None, None, None)
+        assert out.failure_reason is None
+
+    def test_submit_rejects_unbuilt_job(self, db):
+        from fastapi import HTTPException
+
+        user = make_user(db)
+        job = make_job(db, user.user_id, command=None)
+        with pytest.raises(HTTPException) as exc:
+            job_service.submit_training(db, user.user_id, job.id, "python train.py")
+        assert exc.value.status_code == 409
+        assert "still building" in exc.value.detail
+
+    def test_submit_rejects_already_training_job(self, db):
+        from fastapi import HTTPException
+
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IN_PROGRESS,
+            image_tag="repo/job:build-attempt-1",
+        )
+        with pytest.raises(HTTPException) as exc:
+            job_service.submit_training(db, user.user_id, job.id, "python train.py")
+        assert exc.value.status_code == 409
+        assert "not awaiting a training command" in exc.value.detail
+
+    def test_submit_rejects_foreign_job(self, db):
+        from fastapi import HTTPException
+
+        owner = make_user(db)
+        stranger = make_user(db)
+        job = make_job(
+            db,
+            owner.user_id,
+            status=JobStatus.IMAGE_READY,
+            command=None,
+            image_tag="repo/job:build-attempt-1",
+        )
+        with pytest.raises(HTTPException) as exc:
+            job_service.submit_training(
+                db, stranger.user_id, job.id, "python train.py"
+            )
+        assert exc.value.status_code == 404
 
 
 class TestGetNotRunnableJobs:
@@ -203,7 +299,7 @@ class TestClaimAndReleaseForBuilding:
             image_builder_id="builder-1",
             image_build_attempt_id="attempt-1",
         )
-        result = job_service.set_job_vram_estimation_pending(
+        result = job_service.set_job_image_ready(
             db,
             job.id,
             "builder-1",
@@ -211,6 +307,28 @@ class TestClaimAndReleaseForBuilding:
             "repo/job:build-attempt-1",
         )
         assert result.status == JobStatus.VRAM_ESTIMATION_PENDING
+        assert result.image_tag == "repo/job:build-attempt-1"
+        assert result.image_build_attempt_id is None
+
+    def test_ready_callback_records_attempt_tag_without_command(self, db):
+        """A build-only workspace is published as IMAGE_READY."""
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_BUILDING,
+            image_builder_id="builder-1",
+            image_build_attempt_id="attempt-1",
+            command=None,
+        )
+        result = job_service.set_job_image_ready(
+            db,
+            job.id,
+            "builder-1",
+            "attempt-1",
+            "repo/job:build-attempt-1",
+        )
+        assert result.status == JobStatus.IMAGE_READY
         assert result.image_tag == "repo/job:build-attempt-1"
         assert result.image_build_attempt_id is None
 

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchClusterStats, type ClusterStats } from '../services/stats';
 import { fetchJobs, type Job, type JobStatus } from '../services/jobs';
+import StatusBadge from '../components/StatusBadge';
 import { Activity, Clock, Server, CheckCircle2, Loader2 } from 'lucide-react';
 
 type StatusFilter = 'All' | JobStatus;
@@ -46,18 +47,6 @@ const Dashboard: React.FC = () => {
       }
     });
   }, [jobs, statusFilter, sortBy]);
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'Pending': return <span className="badge badge-pending">Pending</span>;
-      case 'Building': return <span className="badge badge-building">Building</span>;
-      case 'Running': return <span className="badge badge-running">Running</span>;
-      case 'Retrying': return <span className="badge badge-retrying">Retrying</span>;
-      case 'Completed': return <span className="badge badge-success">Completed</span>;
-      case 'Failed': return <span className="badge badge-failed">Failed</span>;
-      default: return null;
-    }
-  };
 
   const formatDate = (isoString: string) => {
     const d = new Date(isoString);
@@ -121,9 +110,11 @@ const Dashboard: React.FC = () => {
               onChange={e => setStatusFilter(e.target.value as StatusFilter)}
             >
               <option value="All">All Statuses</option>
-              <option value="Pending">Pending</option>
+              <option value="Pending">Queued</option>
               <option value="Building">Building</option>
-              <option value="Running">Running</option>
+              <option value="ImageReady">Image ready</option>
+              <option value="Estimating">Estimating VRAM</option>
+              <option value="Running">Training</option>
               <option value="Retrying">Retrying</option>
               <option value="Completed">Completed</option>
               <option value="Failed">Failed</option>
@@ -173,7 +164,7 @@ const Dashboard: React.FC = () => {
                 onClick={() => navigate(`/jobs/${job.id}`)}
               >
                 <td style={{ fontWeight: 500 }}>{job.name}</td>
-                <td>{getStatusBadge(job.status)}</td>
+                <td><StatusBadge status={job.status} /></td>
                  <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
                  <td><span style={{ fontFamily: 'monospace' }}>{job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}</span></td>
                  <td>{formatDate(job.submittedAt)}</td>

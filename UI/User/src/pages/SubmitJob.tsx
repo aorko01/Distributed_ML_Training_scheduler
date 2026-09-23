@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
 import { submitJob } from '../services/jobs';
 import InteractiveCreate from './InteractiveCreate';
@@ -22,15 +22,11 @@ const BatchForm: React.FC = () => {
   const [versionError, setVersionError] = useState('');
   const [selectedPyTorch, setSelectedPyTorch] = useState('');
   const [selectedCuda, setSelectedCuda] = useState<CudaVariant | null>(null);
-  const [bashScript, setBashScript] = useState('python train.py --epochs 100 --batch-size 32');
-  const [resumeCommand, setResumeCommand] = useState('');
   const [packages, setPackages] = useState('');
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
-  const [requestPriority, setRequestPriority] = useState(false);
-  const [priorityReason, setPriorityReason] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
@@ -103,16 +99,14 @@ const BatchForm: React.FC = () => {
     setSubmitting(true);
     setSubmitError('');
     try {
+      // Image building and training are decoupled: no entry command here. The
+      // job id returned by the backend is used later on the Training page.
       const job = await submitJob({
         name: jobName,
-        command: bashScript,
-        resumeCommand: resumeCommand.trim() || undefined,
         pytorchVersion: selectedPyTorch,
         cudaVersion: selectedCuda.cuda,
         dockerBaseImage: selectedCuda.tag,
         packages: packages.trim() || undefined,
-        requestForPriority: requestPriority,
-        reasonForPriority: requestPriority ? priorityReason : undefined,
       }, zipFile);
       navigate(`/builds/${job.id}`);
     } catch (err) {
@@ -133,20 +127,21 @@ const BatchForm: React.FC = () => {
           <h1>Add Workspace</h1>
           <p>
             Pick a PyTorch / CUDA base image, drop in your code archive, and list the
-            Python packages to install. We build the image for you — no
-            <code> requirements.txt </code> needed inside the zip.
+            Python packages to install. We only build the image here — no
+            <code> requirements.txt </code> and no run command needed inside the zip.
           </p>
           <div className="ws-steps">
             <span className="ws-step"><Boxes size={14} /> 1 · Environment</span>
             <span className="ws-step"><FileArchive size={14} /> 2 · Code</span>
             <span className="ws-step"><Package size={14} /> 3 · Packages</span>
-            <span className="ws-step"><TerminalSquare size={14} /> 4 · Command</span>
+            <span className="ws-step"><TerminalSquare size={14} /> 4 · Built image</span>
           </div>
         </div>
         <div className="ws-hero-card">
           <div className="ws-hero-row"><Cpu size={16} /><span>Base</span><strong>PT {selectedPyTorch || '—'} / CUDA {selectedCuda?.cuda || '—'}</strong></div>
           <div className="ws-hero-row"><FileArchive size={16} /><span>Archive</span><strong>{zipFile ? zipFile.name : 'No file yet'}</strong></div>
           <div className="ws-hero-row"><Package size={16} /><span>Packages</span><strong>{packagePreview.length > 0 ? `${packagePreview.length} listed` : 'None — base image only'}</strong></div>
+          <div className="ws-hero-row"><TerminalSquare size={16} /><span>Training</span><strong>Entry command added later on the Training page</strong></div>
         </div>
       </div>
 
@@ -275,51 +270,17 @@ const BatchForm: React.FC = () => {
             )}
           </div>
 
-          <div className="form-group">
-            <label className="form-label">Run command (Bash)</label>
-            <textarea
-              className="form-textarea"
-              value={bashScript}
-              onChange={e => setBashScript(e.target.value)}
-              placeholder="python train.py"
-              required
-            ></textarea>
-            <p className="ws-hint">This command will be executed inside the container root of your extracted zip file.</p>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Resume checkpoint command (Bash)</label>
-            <textarea
-              className="form-textarea"
-              value={resumeCommand}
-              onChange={e => setResumeCommand(e.target.value)}
-              placeholder="python train.py --resume checkpoint.pt"
-            ></textarea>
-            <p className="ws-hint">Optional. Command used to resume from a saved checkpoint. Will be stored with the workspace for later use.</p>
-          </div>
-
-          <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
-              <input
-                type="checkbox"
-                checked={requestPriority}
-                onChange={(e) => setRequestPriority(e.target.checked)}
-              />
-              Request High Priority
-            </label>
-
-            {requestPriority && (
-              <div style={{ marginTop: '0.5rem', animation: 'fadeIn 0.2s ease-out' }}>
-                <label className="form-label">Reason for priority</label>
-                <textarea
-                  className="form-input"
-                  style={{ minHeight: '60px' }}
-                  value={priorityReason}
-                  onChange={e => setPriorityReason(e.target.value)}
-                  placeholder="Explain why this workspace should be prioritized..."
-                ></textarea>
-              </div>
-            )}
+          <div className="card ws-next-step">
+            <TerminalSquare size={18} />
+            <div>
+              <strong>Next step: training</strong>
+              <p>
+                This step only builds the image. Once the build finishes, copy the job id
+                from the Builds page and submit the entry and resume commands on the{' '}
+                <Link to="/training">Training page</Link> — VRAM estimation and training
+                start from there.
+              </p>
+            </div>
           </div>
 
           {submitError && (

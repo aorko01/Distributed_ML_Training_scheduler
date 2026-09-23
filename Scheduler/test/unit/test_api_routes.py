@@ -301,6 +301,109 @@ class TestJobsRoutes:
         )
         assert "error" in resp.json()
 
+    def test_mark_image_ready_without_command_awaits_training(self, db):
+        """Build-only workspaces are published as IMAGE_READY."""
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_BUILDING,
+            command=None,
+            image_builder_id="builder-1",
+            image_build_attempt_id="attempt-1",
+        )
+        client = self._client(db)
+        resp = client.post(
+            "/mark_image_ready",
+            json={
+                "job_id": job.id,
+                "builder_id": "builder-1",
+                "attempt_id": "attempt-1",
+                "image_tag": "repo/job:build-attempt-1",
+            },
+        )
+        assert resp.json()["status"] == "IMAGE_READY"
+
+    def test_legacy_ready_alias_still_accepts_command_jobs(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_BUILDING,
+            image_builder_id="builder-1",
+            image_build_attempt_id="attempt-1",
+        )
+        client = self._client(db)
+        resp = client.post(
+            "/update_job_to_vram_estimation_pending",
+            json={
+                "job_id": job.id,
+                "builder_id": "builder-1",
+                "attempt_id": "attempt-1",
+                "image_tag": "repo/job:build-attempt-1",
+            },
+        )
+        assert resp.json()["status"] == "VRAM_ESTIMATION_PENDING"
+
+    def test_submit_training_arms_built_job(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_READY,
+            command=None,
+            image_tag="repo/job:build-attempt-1",
+        )
+        client = self._client(db, user)
+        resp = client.post(
+            f"/{job.id}/training",
+            json={
+                "command": "python train.py --epochs 5",
+                "resume_command": "python train.py --resume ckpt.pt",
+                "priority": "REQUESTED",
+                "reason_for_priority": "deadline",
+            },
+        )
+        body = resp.json()
+        assert body["status"] == "VRAM_ESTIMATION_PENDING"
+        assert body["command"] == "python train.py --epochs 5"
+        assert body["resume_command"] == "python train.py --resume ckpt.pt"
+
+    def test_submit_training_rejects_unbuilt_job(self, db):
+        user = make_user(db)
+        job = make_job(db, user.user_id, command=None)
+        client = self._client(db, user)
+        resp = client.post(f"/{job.id}/training", json={"command": "python train.py"})
+        assert resp.status_code == 409
+
+    def test_submit_training_rejects_multiline_command(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_READY,
+            command=None,
+            image_tag="repo/job:build-attempt-1",
+        )
+        client = self._client(db, user)
+        resp = client.post(
+            f"/{job.id}/training", json={"command": "python a.py\npython b.py"}
+        )
+        assert resp.status_code == 422
+
+    def test_submit_training_requires_authentication(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.IMAGE_READY,
+            command=None,
+            image_tag="repo/job:build-attempt-1",
+        )
+        client = self._client(db)
+        resp = client.post(f"/{job.id}/training", json={"command": "python train.py"})
+        assert resp.status_code == 401
+
     def test_unbuilt_jobs(self, db):
         user = make_user(db)
         make_job(db, user.user_id)
@@ -467,6 +570,30 @@ class TestJobsRoutes:
         assert mock_save.call_args[1].get("require_files") in (None, [])
         stored = db.query(Job).filter(Job.id == resp.json()["id"]).first()
         assert stored is not None and stored.packages == "numpy pandas==2.0.3"
+
+    def test_submit_job_without_command_builds_image_only(self, db):
+        """Add Workspace no longer requires an entry command (decoupled flow)."""
+        from app.models.job_model import Job
+
+        user = make_user(db)
+        client = self._client(db, user)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("train.py", "print(1)")
+        with patch.object(
+            jobs_route, "save_to_object_store",
+            return_value={"object_key": "jid/c.zip", "files": []},
+        ):
+            resp = client.post(
+                "/submit_job",
+                files={"zip_file": ("c.zip", buf.getvalue(), "application/zip")},
+                data={"name": "build-only", "docker_base_image": "img"},
+            )
+        assert resp.status_code == 200
+        stored = db.query(Job).filter(Job.id == resp.json()["id"]).first()
+        assert stored is not None
+        assert stored.command is None
+        assert stored.status == JobStatus.NOT_RUNNABLE
 
     def test_ingest_logs_build_stream(self, db):
         client = self._client(db)

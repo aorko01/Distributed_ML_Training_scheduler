@@ -7,6 +7,11 @@ import enum
 
 class JobStatus(enum.Enum):
     NOT_RUNNABLE = "NOT_RUNNABLE"
+    # Image built successfully and waiting for its entry command.  Image
+    # building and training are decoupled: a workspace is created (and built)
+    # without any run command, and only becomes runnable once training is
+    # submitted for it from the Training page.
+    IMAGE_READY = "IMAGE_READY"
     VRAM_ESTIMATION_PENDING = "VRAM_ESTIMATION_PENDING"
     RUNNABLE = "RUNNABLE"
     IN_PROGRESS = "IN_PROGRESS"
@@ -30,7 +35,9 @@ class Job(Base):
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
     object_key = Column(String, nullable=False, unique=True)
     name = Column(String, nullable=True)
-    command = Column(String, nullable=False)
+    # Entry command.  NULL while a workspace is build-only; it is filled in when
+    # training is submitted for an already built image.
+    command = Column(String, nullable=True)
     resume_command = Column(String, nullable=True)
     docker_base_image = Column(String, nullable=False)
     # Extra pip packages requested at workspace creation time (free-text field

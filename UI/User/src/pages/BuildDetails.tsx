@@ -9,7 +9,9 @@ import {
   type LogLine,
 } from '../services/jobs';
 import LogTerminal from '../components/LogTerminal';
-import { ArrowLeft, Hammer, Loader2, Package } from 'lucide-react';
+import CopyButton from '../components/CopyButton';
+import StatusBadge from '../components/StatusBadge';
+import { ArrowLeft, Hammer, Loader2, Package, Rocket } from 'lucide-react';
 
 const BuildDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -88,10 +90,18 @@ const BuildDetails: React.FC = () => {
         </button>
         <Hammer size={22} color="var(--accent-primary)" />
         <h1 style={{ margin: 0 }}>Build: {job.name}</h1>
-        <span className="badge badge-building">Image build</span>
-        <Link to={`/jobs/${job.id}`} className="btn btn-secondary" style={{ marginLeft: 'auto', textDecoration: 'none' }}>
-          View training logs
-        </Link>
+        <StatusBadge status={liveStatus ?? job.status} />
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+          <CopyButton value={job.id} label="Copy job id" title={`Copy job id ${job.id}`} />
+          {(liveStatus ?? job.status) === 'ImageReady' && (
+            <Link to={`/training?job=${encodeURIComponent(job.id)}`} className="btn btn-primary" style={{ textDecoration: 'none' }}>
+              <Rocket size={16} /> Start training
+            </Link>
+          )}
+          <Link to={`/jobs/${job.id}`} className="btn btn-secondary" style={{ textDecoration: 'none' }}>
+            View training logs
+          </Link>
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '2rem', flex: 1, minHeight: 0 }}>
@@ -100,7 +110,10 @@ const BuildDetails: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
             <div>
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>ID</div>
-              <div style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{job.id}</div>
+              <div className="build-detail-id">
+                <span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{job.id}</span>
+                <CopyButton value={job.id} title={`Copy job id ${job.id}`} />
+              </div>
             </div>
             <div>
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Environment</div>

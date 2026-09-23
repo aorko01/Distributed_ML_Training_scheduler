@@ -14,7 +14,7 @@ def create_job(db: Session, job_data: dict):
         user_id=job_data["user_id"],
         object_key=job_data["object_key"],
         name=job_data.get("name"),
-        command=job_data["command"],
+        command=job_data.get("command"),
         resume_command=job_data.get("resume_command"),
         docker_base_image=job_data["docker_base_image"],
         packages=job_data.get("packages"),
@@ -29,13 +29,21 @@ def create_job(db: Session, job_data: dict):
     return db_job
 
 
-def set_job_vram_estimation_pending(
+def set_job_image_ready(
     db: Session,
     job_id: str,
     builder_id: str | None = None,
     attempt_id: str | None = None,
     image_tag: str | None = None,
 ):
+    """Record a successful image build.
+
+    The image is now immutable and runnable, but image building and training
+    are decoupled: a workspace built without an entry command waits in
+    ``IMAGE_READY`` until training is submitted for it (see
+    :func:`submit_training`).  Legacy jobs that already carry a command keep
+    their previous behaviour and go straight to VRAM estimation.
+    """
     job = (
         db.query(Job)
         .filter(Job.id == job_id)
@@ -52,10 +60,65 @@ def set_job_vram_estimation_pending(
     if builder_id is not None or attempt_id is not None:
         _require_image_build_owner(job, builder_id, attempt_id)
 
-    job.status = JobStatus.VRAM_ESTIMATION_PENDING
+    job.status = (
+        JobStatus.VRAM_ESTIMATION_PENDING if job.command else JobStatus.IMAGE_READY
+    )
     if image_tag is not None:
         job.image_tag = image_tag
     _clear_image_build_lease(job)
+
+    db.commit()
+    db.refresh(job)
+
+    return job
+
+
+def submit_training(
+    db: Session,
+    user_id: str,
+    job_id: str,
+    command: str,
+    resume_command: str | None = None,
+    priority: JobPriority | None = None,
+    reason_for_priority: str | None = None,
+):
+    """Arm an already built workspace image with an entry command.
+
+    This is the second half of the decoupled workflow: ``Add Workspace`` only
+    produces an image (``IMAGE_READY``), and the Training page supplies the
+    entry/resume command later.  Once a command is stored the job re-enters the
+    normal pipeline — VRAM estimation, then training.
+    """
+    from fastapi import HTTPException
+
+    job = (
+        db.query(Job)
+        .filter(Job.id == job_id, Job.user_id == user_id)
+        .with_for_update()
+        .first()
+    )
+
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    if job.status == JobStatus.IMAGE_BUILDING or job.status == JobStatus.NOT_RUNNABLE:
+        raise HTTPException(409, "Job image is still building; wait for it to be ready")
+    if job.status != JobStatus.IMAGE_READY or not job.image_tag:
+        raise HTTPException(
+            409, f"Job is not awaiting a training command (status {job.status.value})"
+        )
+
+    job.command = command
+    job.resume_command = resume_command or None
+    if priority is not None:
+        job.priority = priority
+    job.reason_for_priority = reason_for_priority or None
+    # A new entry command invalidates any previous measurement/run metadata.
+    job.vram_required = None
+    job.ram_required = None
+    job.step_time = None
+    job.failure_reason = None
+    job.status = JobStatus.VRAM_ESTIMATION_PENDING
 
     db.commit()
     db.refresh(job)

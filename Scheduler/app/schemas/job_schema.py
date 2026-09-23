@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, Dict, Literal
 from app.models.job_model import JobPriority
 
@@ -27,6 +27,42 @@ class JobResponse(BaseModel):
 
 class Job_status_to_vram_estimation_pending(BaseModel):
     job_id: str
+
+
+class TrainingSubmissionRequest(BaseModel):
+    """Entry/resume command submitted for an already built workspace image.
+
+    Image building and training are decoupled, so the command is supplied after
+    the build finishes (see the Training page).
+    """
+
+    command: str = Field(min_length=1, max_length=4096)
+    resume_command: Optional[str] = Field(default=None, max_length=4096)
+    priority: JobPriority = JobPriority.NORMAL
+    reason_for_priority: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("command")
+    @classmethod
+    def single_line_command(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Entry command is required")
+        if "\n" in value or "\r" in value:
+            raise ValueError("Entry command must be a single line")
+        return value
+
+    @field_validator("resume_command")
+    @classmethod
+    def single_line_resume_command(cls, value):
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if "\n" in value or "\r" in value:
+            raise ValueError("Resume command must be a single line")
+        return value
+
 
 
 class ImageBuilderClaimRequest(BaseModel):

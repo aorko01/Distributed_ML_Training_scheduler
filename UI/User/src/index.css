@@ -239,6 +239,7 @@ p {
 .badge-running { background-color: rgba(59, 130, 246, 0.15); color: var(--status-running); }
 .badge-retrying { background-color: rgba(249, 115, 22, 0.15); color: var(--status-pending); }
 .badge-building { background-color: rgba(168, 85, 247, 0.15); color: var(--status-building); }
+.badge-ready { background-color: rgba(45, 212, 191, 0.15); color: #2dd4bf; }
 .badge-success { background-color: rgba(34, 197, 94, 0.15); color: var(--status-success); }
 .badge-failed { background-color: rgba(239, 68, 68, 0.15); color: var(--status-failed); }
 
@@ -1114,6 +1115,7 @@ tr.job-row:hover { background: linear-gradient(90deg, rgba(57, 169, 255, 0.095),
 .badge-running { background: rgba(57, 169, 255, 0.11); }
 .badge-retrying { background: rgba(248, 151, 69, 0.1); }
 .badge-building { background: rgba(172, 124, 255, 0.1); }
+.badge-ready { background: rgba(45, 212, 191, 0.1); }
 .badge-success { background: rgba(78, 212, 154, 0.1); }
 .badge-failed { background: rgba(255, 109, 125, 0.1); }
 
@@ -1489,8 +1491,36 @@ tr.job-row:hover { background: linear-gradient(90deg, rgba(57, 169, 255, 0.095),
 .build-card-pkgs { display: flex; align-items: center; gap: 0.4rem; font-size: 0.76rem; color: #9be9c6; }
 .build-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-top: auto; padding-top: 0.75rem; border-top: 1px solid var(--border-subtle); font-size: 0.76rem; color: var(--text-secondary); }
 .build-card-link { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--accent-primary); font-weight: 650; }
+.build-card-link--button { background: none; border: none; padding: 0; font: inherit; cursor: pointer; }
 
 @media (max-width: 800px) {
   .ws-hero { grid-template-columns: 1fr; }
   .builds-hero { align-items: stretch; flex-direction: column; }
 }
+
+/* --- Decoupled build / training flow ------------------------------------- */
+.copy-button { display: inline-flex; align-items: center; gap: 0.35rem; }
+.copy-button--compact { padding: 0.28rem 0.55rem; font-size: 0.68rem; border-radius: 6px; white-space: nowrap; }
+.build-card-id-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.build-detail-id { display: flex; align-items: center; gap: 0.5rem; }
+.build-detail-id .copy-button { padding: 0.3rem 0.5rem; flex: none; }
+
+.training-id-row { display: flex; gap: 0.6rem; align-items: center; }
+.training-id-input { flex: 1 1 auto; font-family: 'JetBrains Mono', monospace; }
+.training-inline { display: inline-flex; align-items: center; gap: 0.4rem; }
+.training-warning { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; font-size: 0.8rem; color: var(--status-pending); }
+.training-error { padding: 0.75rem; background-color: rgba(239, 68, 68, 0.1); color: var(--status-failed); border-radius: 6px; margin-top: 1rem; font-size: 0.875rem; }
+.training-priority { display: flex; flex-direction: column; gap: 0.5rem; }
+.training-checkbox { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.875rem; }
+.training-priority-reason { display: flex; flex-direction: column; gap: 0.4rem; }
+.training-priority-reason textarea { min-height: 60px; }
+.training-submit-row { display: flex; align-items: center; justify-content: flex-end; gap: 1rem; margin-top: 2rem; }
+.training-submit-row .btn { display: inline-flex; align-items: center; gap: 0.5rem; }
+.training-submit-row .ws-hint { margin-right: auto; }
+.training-build-link { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--accent-primary); font-weight: 600; text-decoration: none; }
+
+.ws-next-step { display: flex; align-items: flex-start; gap: 0.85rem; border-radius: 12px; }
+.ws-next-step svg { color: var(--accent-primary); flex: none; margin-top: 0.15rem; }
+.ws-next-step strong { display: block; margin-bottom: 0.3rem; }
+.ws-next-step p { margin: 0; font-size: 0.85rem; color: var(--text-secondary); }
+.ws-next-step a { color: var(--accent-primary); font-weight: 600; }

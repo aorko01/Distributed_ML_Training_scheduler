@@ -3,7 +3,15 @@ import { downloadJobOutputFromApi } from './jobDownload';
 
 export { buildJobOutputFilename } from './jobDownload';
 
-export type JobStatus = 'Pending' | 'Building' | 'Running' | 'Completed' | 'Failed' | 'Retrying';
+export type JobStatus =
+  | 'Pending'
+  | 'Building'
+  | 'ImageReady'
+  | 'Estimating'
+  | 'Running'
+  | 'Completed'
+  | 'Failed'
+  | 'Retrying';
 
 export interface Job {
   id: string;
@@ -15,6 +23,7 @@ export interface Job {
   gpuHours: number;
   device: string;
   queuePosition?: number;
+  command?: string;
   resumeCommand?: string;
   packages?: string;
 }
@@ -24,7 +33,7 @@ interface BackendJob {
   user_id: string;
   object_key: string;
   name: string | null;
-  command: string;
+  command: string | null;
   resume_command: string | null;
   docker_base_image: string;
   packages?: string | null;
@@ -45,7 +54,9 @@ const DUMMY_DEVICES = ['A100 80GB', 'H100 80GB', 'L4 24GB', 'V100 16GB'];
 const mapStatus = (status: string): JobStatus => {
   switch (status) {
     case 'NOT_RUNNABLE': return 'Pending';
-    case 'VRAM_ESTIMATION_PENDING': return 'Building';
+    case 'IMAGE_BUILDING': return 'Building';
+    case 'IMAGE_READY': return 'ImageReady';
+    case 'VRAM_ESTIMATION_PENDING': return 'Estimating';
     case 'RUNNABLE': return 'Pending';
     case 'IN_PROGRESS': return 'Running';
     case 'COMPLETED': return 'Completed';
@@ -70,7 +81,8 @@ const parseDevice = (job: BackendJob): string => {
 
 const getJobName = (job: BackendJob): string => {
   if (job.name) return job.name;
-  const firstLine = job.command.split('\n').map(line => line.trim()).find(line => line.length > 0);
+  const command = job.command ?? '';
+  const firstLine = command.split('\n').map(line => line.trim()).find(line => line.length > 0);
   return firstLine ?? job.id;
 };
 
@@ -85,6 +97,7 @@ const mapJob = (job: BackendJob): Job => {
     submittedAt: job.created_at,
     gpuHours: job.gpu_hour ?? 0,
     device: parseDevice(job),
+    command: job.command || undefined,
     resumeCommand: job.resume_command ?? undefined,
     packages: job.packages ?? undefined,
   };
@@ -156,13 +169,15 @@ export const fetchJobById = async (id: string): Promise<Job | undefined> => {
 
 export interface SubmitJobPayload {
   name: string;
-  command: string;
+  /** Optional: image building and training are decoupled, so the entry
+   * command is normally submitted later from the Training page. */
+  command?: string;
   resumeCommand?: string;
   pytorchVersion: string;
   cudaVersion: string;
   dockerBaseImage: string;
   packages?: string;
-  requestForPriority: boolean;
+  requestForPriority?: boolean;
   reasonForPriority?: string;
 }
 
@@ -175,7 +190,9 @@ export const submitJob = async (
   const formData = new FormData();
   formData.append('zip_file', zipFile);
   formData.append('name', jobData.name);
-  formData.append('command', jobData.command);
+  if (jobData.command) {
+    formData.append('command', jobData.command);
+  }
   if (jobData.resumeCommand) {
     formData.append('resume_command', jobData.resumeCommand);
   }
@@ -183,7 +200,9 @@ export const submitJob = async (
   if (jobData.packages?.trim()) {
     formData.append('packages', jobData.packages.trim());
   }
-  formData.append('request_for_priority', String(jobData.requestForPriority));
+  if (jobData.requestForPriority !== undefined) {
+    formData.append('request_for_priority', String(jobData.requestForPriority));
+  }
   if (jobData.reasonForPriority) {
     formData.append('reason_for_priority', jobData.reasonForPriority);
   }
@@ -230,15 +249,59 @@ export const submitJob = async (
   return {
     id: job.id,
     name: jobData.name,
-    status: (job.status as JobStatus) ?? 'Building',
+    status: mapStatus(job.status ?? 'NOT_RUNNABLE'),
     pytorchVersion: jobData.pytorchVersion,
     cudaVersion: jobData.cudaVersion,
     submittedAt: job.created_at ?? new Date().toISOString(),
     gpuHours: 0,
     device: DUMMY_DEVICES[0],
+    command: jobData.command,
     resumeCommand: jobData.resumeCommand,
     queuePosition: undefined,
   };
+};
+
+export interface TrainingPayload {
+  /** Entry command run inside the built image (single line). */
+  command: string;
+  resumeCommand?: string;
+  requestForPriority?: boolean;
+  reasonForPriority?: string;
+}
+
+export interface TrainingSubmission {
+  job_id: string;
+  status: string;
+  command: string;
+  resume_command: string | null;
+}
+
+/**
+ * Submit the entry/resume command for an already built workspace image.
+ *
+ * This is the second half of the decoupled workflow: the image was built by
+ * ``Add Workspace`` with no command, and the job now re-enters the pipeline at
+ * VRAM estimation and then trains.
+ */
+export const submitTraining = async (
+  jobId: string,
+  payload: TrainingPayload,
+): Promise<TrainingSubmission> => {
+  const body = await api.post<TrainingSubmission | { error: string }>(
+    `/jobs/${encodeURIComponent(jobId.trim())}/training`,
+    {
+      command: payload.command,
+      resume_command: payload.resumeCommand?.trim() || null,
+      priority: payload.requestForPriority ? 'REQUESTED' : 'NORMAL',
+      reason_for_priority: payload.requestForPriority
+        ? payload.reasonForPriority?.trim() || null
+        : null,
+    },
+  );
+  if (body && typeof body === 'object' && 'error' in body) {
+    throw new Error(body.error);
+  }
+  return body as TrainingSubmission;
 };
 
 export interface LogLine {
