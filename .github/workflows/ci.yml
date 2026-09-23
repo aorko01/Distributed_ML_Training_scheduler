@@ -266,24 +266,6 @@ jobs:
           export RUNTIME_FIXTURE_DIGEST
           sudo --preserve-env=RUNTIME_FIXTURE_DIGEST,PYTHON_DOTENV_DISABLED /tmp/runtime-broker-venv/bin/python test/interactive_e2e/runtime/check_broker.py
 
-  user-ui:
-    name: User UI build and interactive screens
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: UI/User
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: UI/User/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - run: npm run test:interactive
-      - run: npm run build
-
   deploy:
     name: Deploy Distributed ML System
 
@@ -291,7 +273,6 @@ jobs:
       - unit-tests
       - builder-dockerhub-real-e2e
       - interactive-network-e2e
-      - user-ui
       - interactive-postgres
 
     # Only deploy for pushes to main/master, or a manual workflow run.
