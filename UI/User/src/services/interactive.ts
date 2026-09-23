@@ -1,7 +1,7 @@
 import { getToken, clearToken, clearUsername } from './api';
 
 export type Creation =
-  | { kind: 'upload'; name: string; baseImageId: string; file: File }
+  | { kind: 'upload'; name: string; baseImageId: string; file: File | null }
   | { kind: 'job'; name: string; sourceJobId: string };
 export interface Revision {
   id: string;
@@ -63,7 +63,7 @@ export function creationRequest(input: Creation, key: string): { path: string; i
     const form = new FormData();
     form.append('name', input.name);
     form.append('base_image_id', input.baseImageId);
-    form.append('file', input.file);
+    if (input.file) form.append('file', input.file);
     return { path: '/from-upload', init: { method: 'POST', headers: { 'Idempotency-Key': key }, body: form } };
   }
   return { path: '/from-job', init: { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },

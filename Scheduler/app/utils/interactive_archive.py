@@ -36,3 +36,16 @@ def validate_archive(data):
                 raise ValueError('requirements.txt is required')
     except zipfile.BadZipFile:
         raise ValueError('Invalid ZIP archive') from None
+    except zipfile.BadZipFile:
+        raise ValueError('Invalid ZIP archive') from None
+
+
+def empty_archive():
+    """Minimal archive for workspaces created without an upload.
+
+    Contains an empty requirements.txt so downstream validation, storage and
+    the builder's pip step all work unchanged for an empty workspace."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        archive.writestr('requirements.txt', '')
+    return buffer.getvalue()

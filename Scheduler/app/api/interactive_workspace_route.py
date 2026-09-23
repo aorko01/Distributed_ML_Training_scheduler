@@ -58,12 +58,16 @@ def sources(db: Session = Depends(get_db), user=Depends(get_current_active_user)
 
 @router.post('/from-upload', status_code=201)
 async def upload(request: Request, name: str = Form(min_length=1, max_length=120), base_image_id: str = Form(),
-                 file: UploadFile = File(), request_key=Depends(key), db: Session = Depends(get_db), user=Depends(get_current_active_user)):
+                 file: UploadFile | None = File(default=None), request_key=Depends(key), db: Session = Depends(get_db), user=Depends(get_current_active_user)):
     form = await request.form()
-    if set(form.keys()) != {'name', 'base_image_id', 'file'} or any(len(form.getlist(k)) != 1 for k in form.keys()):
+    if set(form.keys()) - {'name', 'base_image_id', 'file'} or any(len(form.getlist(k)) != 1 for k in form.keys()):
         raise HTTPException(422, 'Unexpected upload fields')
     if not name.strip():
         raise HTTPException(422, 'Name required')
+    if file is None or not file.filename:
+        # No archive submitted: an empty workspace is created from the base
+        # image with just a placeholder requirements.txt.
+        return service.create(db, user.user_id, request_key, name.strip(), 'UPLOAD', base_image_id, None)
     data = await file.read(MAX_UPLOAD + 1)
     return service.create(db, user.user_id, request_key, name.strip(), 'UPLOAD', base_image_id, data)
 

@@ -186,3 +186,31 @@ def test_interactive_claim_is_not_a_batch_job(db, created):
     service.claim(db, 'builder')
     assert db.query(Job).count() == 0
     assert db.query(Revision).one().state == 'BUILDING'
+
+
+def test_empty_workspace_created_without_archive(db):
+    user = make_user(db)
+    with patch.object(service, 'save_to_object_store', return_value={'object_key': 'empty/key'}) as store:
+        item = service.create(db, user.user_id, 'empty-workspace-key1', 'fresh', 'UPLOAD', 'pytorch-2.5.1-cuda12.4', None)
+    stored = store.call_args[0][0]
+    with zipfile.ZipFile(io.BytesIO(stored)) as bundled:
+        assert bundled.namelist() == ['requirements.txt']
+        assert bundled.read('requirements.txt') == b''
+    rev = service.revision(db, item['id'])
+    assert rev.origin == 'UPLOAD' and rev.source_object_key == 'empty/key'
+    assert db.query(Workspace).filter_by(id=item['id']).one().source_type == 'UPLOAD'
+
+
+def test_empty_workspace_route_without_file(db):
+    user = make_user(db)
+    app = FastAPI(); app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_active_user] = lambda: user
+    client = TestClient(app)
+    with patch.object(service, 'save_to_object_store', return_value={'object_key': 'empty/key'}) as store:
+        response = client.post('/interactive/workspaces/from-upload',
+                               data={'name': 'Fresh', 'base_image_id': 'pytorch-2.5.1-cuda12.4'},
+                               headers={'Idempotency-Key': 'no-archive-key-12345'})
+    assert response.status_code == 201
+    assert store.called
+    assert db.query(Workspace).filter_by(name='Fresh').count() == 1

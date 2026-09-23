@@ -9,7 +9,7 @@ from app.models.interactive_workspace_model import InteractiveWorkspace as Works
 from app.models.job_model import Job, JobStatus
 from app.schemas.interactive_workspace_schema import resolve_base_image
 from app.utils.file_utils import save_to_object_store
-from app.utils.interactive_archive import validate_archive
+from app.utils.interactive_archive import validate_archive, empty_archive
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -75,6 +75,11 @@ def create(db, owner, key, name, source, value, data=None):
     if source == 'UPLOAD':
         if resolve_base_image(value) is None:
             raise HTTPException(422, 'Unsupported base image')
+        # No ZIP submitted: start fresh with an empty workspace. A minimal
+        # archive (placeholder requirements.txt) keeps storage and the
+        # builder pipeline unchanged.
+        if not data:
+            data = empty_archive()
         try:
             validate_archive(data)
         except ValueError as exc:
