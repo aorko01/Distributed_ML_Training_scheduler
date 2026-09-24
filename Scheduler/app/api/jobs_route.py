@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from app.db.database import SessionLocal
@@ -149,7 +150,28 @@ async def submit_job(
         job_data["command"] = None
         job_data["resume_command"] = None
 
-    db_job = job_service.create_job(db, job_data)
+    try:
+        db_job = job_service.create_job(db, job_data)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # Service-level validation (e.g. ARCHIVE without an object key).
+        # Surfaced as 4xx so the browser receives CORS headers and a
+        # readable message instead of a CORS-masked 500.
+        raise HTTPException(status_code=400, detail=str(e))
+    except IntegrityError as e:
+        # A database CHECK/NOT NULL/unique violation (e.g. a stale
+        # ck_jobs_source_archive constraint predating PACKAGES_ONLY support).
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not record the workspace: the database rejected the "
+                "submission. Retry once; if this was a no-archive build and "
+                "the error persists, the database needs migration "
+                "'006_package_only_legacy_check' applied."
+            ),
+        ) from e
     source_kind_value = getattr(db_job, "source_kind", None) or source_kind
     return {
         "id": db_job.id,
