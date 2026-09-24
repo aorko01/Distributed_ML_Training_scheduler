@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { interactive, type SourceJob, type Creation } from '../services/interactive';
 import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
 
 export default function InteractiveCreate() {
+  const [searchParams] = useSearchParams();
+  const requestedSource = searchParams.get('source');
+  const requestedJobId = searchParams.get('job');
   const [source, setSource] = useState<'upload' | 'job'>('upload');
   const [name, setName] = useState('');
   const [versions, setVersions] = useState<PytorchVersion[]>([]);
@@ -21,6 +24,11 @@ export default function InteractiveCreate() {
   const key = useRef<string | null>(null);
   const navigate = useNavigate();
   const base = selectedCuda?.tag ?? '';
+  useEffect(() => {
+    if (requestedSource === 'job') {
+      setSource('job');
+    }
+  }, [requestedSource]);
   useEffect(() => { key.current = null; }, [source, name, base, job, file]);
   useEffect(() => {
     let active = true;
@@ -37,13 +45,20 @@ export default function InteractiveCreate() {
       } else {
         const choices = await interactive.sources();
         if (!active) return;
-        setJobs(choices); setJob(choices[0]?.id ?? '');
+        setJobs(choices);
+        // Preselect the requested owned source job only if it is present;
+        // never trust a query-string ID absent from the owned choices.
+        if (requestedJobId && choices.some((c) => c.id === requestedJobId)) {
+          setJob(requestedJobId);
+        } else {
+          setJob(choices[0]?.id ?? '');
+        }
       }
     };
     load().catch(err => { if (active) setError(err instanceof Error ? err.message : 'Could not load choices'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [source, reload]);
+  }, [source, reload, requestedJobId]);
 
   const handlePyTorchChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const pt = e.target.value;

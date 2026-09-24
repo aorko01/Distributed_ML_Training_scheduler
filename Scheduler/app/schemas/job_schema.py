@@ -5,8 +5,9 @@ from app.models.job_model import JobPriority
 
 class JobCreate(BaseModel):
     user_id: str
-    object_key: str
-    command: str
+    object_key: Optional[str] = None
+    source_kind: Optional[str] = None
+    command: Optional[str] = None
     resume_command: Optional[str] = None
     docker_base_image: str
     config: Optional[Dict] = None

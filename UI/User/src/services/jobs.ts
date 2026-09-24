@@ -26,12 +26,16 @@ export interface Job {
   command?: string;
   resumeCommand?: string;
   packages?: string;
+  sourceKind: string;
+  trainingEligible: boolean;
 }
 
 interface BackendJob {
   id: string;
   user_id: string;
-  object_key: string;
+  object_key: string | null;
+  source_kind?: string | null;
+  training_eligible?: boolean | null;
   name: string | null;
   command: string | null;
   resume_command: string | null;
@@ -88,6 +92,7 @@ const getJobName = (job: BackendJob): string => {
 
 const mapJob = (job: BackendJob): Job => {
   const env = parseEnvironment(job.docker_base_image);
+  const sourceKind = job.source_kind || 'ARCHIVE';
   return {
     id: job.id,
     name: getJobName(job),
@@ -100,6 +105,8 @@ const mapJob = (job: BackendJob): Job => {
     command: job.command || undefined,
     resumeCommand: job.resume_command ?? undefined,
     packages: job.packages ?? undefined,
+    sourceKind,
+    trainingEligible: job.training_eligible ?? sourceKind !== 'PACKAGES_ONLY',
   };
 };
 
@@ -113,7 +120,9 @@ let mockJobs: Job[] = [
     submittedAt: new Date(Date.now() - 3600000).toISOString(),
     gpuHours: 1.2,
     device: 'A100 80GB',
-    queuePosition: 0
+    queuePosition: 0,
+    sourceKind: 'ARCHIVE',
+    trainingEligible: true
   },
   {
     id: 'job-100',
@@ -124,7 +133,9 @@ let mockJobs: Job[] = [
     submittedAt: new Date(Date.now() - 86400000).toISOString(),
     gpuHours: 14.5,
     device: 'H100 80GB',
-    queuePosition: 0
+    queuePosition: 0,
+    sourceKind: 'ARCHIVE',
+    trainingEligible: true
   },
   {
     id: 'job-102',
@@ -135,7 +146,9 @@ let mockJobs: Job[] = [
     submittedAt: new Date(Date.now() - 7200000).toISOString(),
     gpuHours: 0.1,
     device: 'L4 24GB',
-    queuePosition: 0
+    queuePosition: 0,
+    sourceKind: 'ARCHIVE',
+    trainingEligible: true
   }
 ];
 
@@ -185,10 +198,12 @@ const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 export const submitJob = async (
   jobData: SubmitJobPayload,
-  zipFile: File,
+  zipFile: File | null,
 ): Promise<Job> => {
   const formData = new FormData();
-  formData.append('zip_file', zipFile);
+  if (zipFile) {
+    formData.append('zip_file', zipFile);
+  }
   formData.append('name', jobData.name);
   if (jobData.command) {
     formData.append('command', jobData.command);
@@ -244,8 +259,11 @@ export const submitJob = async (
     id: string;
     status?: string;
     created_at?: string;
+    source_kind?: string | null;
+    training_eligible?: boolean | null;
   };
 
+  const sourceKind = job.source_kind || 'ARCHIVE';
   return {
     id: job.id,
     name: jobData.name,
@@ -257,7 +275,10 @@ export const submitJob = async (
     device: DUMMY_DEVICES[0],
     command: jobData.command,
     resumeCommand: jobData.resumeCommand,
+    packages: jobData.packages,
     queuePosition: undefined,
+    sourceKind,
+    trainingEligible: job.training_eligible ?? sourceKind !== 'PACKAGES_ONLY',
   };
 };
 

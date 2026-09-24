@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchJobs, type Job, type JobStatus } from '../services/jobs';
 import CopyButton from '../components/CopyButton';
-import { Hammer, Loader2, ArrowRight, Package, Rocket } from 'lucide-react';
+import { Hammer, Loader2, ArrowRight, Package, Rocket, MonitorPlay } from 'lucide-react';
 
 type StatusFilter = 'All' | JobStatus;
 type SortKey = 'newest' | 'oldest' | 'name';
@@ -123,6 +123,7 @@ const Builds: React.FC = () => {
         <div className="builds-grid">
           {visible.map((job) => {
             const phase = buildPhase(job.status);
+            const interactiveOnly = job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY';
             return (
               <div
                 key={job.id}
@@ -141,6 +142,11 @@ const Builds: React.FC = () => {
                   <span className="build-card-name">{job.name}</span>
                   <span className={phase.className}>{phase.label}</span>
                 </div>
+                {interactiveOnly && (
+                  <div className="build-card-meta" style={{ color: 'var(--text-secondary)' }}>
+                    Interactive only · no workspace files
+                  </div>
+                )}
                 <div className="build-card-meta">PT {job.pytorchVersion} / CUDA {job.cudaVersion}</div>
                 <div className="build-card-id-row">
                   <span className="build-card-meta build-card-id">{job.id}</span>
@@ -158,13 +164,23 @@ const Builds: React.FC = () => {
                 <div className="build-card-foot">
                   <span>{new Date(job.submittedAt).toLocaleString()}</span>
                   {job.status === 'ImageReady' ? (
-                    <button
-                      type="button"
-                      className="build-card-link build-card-link--button"
-                      onClick={(e) => { e.stopPropagation(); navigate(`/training?job=${encodeURIComponent(job.id)}`); }}
-                    >
-                      Start training <Rocket size={14} />
-                    </button>
+                    interactiveOnly ? (
+                      <button
+                        type="button"
+                        className="build-card-link build-card-link--button"
+                        onClick={(e) => { e.stopPropagation(); navigate(`/submit?mode=interactive&source=job&job=${encodeURIComponent(job.id)}`); }}
+                      >
+                        Use interactively <MonitorPlay size={14} />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="build-card-link build-card-link--button"
+                        onClick={(e) => { e.stopPropagation(); navigate(`/training?job=${encodeURIComponent(job.id)}`); }}
+                      >
+                        Start training <Rocket size={14} />
+                      </button>
+                    )
                   ) : (
                     <span className="build-card-link">Build log <ArrowRight size={14} /></span>
                   )}

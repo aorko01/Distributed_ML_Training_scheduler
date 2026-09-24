@@ -11,7 +11,7 @@ import {
 import LogTerminal from '../components/LogTerminal';
 import CopyButton from '../components/CopyButton';
 import StatusBadge from '../components/StatusBadge';
-import { ArrowLeft, Hammer, Loader2, Package, Rocket } from 'lucide-react';
+import { ArrowLeft, Hammer, Loader2, Package, Rocket, MonitorPlay } from 'lucide-react';
 
 const BuildDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -82,6 +82,9 @@ const BuildDetails: React.FC = () => {
     );
   }
 
+  const interactiveOnly = job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY';
+  const isReady = (liveStatus ?? job.status) === 'ImageReady';
+
   return (
     <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ marginBottom: '2rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
@@ -93,9 +96,14 @@ const BuildDetails: React.FC = () => {
         <StatusBadge status={liveStatus ?? job.status} />
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
           <CopyButton value={job.id} label="Copy job id" title={`Copy job id ${job.id}`} />
-          {(liveStatus ?? job.status) === 'ImageReady' && (
+          {isReady && !interactiveOnly && (
             <Link to={`/training?job=${encodeURIComponent(job.id)}`} className="btn btn-primary" style={{ textDecoration: 'none' }}>
               <Rocket size={16} /> Start training
+            </Link>
+          )}
+          {isReady && interactiveOnly && (
+            <Link to={`/submit?mode=interactive&source=job&job=${encodeURIComponent(job.id)}`} className="btn btn-primary" style={{ textDecoration: 'none' }}>
+              <MonitorPlay size={16} /> Use interactively
             </Link>
           )}
           <Link to={`/jobs/${job.id}`} className="btn btn-secondary" style={{ textDecoration: 'none' }}>
@@ -131,6 +139,12 @@ const BuildDetails: React.FC = () => {
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Status</div>
               <div>{liveStatus ?? job.status}</div>
             </div>
+            {interactiveOnly && (
+              <div>
+                <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Capability</div>
+                <div>Interactive only · no workspace files. This image cannot be sent directly to training.</div>
+              </div>
+            )}
             <div>
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Created</div>
               <div>{new Date(job.submittedAt).toLocaleString()}</div>

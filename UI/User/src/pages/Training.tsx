@@ -67,6 +67,9 @@ const Training: React.FC = () => {
     if (looking) return { ready: false, reason: 'Looking up the workspace...' };
     if (lookupError) return { ready: false, reason: lookupError };
     if (!job) return { ready: false, reason: 'Workspace not loaded yet.' };
+    if (job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY') {
+      return { ready: false, reason: 'This image has no workspace files and is interactive-only. Open it as an interactive workspace, add and save files, then submit the saved workspace for training.' };
+    }
     switch (job.status) {
       case 'ImageReady':
         return { ready: true, reason: '' };
@@ -136,6 +139,15 @@ const Training: React.FC = () => {
               setPriorityReason={setPriorityReason}
             />
             {submitError && <div className="training-error" role="alert">{submitError}</div>}
+            {(job?.trainingEligible === false || job?.sourceKind === 'PACKAGES_ONLY') && job && (
+              <div className="training-error" role="alert">
+                This image has no workspace files and is interactive-only. Open it as an{' '}
+                <Link to={`/submit?mode=interactive&source=job&job=${encodeURIComponent(job.id)}`}>
+                  interactive workspace
+                </Link>
+                , add and save files, then submit the saved workspace for training.
+              </div>
+            )}
             <SubmitRow canSubmit={canSubmit} submitting={submitting} jobId={job?.id} />
           </fieldset>
         </form>

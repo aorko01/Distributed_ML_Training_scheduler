@@ -8,11 +8,37 @@ from app.models.job_model import Job, JobStatus, JobPriority
 from app.schemas.worker_schema import WorkerResource
 
 
+ARCHIVE_SOURCE_KIND = "ARCHIVE"
+PACKAGES_ONLY_SOURCE_KIND = "PACKAGES_ONLY"
+TRAINING_INELIGIBLE_SOURCE_KINDS = frozenset({PACKAGES_ONLY_SOURCE_KIND})
+
+PACKAGE_ONLY_TRAINING_MESSAGE = (
+    "This image has no workspace files and is interactive-only. Open it as an "
+    "interactive workspace, add and save files, then submit the saved workspace "
+    "for training."
+)
+
+
+def training_eligible_for_source_kind(source_kind: str | None) -> bool:
+    return (source_kind or ARCHIVE_SOURCE_KIND) not in TRAINING_INELIGIBLE_SOURCE_KINDS
+
+
+def _source_kind_of(job) -> str:
+    return getattr(job, "source_kind", None) or ARCHIVE_SOURCE_KIND
+
+
 def create_job(db: Session, job_data: dict):
+    source_kind = job_data.get("source_kind") or ARCHIVE_SOURCE_KIND
+    object_key = job_data.get("object_key")
+    if source_kind == ARCHIVE_SOURCE_KIND and not object_key:
+        raise ValueError("ARCHIVE jobs require an object_key")
+    if source_kind == PACKAGES_ONLY_SOURCE_KIND and object_key:
+        raise ValueError("PACKAGES_ONLY jobs must not have an object_key")
     db_job = Job(
         id=job_data["id"],
         user_id=job_data["user_id"],
-        object_key=job_data["object_key"],
+        object_key=object_key,
+        source_kind=source_kind,
         name=job_data.get("name"),
         command=job_data.get("command"),
         resume_command=job_data.get("resume_command"),
@@ -60,6 +86,10 @@ def set_job_image_ready(
     if builder_id is not None or attempt_id is not None:
         _require_image_build_owner(job, builder_id, attempt_id)
 
+    if _source_kind_of(job) == PACKAGES_ONLY_SOURCE_KIND and job.command:
+        # Package-only images are interactive-only. A command at build time
+        # would otherwise advance them directly to VRAM estimation.
+        job.command = None
     job.status = (
         JobStatus.VRAM_ESTIMATION_PENDING if job.command else JobStatus.IMAGE_READY
     )
@@ -100,6 +130,9 @@ def submit_training(
 
     if not job:
         raise HTTPException(404, "Job not found")
+
+    if _source_kind_of(job) == PACKAGES_ONLY_SOURCE_KIND:
+        raise HTTPException(409, PACKAGE_ONLY_TRAINING_MESSAGE)
 
     if job.status == JobStatus.IMAGE_BUILDING or job.status == JobStatus.NOT_RUNNABLE:
         raise HTTPException(409, "Job image is still building; wait for it to be ready")
@@ -175,6 +208,8 @@ def get_not_runnable_jobs(db: Session):
             "id": job.id,
             "user_id": job.user_id,
             "object_key": job.object_key,
+            "source_kind": job.source_kind or "ARCHIVE",
+            "training_eligible": (job.source_kind or "ARCHIVE") != "PACKAGES_ONLY",
             "name": job.name,
             "command": job.command,
             "resume_command": job.resume_command,
@@ -327,11 +362,14 @@ async def _is_highest_vram_worker(worker_free_vram: float) -> bool:
 
 
 def _format_job_response(job: Job, flag: str) -> dict:
+    source_kind = _source_kind_of(job)
     return {
         "flag": flag,
         "id": job.id,
         "user_id": job.user_id,
         "object_key": job.object_key,
+        "source_kind": source_kind,
+        "training_eligible": training_eligible_for_source_kind(source_kind),
         "name": job.name,
         "command": job.command,
         "resume_command": job.resume_command,
@@ -468,6 +506,8 @@ def get_user_jobs(db: Session, user_id: str):
             "id": job.id,
             "user_id": job.user_id,
             "object_key": job.object_key,
+            "source_kind": job.source_kind or "ARCHIVE",
+            "training_eligible": (job.source_kind or "ARCHIVE") != "PACKAGES_ONLY",
             "name": job.name,
             "command": job.command,
             "resume_command": job.resume_command,
@@ -512,10 +552,13 @@ def get_user_job_by_id(db: Session, user_id: str, job_id: str):
     if not job:
         return None
 
+    source_kind = job.source_kind or "ARCHIVE"
     return {
         "id": job.id,
         "user_id": job.user_id,
         "object_key": job.object_key,
+        "source_kind": source_kind,
+        "training_eligible": source_kind != "PACKAGES_ONLY",
         "name": job.name,
         "command": job.command,
         "resume_command": job.resume_command,

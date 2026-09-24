@@ -27,7 +27,12 @@ const BatchForm: React.FC = () => {
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  const [showConfirm, setShowConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
+  const submittingRef = useRef(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -91,30 +96,69 @@ const BatchForm: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!jobName || !selectedPyTorch || !selectedCuda) return;
-    if (!zipFile) {
-      setSubmitError('Please attach your workspace archive (.zip) before creating the workspace.');
+    if (submittingRef.current || submitting) return;
+    if (!zipFile && !showConfirm) {
+      lastFocusedRef.current = document.activeElement as HTMLElement | null;
+      setShowConfirm(true);
       return;
     }
 
+    await doSubmit();
+  };
+
+  const doSubmit = async () => {
+    if (submittingRef.current) return;
+    const cuda = selectedCuda;
+    if (!jobName || !selectedPyTorch || !cuda) return;
+    submittingRef.current = true;
     setSubmitting(true);
     setSubmitError('');
     try {
       // Image building and training are decoupled: no entry command here. The
       // job id returned by the backend is used later on the Training page.
+      // zipFile may be null: the backend builds a package-only
+      // interactive-only image from the base image plus packages.
       const job = await submitJob({
         name: jobName,
         pytorchVersion: selectedPyTorch,
-        cudaVersion: selectedCuda.cuda,
-        dockerBaseImage: selectedCuda.tag,
+        cudaVersion: cuda.cuda,
+        dockerBaseImage: cuda.tag,
         packages: packages.trim() || undefined,
       }, zipFile);
+      setShowConfirm(false);
       navigate(`/builds/${job.id}`);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to create workspace.');
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
+
+  const handleConfirm = () => {
+    void doSubmit();
+  };
+
+  const handleCancelConfirm = () => {
+    if (submitting) return;
+    setShowConfirm(false);
+    lastFocusedRef.current?.focus?.();
+  };
+
+  useEffect(() => {
+    if (!showConfirm) return;
+    // Initial focus inside the dialog.
+    cancelButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !submittingRef.current) {
+        event.preventDefault();
+        setShowConfirm(false);
+        lastFocusedRef.current?.focus?.();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [showConfirm]);
 
   const availableCudas = versions.find(v => v.version === selectedPyTorch)?.cudaVersions || [];
   const packagePreview = useMemo(() => parsePackagesPreview(packages), [packages]);
@@ -139,9 +183,9 @@ const BatchForm: React.FC = () => {
         </div>
         <div className="ws-hero-card">
           <div className="ws-hero-row"><Cpu size={16} /><span>Base</span><strong>PT {selectedPyTorch || '—'} / CUDA {selectedCuda?.cuda || '—'}</strong></div>
-          <div className="ws-hero-row"><FileArchive size={16} /><span>Archive</span><strong>{zipFile ? zipFile.name : 'No file yet'}</strong></div>
+          <div className="ws-hero-row"><FileArchive size={16} /><span>Archive</span><strong>{zipFile ? zipFile.name : 'No archive — interactive-only image'}</strong></div>
           <div className="ws-hero-row"><Package size={16} /><span>Packages</span><strong>{packagePreview.length > 0 ? `${packagePreview.length} listed` : 'None — base image only'}</strong></div>
-          <div className="ws-hero-row"><TerminalSquare size={16} /><span>Training</span><strong>Entry command added later on the Training page</strong></div>
+          <div className="ws-hero-row"><TerminalSquare size={16} /><span>Next</span><strong>{zipFile ? 'Entry command added later on the Training page' : 'Open interactively after build'}</strong></div>
         </div>
       </div>
 
@@ -204,7 +248,7 @@ const BatchForm: React.FC = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Workspace archive (.zip)</label>
+            <label className="form-label">Workspace archive (.zip, optional)</label>
             <div
               className={`upload-zone ${dragActive ? 'drag-active' : ''}`}
               onClick={handleFileClick}
@@ -228,11 +272,14 @@ const BatchForm: React.FC = () => {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                   <UploadCloud size={48} color="var(--accent-primary)" style={{ marginBottom: '1rem' }} />
-                  <p style={{ color: 'var(--text-primary)', fontWeight: 500 }}>Click to upload or drag and drop</p>
-                  <p style={{ fontSize: '0.875rem' }}>ZIP with your training scripts and data — no requirements.txt needed</p>
+                  <p style={{ color: 'var(--text-primary)', fontWeight: 500 }}>Click to upload or drag and drop (optional)</p>
+                  <p style={{ fontSize: '0.875rem' }}>ZIP with your training scripts and data — no requirements.txt needed. Leave empty for an interactive-only image.</p>
                 </div>
               )}
             </div>
+            {!zipFile && (
+              <p className="ws-hint">No archive — interactive-only image. You can add files later inside the running container/editor.</p>
+            )}
           </div>
 
           <div className="form-group">
@@ -273,13 +320,26 @@ const BatchForm: React.FC = () => {
           <div className="card ws-next-step">
             <TerminalSquare size={18} />
             <div>
-              <strong>Next step: training</strong>
-              <p>
-                This step only builds the image. Once the build finishes, copy the job id
-                from the Builds page and submit the entry and resume commands on the{' '}
-                <Link to="/training">Training page</Link> — VRAM estimation and training
-                start from there.
-              </p>
+              {zipFile ? (
+                <>
+                  <strong>Next step: training</strong>
+                  <p>
+                    This step only builds the image. Once the build finishes, copy the job id
+                    from the Builds page and submit the entry and resume commands on the{' '}
+                    <Link to="/training">Training page</Link> — VRAM estimation and training
+                    start from there.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <strong>Next step: interactive access</strong>
+                  <p>
+                    Without an archive this image is interactive-only and cannot be sent
+                    directly to training. After the build finishes, open it from the
+                    interactive workspace flow and create files in the container/editor.
+                  </p>
+                </>
+              )}
             </div>
           </div>
 
@@ -306,6 +366,53 @@ const BatchForm: React.FC = () => {
           </div>
         </form>
       </div>
+
+      {showConfirm && (
+        <div
+          className="ws-modal-backdrop"
+          style={{
+            position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: '1rem',
+          }}
+          onClick={handleCancelConfirm}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="package-only-title"
+            aria-describedby="package-only-desc"
+            className="card"
+            style={{ maxWidth: 520, width: '100%' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="package-only-title" style={{ marginTop: 0 }}>Build interactive-only image?</h2>
+            <div id="package-only-desc">
+              <p>No files will be placed in <code>/workspace</code>.</p>
+              {packagePreview.length > 0 ? (
+                <p>These packages will still be installed: <code>{packagePreview.join(', ')}</code>.</p>
+              ) : (
+                <p>No packages listed — the base image will be used as-is.</p>
+              )}
+              <p>This image cannot be sent directly to training.</p>
+              <p>It can be opened interactively so files can be created in the container/editor.</p>
+            </div>
+            {submitError && (
+              <div role="alert" style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'var(--status-failed)', borderRadius: '6px', marginTop: '1rem', fontSize: '0.875rem' }}>
+                {submitError}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+              <button ref={cancelButtonRef} type="button" className="btn btn-secondary" onClick={handleCancelConfirm} disabled={submitting}>
+                Go back
+              </button>
+              <button ref={confirmButtonRef} type="button" className="btn btn-primary" onClick={handleConfirm} disabled={submitting}>
+                {submitting ? 'Building...' : 'Build interactive-only image'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

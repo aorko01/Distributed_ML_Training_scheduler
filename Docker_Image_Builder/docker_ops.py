@@ -136,6 +136,7 @@ def generate_dockerfile(
     command: str,
     base_image: str,
     packages: str | list[str] | None = None,
+    include_project: bool = True,
 ) -> str:
     if "\n" in base_image or "\r" in base_image or not base_image.strip():
         raise ValueError(f"Invalid base_image: {base_image!r}")
@@ -145,12 +146,13 @@ def generate_dockerfile(
         package_list = parse_packages_text(packages)
     else:
         package_list = [p for p in (packages or []) if str(p).strip()]
-    has_requirements = os.path.isfile(os.path.join(project_dir, "requirements.txt"))
+    has_requirements = include_project and os.path.isfile(os.path.join(project_dir, "requirements.txt"))
     lines = [
         f"FROM {base_image}", "",
         "WORKDIR /workspace", "",
-        "COPY . /workspace/", ""
     ]
+    if include_project:
+        lines += ["COPY . /workspace/", ""]
     if package_list:
         # User-supplied packages from the Add Workspace form take precedence;
         # quote each token so version pins / extras survive the shell.
@@ -412,6 +414,7 @@ def build_push_and_clean(
     build_attempt_id: str | None = None,
     should_cancel: Callable[[], bool] | None = None,
     packages: str | list[str] | None = None,
+    include_project: bool = True,
 ) -> tuple[str, str] | None:
     """Build, push and clean up the job image.
 
@@ -427,15 +430,16 @@ def build_push_and_clean(
     build_dir = tempfile.mkdtemp(prefix=f"build_{safe_job_id}_")
 
     try:
-        for item in os.listdir(project_dir):
-            src = os.path.join(project_dir, item)
-            dst = os.path.join(build_dir, item)
-            if os.path.isdir(src):
-                shutil.copytree(src, dst)
-            else:
-                shutil.copy2(src, dst)
+        if include_project:
+            for item in os.listdir(project_dir):
+                src = os.path.join(project_dir, item)
+                dst = os.path.join(build_dir, item)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
 
-        dockerfile_content = generate_dockerfile(project_dir, command, base_image, packages)
+        dockerfile_content = generate_dockerfile(project_dir, command, base_image, packages, include_project)
         with open(os.path.join(build_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile_content)
 
@@ -452,18 +456,23 @@ def build_push_and_clean(
                      else [str(p) for p in (packages or [])])
             or "(none — zip bundled requirements.txt used if present)"
         )
-        emit_build_lines(job_id, build_log_buffer, [
+        header_lines = [
             "=" * 60,
             f"Job {job_id}: building Docker image",
             f"Target image : {image_tag}",
             f"Base image   : {base_image}",
+        ]
+        if not include_project:
+            header_lines.append("Workspace files: none (package-only image)")
+        header_lines += [
             f"Packages     : {_pkg_preview}",
             f"Command      : {command or '(default Docker CMD)'}",
             "--- generated Dockerfile ---",
             dockerfile_content,
             "--- end Dockerfile ---",
             "=" * 60,
-        ])
+        ]
+        emit_build_lines(job_id, build_log_buffer, header_lines)
         last_upload_time = maybe_upload_build_logs(job_id, "\n".join(build_log_buffer), last_upload_time, force=True)
 
         # The classic Docker builder shares a single global build cache and is

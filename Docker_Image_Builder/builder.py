@@ -256,9 +256,28 @@ def worker_loop(
             base_image = job.get("docker_base_image")
             packages = job.get("packages")
             attempt_id = job.get("image_build_attempt_id")
+            source_kind = job.get("source_kind") or "ARCHIVE"
 
-            if not job_id or not object_key or not base_image or not attempt_id:
+            if not job_id or not base_image or not attempt_id:
                 logger.warning("Skipping malformed job payload: %s", job)
+                if job_id and attempt_id:
+                    _release_for_retry(job_id, attempt_id, "a malformed job payload")
+                continue
+
+            if source_kind not in ("ARCHIVE", "PACKAGES_ONLY"):
+                logger.warning("Skipping job with unknown source_kind %r: %s", source_kind, job)
+                if job_id and attempt_id:
+                    _release_for_retry(job_id, attempt_id, "an unknown source_kind")
+                continue
+
+            if source_kind == "ARCHIVE" and not object_key:
+                logger.warning("Skipping ARCHIVE job without object_key: %s", job)
+                if job_id and attempt_id:
+                    _release_for_retry(job_id, attempt_id, "a malformed job payload")
+                continue
+
+            if source_kind == "PACKAGES_ONLY" and object_key:
+                logger.warning("Skipping PACKAGES_ONLY job with conflicting object_key: %s", job)
                 if job_id and attempt_id:
                     _release_for_retry(job_id, attempt_id, "a malformed job payload")
                 continue
@@ -267,35 +286,58 @@ def worker_loop(
             logger.info("Processing job: %s", job_id)
 
             extract_dir = None
+            package_only_dir = None
             result = None
 
             if registry is not None:
                 registry.register(job_id, attempt_id)
 
             try:
-                archive_bytes = download_job_archive(object_key)
-                extract_dir = extract_job_archive(archive_bytes, job_id)
-                project_dir = find_project_dir(extract_dir)
-                result = build_push_and_clean(
-                    client,
-                    job_id,
-                    project_dir,
-                    command,
-                    base_image,
-                    build_attempt_id=attempt_id,
-                    should_cancel=(
-                        lambda: registry.should_cancel(attempt_id)
-                        if registry is not None
-                        else False
-                    ),
-                    packages=packages,
-                )
+                if source_kind == "PACKAGES_ONLY":
+                    # No archive download/extraction. Build from the base image
+                    # plus packages only; /workspace starts empty.
+                    package_only_dir = tempfile.mkdtemp(prefix=f"pkgonly_{_sanitize_job_id(job_id)}_")
+                    result = build_push_and_clean(
+                        client,
+                        job_id,
+                        package_only_dir,
+                        command or "",
+                        base_image,
+                        build_attempt_id=attempt_id,
+                        should_cancel=(
+                            lambda: registry.should_cancel(attempt_id)
+                            if registry is not None
+                            else False
+                        ),
+                        packages=packages,
+                        include_project=False,
+                    )
+                else:
+                    archive_bytes = download_job_archive(object_key)
+                    extract_dir = extract_job_archive(archive_bytes, job_id)
+                    project_dir = find_project_dir(extract_dir)
+                    result = build_push_and_clean(
+                        client,
+                        job_id,
+                        project_dir,
+                        command,
+                        base_image,
+                        build_attempt_id=attempt_id,
+                        should_cancel=(
+                            lambda: registry.should_cancel(attempt_id)
+                            if registry is not None
+                            else False
+                        ),
+                        packages=packages,
+                    )
             except Exception as e:
                 logger.error("Failed while processing job %s: %s", job_id, e, exc_info=True)
                 result = ("system", f"Unexpected error while processing job: {e}")
             finally:
                 if extract_dir:
                     shutil.rmtree(extract_dir, ignore_errors=True)
+                if package_only_dir:
+                    shutil.rmtree(package_only_dir, ignore_errors=True)
                 if registry is not None:
                     registry.unregister(attempt_id)
 

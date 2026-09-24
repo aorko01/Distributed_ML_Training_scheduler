@@ -39,7 +39,7 @@ export interface ConnectionGrant {
   protocol: 'tcp-stream-v1'; terminal_protocol: 'terminal-stream-v1' | null; workspace_protocol?: 'workspace-stream-v1' | null; service?: string;
 }
 export interface Choice { id: string; label: string }
-export interface SourceJob { id: string; name: string }
+export interface SourceJob { id: string; name: string; source_kind?: string | null }
 const base = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 async function request<T>(path: string, init: RequestInit = {}, prefix = '/interactive/workspaces'): Promise<T> {

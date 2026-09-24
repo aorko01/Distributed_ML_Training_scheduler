@@ -163,7 +163,9 @@ const Dashboard: React.FC = () => {
                 className="job-row"
                 onClick={() => navigate(`/jobs/${job.id}`)}
               >
-                <td style={{ fontWeight: 500 }}>{job.name}</td>
+                <td style={{ fontWeight: 500 }}>{job.name}{(job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY') && (
+                  <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Interactive only</span>
+                )}</td>
                 <td><StatusBadge status={job.status} /></td>
                  <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
                  <td><span style={{ fontFamily: 'monospace' }}>{job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}</span></td>

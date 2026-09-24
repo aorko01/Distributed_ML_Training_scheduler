@@ -33,7 +33,12 @@ class Job(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
-    object_key = Column(String, nullable=False, unique=True)
+    object_key = Column(String, nullable=True, unique=True)
+    # Provenance of the workspace image source. ARCHIVE is a ZIP-backed job
+    # and directly trainable; PACKAGES_ONLY has no uploaded archive, is
+    # interactive-only and never directly trainable. WORKSPACE_REVISION
+    # belongs to the separate durable-workspace flow.
+    source_kind = Column(String, nullable=False, default="ARCHIVE")
     name = Column(String, nullable=True)
     # Entry command.  NULL while a workspace is build-only; it is filled in when
     # training is submitted for an already built image.

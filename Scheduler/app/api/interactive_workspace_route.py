@@ -53,7 +53,7 @@ def bases(user=Depends(get_current_active_user)):
 @router.get('/source-jobs')
 def sources(db: Session = Depends(get_db), user=Depends(get_current_active_user)):
     jobs = db.query(Job).filter(Job.user_id == user.user_id, Job.image_tag.isnot(None), Job.status.in_(service.IMAGE_JOB_STATES)).order_by(Job.created_at.desc()).all()
-    return [{'id': job.id, 'name': job.name or job.id} for job in jobs if job.image_tag]
+    return [{'id': job.id, 'name': job.name or job.id, 'source_kind': getattr(job, 'source_kind', None) or 'ARCHIVE'} for job in jobs if job.image_tag]
 
 
 @router.post('/from-upload', status_code=201)

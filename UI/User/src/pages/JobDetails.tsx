@@ -11,7 +11,7 @@ import {
 } from "../services/jobs";
 import LogTerminal from "../components/LogTerminal";
 import CopyButton from "../components/CopyButton";
-import { ArrowLeft, Download, Loader2, Rocket } from "lucide-react";
+import { ArrowLeft, Download, Loader2, Rocket, MonitorPlay } from "lucide-react";
 
 const JobDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -120,8 +120,7 @@ const JobDetails: React.FC = () => {
     );
   }
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
+  const getStatusBadge = (status: string) => {    switch (status) {
       case "Pending":
         return <span className="badge badge-pending">Queued</span>;
       case "Building":
@@ -202,7 +201,21 @@ const JobDetails: React.FC = () => {
         </div>
       </div>
 
-      {job.status === "ImageReady" && (
+      {job.status === "ImageReady" && (job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY') && (
+        <div className="card ws-next-step" style={{ marginBottom: "1.5rem" }}>
+          <MonitorPlay size={18} />
+          <div>
+            <strong>Interactive only · no workspace files</strong>
+            <p>
+              This image has no workspace files and is interactive-only. Open it as an{" "}
+              <Link to={`/submit?mode=interactive&source=job&job=${encodeURIComponent(job.id)}`}>interactive workspace</Link>,
+              add and save files, then submit the saved workspace for training.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {job.status === "ImageReady" && job.trainingEligible !== false && job.sourceKind !== 'PACKAGES_ONLY' && (
         <div className="card ws-next-step" style={{ marginBottom: "1.5rem" }}>
           <Rocket size={18} />
           <div>

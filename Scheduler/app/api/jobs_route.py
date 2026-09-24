@@ -66,7 +66,7 @@ def _ws_authenticate(websocket: WebSocket, db: Session) -> User | None:
 
 @router.post("/submit_job")
 async def submit_job(
-    zip_file: UploadFile = File(...),
+    zip_file: UploadFile | None = File(None),
     name: str = Form(""),
     command: str = Form(""),
     resume_command: str = Form(""),
@@ -83,26 +83,44 @@ async def submit_job(
     Image building and training are decoupled: ``command``/``resume_command``
     are optional here and normally omitted — the entry command is submitted
     later from the Training page once the image is ready.
+
+    The ZIP archive is optional. Without it the job becomes a PACKAGES_ONLY
+    interactive-only image built from the base image plus packages.
     """
     job_id = str(uuid.uuid4())  # Generate ONE shared ID here
 
-    try:
-        file_content = await zip_file.read()
+    has_upload = bool(zip_file is not None and (zip_file.filename or "").strip())
+    if zip_file is not None and not has_upload:
+        # A file part was supplied but carries no filename/content: treat as an
+        # invalid upload rather than silently becoming a package-only request.
+        raise HTTPException(status_code=400, detail="Invalid workspace archive: empty upload")
 
-        # Workspaces no longer need to bundle a requirements.txt: extra pip
-        # packages come from the `packages` text field and are installed by
-        # the image builder. Validate the zip structure only.
-        result = save_to_object_store(
-            file_content=file_content,
-            filename=zip_file.filename,
-            require_files=None,
-            job_id=job_id
-        )
+    object_key: str | None = None
+    source_kind = "ARCHIVE"
+    if has_upload:
+        assert zip_file is not None
+        try:
+            file_content = await zip_file.read()
+            if not file_content:
+                raise HTTPException(status_code=400, detail="Invalid workspace archive: empty upload")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        return {"error": str(e)}
+            # Workspaces no longer need to bundle a requirements.txt: extra pip
+            # packages come from the `packages` text field and are installed by
+            # the image builder. Validate the zip structure only.
+            result = save_to_object_store(
+                file_content=file_content,
+                filename=zip_file.filename,
+                require_files=None,
+                job_id=job_id
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            return {"error": str(e)}
+        object_key = result["object_key"]
+    else:
+        source_kind = "PACKAGES_ONLY"
 
     priority = (
         JobPriority.REQUESTED
@@ -113,7 +131,8 @@ async def submit_job(
     job_data = {
         "id": job_id,
         "user_id": current_user.user_id,
-        "object_key": result["object_key"],
+        "object_key": object_key,
+        "source_kind": source_kind,
         "name": name.strip() or None,
         "command": command.strip() or None,
         "resume_command": resume_command.strip() or None,
@@ -124,9 +143,29 @@ async def submit_job(
         "priority": priority,
         "reason_for_priority": reason_for_priority.strip() or None,
     }
+    if source_kind == "PACKAGES_ONLY":
+        # Package-only images are interactive-only: a build-time command must
+        # not arm them for direct training/VRAM estimation.
+        job_data["command"] = None
+        job_data["resume_command"] = None
 
     db_job = job_service.create_job(db, job_data)
-    return db_job
+    source_kind_value = getattr(db_job, "source_kind", None) or source_kind
+    return {
+        "id": db_job.id,
+        "user_id": db_job.user_id,
+        "object_key": db_job.object_key,
+        "source_kind": source_kind_value,
+        "training_eligible": source_kind_value != "PACKAGES_ONLY",
+        "name": db_job.name,
+        "command": db_job.command,
+        "resume_command": db_job.resume_command,
+        "docker_base_image": db_job.docker_base_image,
+        "packages": db_job.packages,
+        "status": db_job.status.value if hasattr(db_job.status, "value") else db_job.status,
+        "priority": db_job.priority.value if hasattr(db_job.priority, "value") else db_job.priority,
+        "image_tag": db_job.image_tag,
+    }
 
 
 @router.post("/logs/{job_id}")
