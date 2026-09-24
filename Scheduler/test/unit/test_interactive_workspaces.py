@@ -55,7 +55,9 @@ def test_from_job_ownership_and_image_states(db):
     job = make_job(db, a.user_id, status=JobStatus.FAILED, image_tag='user/source:build-a')
     ready = service.create(db, a.user_id, 'existing-request-123', 'debug', 'EXISTING_JOB', job.id)
     assert ready['revision']['state'] == 'QUEUED'
-    assert 'user/source' not in str(ready)
+    # Inherited source image is shown read-only (unified flow); only private
+    # object keys / registry credentials stay redacted.
+    assert ready['revision']['source_image_tag'] == 'user/source:build-a'
     for identifier in (job.id, 'absent', make_job(db, b.user_id).id):
         with pytest.raises(HTTPException) as exc:
             service.create(db, b.user_id, 'new-request-' + identifier, 'debug', 'EXISTING_JOB', identifier)

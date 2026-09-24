@@ -39,7 +39,59 @@ PUBLIC_FIELDS = (
 )
 
 
-def public(runtime):
+def requirements_from_spec(spec):
+    if not isinstance(spec, dict):
+        return None
+    try:
+        models = spec.get("gpu_models") or []
+        return {
+            "gpu_model": models[0] if len(models) == 1 else None,
+            "minimum_vram_gb": float(spec.get("minimum_vram_gb")),
+            "cpu_cores": float(spec.get("cpu")),
+            "memory_gb": float(spec.get("memory_gb")),
+            "disk_gb": int(spec.get("disk_gb")),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def assigned_machine_summary(db, runtime):
+    if not runtime or not getattr(runtime, "assignment_id", None):
+        return None
+    try:
+        assignment = db.get(Assignment, runtime.assignment_id)
+        if not assignment:
+            return None
+        from app.models.worker_model import Worker
+
+        worker = db.query(Worker).filter_by(worker_id=assignment.worker_id).first()
+        if not worker:
+            return None
+        inv = worker.inventory or {}
+        gpus = inv.get("gpus") or []
+        matched = None
+        for gpu in gpus:
+            if gpu.get("uuid") == assignment.gpu_uuid:
+                matched = gpu
+                break
+        gpu_model = (matched or {}).get("model") or worker.gpu_type
+        total_vram = None
+        try:
+            total_vram = float((matched or {}).get("memory_gb") or 0) or float(worker.total_vram or 0)
+        except (TypeError, ValueError):
+            total_vram = float(worker.total_vram or 0)
+        display = (inv.get("hostname") or getattr(worker, "hostname", None) or worker.worker_id)
+        return {
+            "display_name": str(display),
+            "gpu_model": gpu_model,
+            "total_vram_gb": total_vram,
+            "assigned_at": runtime.assigned_at,
+        }
+    except Exception:
+        return None
+
+
+def public(runtime, db=None):
     item = (
         {field: getattr(runtime, field) for field in PUBLIC_FIELDS} if runtime else None
     )
@@ -50,6 +102,14 @@ def public(runtime):
             item["allow_internet"] = bool((runtime.launch_spec or {}).get("allow_internet"))
         except Exception:
             item["allow_internet"] = False
+        item["requirements"] = requirements_from_spec(runtime.launch_spec or {})
+        if db is not None:
+            try:
+                item["assigned_machine"] = assigned_machine_summary(db, runtime)
+            except Exception:
+                item["assigned_machine"] = None
+        else:
+            item["assigned_machine"] = None
     return item
 
 
@@ -69,7 +129,32 @@ def start(db, owner, workspace_id, key, body):
     )
     if not workspace:
         raise HTTPException(404, "Workspace not found")
-    hashed = digest(body.model_dump())
+    raw = body.model_dump()
+    # Canonicalize requirements so 4 and 4.0 hash identically. Body validator
+    # already returns canonical dicts; re-canonicalize defensively.
+    requirements = raw.get("requirements")
+    if requirements is not None and not isinstance(requirements, dict):
+        raise HTTPException(422, "Invalid requirements")
+    if isinstance(requirements, dict):
+        try:
+            from app.schemas.interactive_capacity_schema import ResourceRequirements
+
+            requirements = ResourceRequirements(**requirements).canonical()
+            raw["requirements"] = requirements
+        except Exception:
+            raise HTTPException(422, "Invalid requirements") from None
+    # Fall back to workspace defaults, then operator defaults, for old clients.
+    effective = requirements
+    if effective is None:
+        stored = getattr(workspace, "default_resource_requirements", None)
+        if stored:
+            try:
+                from app.schemas.interactive_capacity_schema import ResourceRequirements
+
+                effective = ResourceRequirements(**stored).canonical()
+            except Exception:
+                effective = None
+    hashed = digest(raw)
     previous = (
         db.query(Runtime).filter_by(workspace_id=workspace_id, request_key=key).first()
     )
@@ -77,7 +162,7 @@ def start(db, owner, workspace_id, key, body):
         if previous.request_hash != hashed:
             raise HTTPException(409, "Idempotency key reused")
         db.commit()
-        return public(previous)
+        return public(previous, db)
     if not Settings.from_env().interactive:
         raise HTTPException(503, "Runtime admission disabled")
     if (
@@ -101,8 +186,10 @@ def start(db, owner, workspace_id, key, body):
     if not revision:
         raise HTTPException(409, "Start requires a ready revision")
     try:
-        spec = resource_profile()
-    except (ValueError, OverflowError):
+        spec = resource_profile(effective)
+    except ValueError:
+        raise HTTPException(422, "Requirements outside operator bounds") from None
+    except (OverflowError, Exception):
         raise HTTPException(503, "Invalid runtime profile") from None
     if (
         spec["cpu"] <= 0
@@ -138,7 +225,7 @@ def start(db, owner, workspace_id, key, body):
     )
     db.add(runtime)
     db.commit()
-    return public(runtime)
+    return public(runtime, db)
 
 
 def latest(db, owner, workspace_id):
@@ -149,8 +236,27 @@ def latest(db, owner, workspace_id):
         db.query(Runtime)
         .filter_by(workspace_id=workspace_id)
         .order_by(Runtime.generation.desc())
-        .first()
+        .first(),
+        db,
     )
+
+
+def active_for_owner(db, owner, limit=50):
+    """Lightweight owned-runtime listing for in-app notifications."""
+    rows = (
+        db.query(Runtime, Workspace.name)
+        .join(Workspace, Workspace.id == Runtime.workspace_id)
+        .filter(Runtime.owner_user_id == owner)
+        .order_by(Runtime.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    items = []
+    for runtime, name in rows:
+        entry = public(runtime, db) or {}
+        entry["workspace_name"] = name
+        items.append(entry)
+    return items
 
 
 def stop(db, owner, runtime_id):
@@ -175,7 +281,7 @@ def stop(db, owner, runtime_id):
             True,
         )
     db.commit()
-    return public(runtime)
+    return public(runtime, db)
 
 
 def ready(db, runtime):

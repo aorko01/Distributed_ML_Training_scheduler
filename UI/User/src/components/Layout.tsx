@@ -1,13 +1,20 @@
 import React from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, Server, LogOut, Activity, User, Hammer, Rocket } from 'lucide-react';
-import { logout } from '../services/auth';
+import { LayoutDashboard, PlusCircle, LogOut, Activity, User, Hammer, Rocket } from 'lucide-react';
+import { logout, getUsername } from '../services/auth';
+import { RuntimeWatcher } from '../features/interactive-capacity/RuntimeWatcher';
 
 const Layout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
   const handleLogout = () => {
+    const user = getUsername();
+    if (user) {
+      try {
+        sessionStorage.removeItem(`interactive-seen-${user}`);
+      } catch { /* ignore */ }
+    }
     logout();
     navigate('/login');
   };
@@ -65,13 +72,6 @@ const Layout: React.FC = () => {
             <Rocket size={20} />
             Training
           </NavLink>
-          <NavLink 
-            to="/machines" 
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          >
-            <Server size={20} />
-            Machines
-          </NavLink>
           <NavLink to="/interactive" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
             <PlusCircle size={20} />Interactive workspaces
           </NavLink>
@@ -115,6 +115,7 @@ const Layout: React.FC = () => {
         </header>
         <div className="page-content">
           <Outlet />
+          {!isEditorRoute && <RuntimeWatcher />}
         </div>
       </main>
     </div>

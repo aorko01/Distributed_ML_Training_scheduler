@@ -29,6 +29,108 @@ def worker_eligible(worker, timestamp, fresh=15):
     )
 
 
+def _total_ram(inv):
+    for key in ("total_ram_gb", "total_ram", "totalRam"):
+        if inv.get(key) is not None:
+            try:
+                return float(inv.get(key))
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _total_disk(inv):
+    for key in ("total_disk_gb", "total_disk", "totalDisk"):
+        if inv.get(key) is not None:
+            try:
+                return float(inv.get(key))
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _gpu_list(inv):
+    return inv.get("gpus", []) or []
+
+
+def _model_matches(gpu, spec):
+    models = spec.get("gpu_models") or []
+    return (not models) or (gpu.get("model") in models)
+
+
+def capability_ineligibility(snapshot, spec):
+    """Total-hardware check: can this worker ever satisfy the request?"""
+    inv = snapshot.inventory
+    reasons = []
+    if inv.get("platform") != spec["platform"]:
+        reasons.append("platform_mismatch")
+    if not inv.get("nvidia_runtime"):
+        reasons.append("nvidia_runtime_unavailable")
+    if not inv.get("quota_supported"):
+        reasons.append("disk_quota_unavailable")
+    if (inv.get("cpu_cores", 0) or 0) < spec["cpu"] + 1:
+        reasons.append("insufficient_cpu")
+    capable_ram = _total_ram(inv)
+    if capable_ram is None:
+        capable_ram = inv.get("free_ram_gb", 0) or 0
+    if capable_ram < spec["memory_gb"] + 1:
+        reasons.append("insufficient_ram")
+    capable_disk = _total_disk(inv)
+    if capable_disk is None:
+        capable_disk = inv.get("free_disk_gb", 0) or 0
+    if capable_disk < spec["disk_gb"] + spec["pull_headroom_gb"]:
+        reasons.append("insufficient_disk")
+    gpus = _gpu_list(inv)
+    if not gpus:
+        reasons.append("gpu_inventory_missing")
+    elif not any(
+        gpu.get("uuid", "").startswith("GPU-")
+        and (gpu.get("memory_gb", 0) or 0) >= spec["minimum_vram_gb"]
+        and _model_matches(gpu, spec)
+        for gpu in gpus
+    ):
+        reasons.append("no_compatible_gpu")
+    return ",".join(reasons) or None
+
+
+def availability_ineligibility(snapshot, spec):
+    """Point-in-time check: is this worker free for interactive work now?"""
+    inv = snapshot.inventory
+    reasons = []
+    if snapshot.assignments:
+        reasons.append("scheduler_assignments_active")
+    if inv.get("local_assignments"):
+        reasons.append("worker_assignments_active")
+    if inv.get("mode") != "AVAILABLE":
+        reasons.append("worker_mode_" + str(inv.get("mode", "unknown")).lower())
+    if not inv.get("interactive_ready"):
+        reasons.append("interactive_preflight_not_ready")
+    if (inv.get("free_ram_gb", 0) or 0) < spec["memory_gb"] + 1:
+        reasons.append("insufficient_ram")
+    if (inv.get("cpu_cores", 0) or 0) < spec["cpu"] + 1:
+        reasons.append("insufficient_cpu")
+    if (inv.get("free_disk_gb", 0) or 0) < spec["disk_gb"] + spec["pull_headroom_gb"]:
+        reasons.append("insufficient_disk")
+    gpus = _gpu_list(inv)
+    if not gpus:
+        reasons.append("gpu_inventory_missing")
+    elif any(g.get("busy") is not False or g.get("processes") for g in gpus):
+        pids = sorted({pid for gpu in gpus for pid in gpu.get("processes", [])})
+        reasons.append(
+            "gpu_busy" + ((":pids=" + ",".join(map(str, pids))) if pids else "")
+        )
+    if gpus and not any(
+        gpu.get("uuid", "").startswith("GPU-")
+        and (gpu.get("memory_gb", 0) or 0) >= spec["minimum_vram_gb"]
+        and _model_matches(gpu, spec)
+        and gpu.get("busy") is False
+        and not gpu.get("processes")
+        for gpu in gpus
+    ):
+        reasons.append("no_compatible_gpu")
+    return ",".join(reasons) or None
+
+
 def interactive_ineligibility(snapshot, spec):
     """Return a stable operator-facing reason when a worker cannot host a runtime."""
     inv = snapshot.inventory
@@ -47,13 +149,13 @@ def interactive_ineligibility(snapshot, spec):
         reasons.append("nvidia_runtime_unavailable")
     if not inv.get("quota_supported"):
         reasons.append("disk_quota_unavailable")
-    if inv.get("free_ram_gb", 0) < spec["memory_gb"] + 1:
+    if (inv.get("free_ram_gb", 0) or 0) < spec["memory_gb"] + 1:
         reasons.append("insufficient_ram")
-    if inv.get("cpu_cores", 0) < spec["cpu"] + 1:
+    if (inv.get("cpu_cores", 0) or 0) < spec["cpu"] + 1:
         reasons.append("insufficient_cpu")
-    if inv.get("free_disk_gb", 0) < spec["disk_gb"] + spec["pull_headroom_gb"]:
+    if (inv.get("free_disk_gb", 0) or 0) < spec["disk_gb"] + spec["pull_headroom_gb"]:
         reasons.append("insufficient_disk")
-    gpus = inv.get("gpus", [])
+    gpus = _gpu_list(inv)
     if not gpus:
         reasons.append("gpu_inventory_missing")
     elif any(g.get("busy") is not False or g.get("processes") for g in gpus):
@@ -63,8 +165,8 @@ def interactive_ineligibility(snapshot, spec):
         )
     if gpus and not any(
         gpu.get("uuid", "").startswith("GPU-")
-        and gpu.get("memory_gb", 0) >= spec["minimum_vram_gb"]
-        and (not spec["gpu_models"] or gpu.get("model") in spec["gpu_models"])
+        and (gpu.get("memory_gb", 0) or 0) >= spec["minimum_vram_gb"]
+        and _model_matches(gpu, spec)
         for gpu in gpus
     ):
         reasons.append("no_compatible_gpu")

@@ -1524,3 +1524,9 @@ tr.job-row:hover { background: linear-gradient(90deg, rgba(57, 169, 255, 0.095),
 .ws-next-step strong { display: block; margin-bottom: 0.3rem; }
 .ws-next-step p { margin: 0; font-size: 0.85rem; color: var(--text-secondary); }
 .ws-next-step a { color: var(--accent-primary); font-weight: 600; }
+
+/* ---- Unified interactive capacity + runtime notifications ---- */
+.runtime-toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 0.6rem; z-index: 80; max-width: 360px; }
+.runtime-toast { display: flex; flex-direction: column; gap: 0.5rem; box-shadow: 0 16px 40px rgba(0,0,0,0.25); }
+.runtime-toast p { margin: 0; font-size: 0.85rem; }
+.capacity-preview-note { font-size: 0.8rem; color: var(--text-secondary); }

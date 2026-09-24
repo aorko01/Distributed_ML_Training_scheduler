@@ -39,6 +39,11 @@ def latest(
     return service.latest(db, user.user_id, workspace_id)
 
 
+@router.get("/runtimes/mine")
+def mine(user=Depends(get_current_active_user), db=Depends(get_db)):
+    return service.active_for_owner(db, user.user_id)
+
+
 @router.post("/runtimes/{runtime_id}/stop", status_code=202)
 def stop(runtime_id: str, user=Depends(get_current_active_user), db=Depends(get_db)):
     return service.stop(db, user.user_id, runtime_id)

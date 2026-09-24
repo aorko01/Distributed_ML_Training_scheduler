@@ -38,6 +38,7 @@ class Strict(BaseModel):
 class FromJob(Strict):
     name: str = Field(min_length=1, max_length=120)
     source_job_id: str = Field(min_length=1, max_length=128)
+    requirements: dict | None = None
 
     @field_validator('name')
     @classmethod
@@ -45,6 +46,17 @@ class FromJob(Strict):
         if not value.strip():
             raise ValueError('name is required')
         return value.strip()
+
+    @field_validator('requirements')
+    @classmethod
+    def strict_requirements(cls, value):
+        if value is None:
+            return None
+        from app.schemas.interactive_capacity_schema import ResourceRequirements
+
+        if not isinstance(value, dict):
+            raise ValueError('requirements must be an object')
+        return ResourceRequirements(**value).canonical()
 
 
 class Claim(Strict):

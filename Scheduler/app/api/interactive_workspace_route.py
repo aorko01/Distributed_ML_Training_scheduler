@@ -53,28 +53,44 @@ def bases(user=Depends(get_current_active_user)):
 @router.get('/source-jobs')
 def sources(db: Session = Depends(get_db), user=Depends(get_current_active_user)):
     jobs = db.query(Job).filter(Job.user_id == user.user_id, Job.image_tag.isnot(None), Job.status.in_(service.IMAGE_JOB_STATES)).order_by(Job.created_at.desc()).all()
-    return [{'id': job.id, 'name': job.name or job.id, 'source_kind': getattr(job, 'source_kind', None) or 'ARCHIVE'} for job in jobs if job.image_tag]
+    return [{'id': job.id, 'name': job.name or job.id, 'source_kind': getattr(job, 'source_kind', None) or 'ARCHIVE',
+             'source_image_label': job.image_tag} for job in jobs if job.image_tag]
 
 
 @router.post('/from-upload', status_code=201)
 async def upload(request: Request, name: str = Form(min_length=1, max_length=120), base_image_id: str = Form(),
+                 requirements: str | None = Form(default=None),
                  file: UploadFile | None = File(default=None), request_key=Depends(key), db: Session = Depends(get_db), user=Depends(get_current_active_user)):
+    import json as _json
     form = await request.form()
-    if set(form.keys()) - {'name', 'base_image_id', 'file'} or any(len(form.getlist(k)) != 1 for k in form.keys()):
+    if set(form.keys()) - {'name', 'base_image_id', 'requirements', 'file'} or any(len(form.getlist(k)) != 1 for k in form.keys()):
         raise HTTPException(422, 'Unexpected upload fields')
     if not name.strip():
         raise HTTPException(422, 'Name required')
+    parsed_requirements = None
+    if requirements not in (None, ''):
+        if len(requirements) > 2048:
+            raise HTTPException(422, 'Requirements too large')
+        try:
+            raw = _json.loads(requirements)
+        except Exception:
+            raise HTTPException(422, 'Invalid requirements') from None
+        try:
+            from app.schemas.interactive_capacity_schema import ResourceRequirements
+            parsed_requirements = ResourceRequirements(**raw).canonical()
+        except Exception:
+            raise HTTPException(422, 'Invalid requirements') from None
     if file is None or not file.filename:
         # No archive submitted: an empty workspace is created from the base
         # image with just a placeholder requirements.txt.
-        return service.create(db, user.user_id, request_key, name.strip(), 'UPLOAD', base_image_id, None)
+        return service.create(db, user.user_id, request_key, name.strip(), 'UPLOAD', base_image_id, None, parsed_requirements)
     data = await file.read(MAX_UPLOAD + 1)
-    return service.create(db, user.user_id, request_key, name.strip(), 'UPLOAD', base_image_id, data)
+    return service.create(db, user.user_id, request_key, name.strip(), 'UPLOAD', base_image_id, data, parsed_requirements)
 
 
 @router.post('/from-job', status_code=201)
 def from_job(body: FromJob, request_key=Depends(key), db: Session = Depends(get_db), user=Depends(get_current_active_user)):
-    return service.create(db, user.user_id, request_key, body.name, 'EXISTING_JOB', body.source_job_id)
+    return service.create(db, user.user_id, request_key, body.name, 'EXISTING_JOB', body.source_job_id, None, body.requirements)
 
 
 @router.get('')

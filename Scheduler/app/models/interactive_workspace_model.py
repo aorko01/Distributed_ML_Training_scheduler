@@ -22,6 +22,7 @@ class InteractiveWorkspace(Base):
     saved_revision_id = Column(String, nullable=True)
     request_key = Column(String(128), nullable=False)
     request_hash = Column(String(64), nullable=False)
+    default_resource_requirements = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     __table_args__ = (

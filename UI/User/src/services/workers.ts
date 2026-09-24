@@ -1,5 +1,10 @@
 import { api } from './api';
 
+// Legacy worker-node view (admin/legacy). The unified interactive flow uses
+// the authenticated /interactive/capacity/* contract instead. `running_jobs`
+// below is only a total live-assignment count, not the batch/estimation/
+// interactive workload breakdown shown on capacity cards.
+
 export interface WorkerNode {
   worker_id: string;
   hostname: string;
@@ -79,59 +84,4 @@ export const fetchAllNodes = async (): Promise<WorkerNode[]> => {
     throw new Error(data.error);
   }
   return (data.nodes ?? []).map(mapNode);
-};
-
-export interface ResourceOptions {
-  gpu_types: string[];
-  vram_options: number[];
-  ram_options: number[];
-  core_options: number[];
-  disk_options: number[];
-}
-
-export interface ResourceConfig {
-  gpu_type?: string;
-  gpu_vram?: number;
-  cpu_ram?: number;
-  cpu_cores?: number;
-  disk?: number;
-  op: 'ge' | 'eq';
-}
-
-export interface ResourceSummary {
-  matching_nodes: number;
-  avg_running_jobs: number;
-  queue_total: number;
-  queue_open: number;
-}
-
-export interface ResourceRequestPayload {
-  gpu_type?: string;
-  gpu_vram?: number;
-  cpu_ram?: number;
-  cpu_cores?: number;
-  disk?: number;
-}
-
-export interface ResourceRequestResult {
-  request_id: string;
-  status: string;
-  message: string;
-  queue_open: number;
-}
-
-export const fetchResourceOptions = async (): Promise<ResourceOptions> => {
-  const data = await api.get<ResourceOptions>('/resources/options');
-  return data;
-};
-
-export const fetchResourceSummary = async (config: ResourceConfig): Promise<ResourceSummary> => {
-  const data = await api.post<ResourceSummary>('/resources/summary', config);
-  return data;
-};
-
-export const createResourceRequest = async (
-  payload: ResourceRequestPayload,
-): Promise<ResourceRequestResult> => {
-  return api.post<ResourceRequestResult>('/resources/request', payload);
 };

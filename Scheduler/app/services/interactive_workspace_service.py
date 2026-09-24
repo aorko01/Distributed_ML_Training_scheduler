@@ -39,18 +39,39 @@ def revision(db, workspace_id):
 
 def public(db, item):
     rev = revision(db, item.id)
-    return {'id': item.id, 'name': item.name, 'source_type': item.source_type, 'source_job_id': item.source_job_id,
+    base = {'id': item.id, 'name': item.name, 'source_type': item.source_type, 'source_job_id': item.source_job_id,
             'current_revision_id': item.current_revision_id, 'created_at': item.created_at,
-            'revision': {key: getattr(rev, key) for key in ('id', 'revision_number', 'origin', 'state', 'image_tag', 'image_digest_ref', 'failure_type', 'failure_reason', 'created_at', 'updated_at')}}
+            'default_resource_requirements': getattr(item, 'default_resource_requirements', None),
+            'revision': {key: getattr(rev, key) for key in ('id', 'revision_number', 'origin', 'state', 'image_tag', 'image_digest_ref', 'failure_type', 'failure_reason', 'created_at', 'updated_at')} if rev else None}
+    if rev is not None:
+        # Safe base/source-image metadata for the details page. Never expose
+        # registry credentials, builder leases, or internal image metadata.
+        base['revision']['requested_base_image'] = getattr(rev, 'requested_base_image', None)
+        base['revision']['source_image_tag'] = getattr(rev, 'source_image_tag', None)
+    return base
 
 
-def request_hash(name, source, value, data=None):
-    body = json.dumps([name, source, value, hashlib.sha256(data).hexdigest() if data is not None else None], separators=(',', ':'))
+def canonical_requirements(value):
+    if value is None:
+        return None
+    from app.schemas.interactive_capacity_schema import ResourceRequirements
+
+    if isinstance(value, ResourceRequirements):
+        return value.canonical()
+    if isinstance(value, dict):
+        return ResourceRequirements(**value).canonical()
+    raise ValueError("Invalid requirements")
+
+
+def request_hash(name, source, value, data=None, requirements=None):
+    canonical = canonical_requirements(requirements)
+    body = json.dumps([name, source, value, hashlib.sha256(data).hexdigest() if data is not None else None, canonical], separators=(',', ':'), sort_keys=True, default=str)
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def create(db, owner, key, name, source, value, data=None):
-    digest = request_hash(name, source, value, data)
+def create(db, owner, key, name, source, value, data=None, requirements=None):
+    canonical = canonical_requirements(requirements)
+    digest = request_hash(name, source, value, data, canonical)
     # Serialize retries from the same owner across processes, including storage.
     # This also prevents duplicate upload objects for the same request.
     from app.models.user_model import User
@@ -99,7 +120,8 @@ def create(db, owner, key, name, source, value, data=None):
             raise HTTPException(404, 'Source job image not found')
         values = {'source_image_tag': job.image_tag}
     item = Workspace(id=workspace_id, owner_user_id=owner, name=name, source_type=source,
-                     source_job_id=value if source == 'EXISTING_JOB' else None, request_key=key, request_hash=digest)
+                     source_job_id=value if source == 'EXISTING_JOB' else None, request_key=key, request_hash=digest,
+                     default_resource_requirements=canonical)
     rev = Revision(id=revision_id, workspace_id=workspace_id, revision_number=1, origin=source, state='QUEUED', **values)
     try:
         db.add(item)

@@ -17,6 +17,7 @@ from app.api.docker_route import router as docker_router
 from app.api.resource_route import router as resources_router
 from app.services import watchdog_service
 from app.api.interactive_workspace_route import router as interactive_router, internal_router as interactive_builder_router
+from app.api.interactive_capacity_route import router as interactive_capacity_router
 
 
 @asynccontextmanager
@@ -86,6 +87,7 @@ app.include_router(docker_router, prefix="/docker", tags=["docker"])
 app.include_router(resources_router, prefix="/resources", tags=["resources"])
 app.include_router(interactive_router)
 app.include_router(interactive_builder_router)
+app.include_router(interactive_capacity_router)
 
 app.include_router(execution_router)
 app.include_router(runtime_router)

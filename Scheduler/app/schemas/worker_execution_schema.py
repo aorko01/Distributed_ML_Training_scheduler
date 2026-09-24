@@ -1,5 +1,5 @@
-from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, Any, Literal
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 UUID = Annotated[
     str,
@@ -134,6 +134,22 @@ class Result(Fence):
 
 class Start(Strict):
     revision_id: UUID | None = None
+    # Optional user minimums; omitted for backward compatibility. Validated
+    # strictly in service/route layer; placement identity is rejected.
+    requirements: Any | None = None
+
+    @field_validator("requirements")
+    @classmethod
+    def _strict_requirements(cls, value):
+        if value is None:
+            return None
+        from app.schemas.interactive_capacity_schema import ResourceRequirements
+
+        if not isinstance(value, dict):
+            raise ValueError("requirements must be an object")
+        # ResourceRequirements has extra=forbid: worker_id, hostname, gpu uuid
+        # or any unknown field raises ValidationError -> 422.
+        return ResourceRequirements(**value).canonical()
 
 
 class Logs(Fence):

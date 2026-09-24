@@ -158,7 +158,13 @@ async def _update_db_worker_metrics(Heartbeat: HeartbeatSchema):
 
 
 async def get_all_workers(db: Session) -> list[dict]:
-    """Return every registered worker with live status and resource metrics."""
+    """Return every registered worker with live status and resource metrics.
+
+    Note: ``running_jobs`` here is only a total live-assignment count, not the
+    batch/estimation/interactive workload breakdown. The User interactive flow
+    must use the authenticated ``/interactive/capacity/preview`` contract for
+    sanitized per-kind workload summaries.
+    """
     workers = db.query(Worker).order_by(Worker.first_seen).all()
     result = []
     for worker in workers:

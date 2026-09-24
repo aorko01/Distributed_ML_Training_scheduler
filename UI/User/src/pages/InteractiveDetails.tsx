@@ -1,8 +1,19 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { interactive, type Workspace, type Runtime } from '../services/interactive';
+import { interactive, interactiveCapacity, type Workspace, type Runtime, type CapacityOptions, type ResourceRequirements } from '../services/interactive';
+import { ResourceRequirementsForm } from '../features/interactive-capacity/ResourceRequirementsForm';
+import { CapacitySummary } from '../features/interactive-capacity/CapacitySummary';
+import { MachineGrid } from '../features/interactive-capacity/MachineGrid';
+import { useCapacityPreview } from '../features/interactive-capacity/useCapacityPreview';
+import { normalizeRequirements, requirementsValid } from '../features/interactive-capacity/requirements';
 
 import { verifyConnection } from '../services/terminalVerification';
+
+function runtimeLabel(state: string): string {
+  if (state === 'QUEUED') return 'Waiting for a matching machine';
+  if (['ASSIGNED', 'PULLING', 'STARTING', 'CONNECTING'].includes(state)) return `Preparing (${state.toLowerCase()})`;
+  return state.toLowerCase();
+}
 
 export default function InteractiveDetails() {
   const { id } = useParams();
@@ -21,6 +32,14 @@ export default function InteractiveDetails() {
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [cancelling, setCancelling] = useState(false);
+  const [capOptions, setCapOptions] = useState<CapacityOptions | null>(null);
+  const [requirements, setRequirements] = useState<ResourceRequirements | null>(null);
+  const liveRuntime = runtime && !['STOPPED', 'FAILED'].includes(runtime.state);
+  const { preview, loading: previewLoading, error: previewError } = useCapacityPreview(liveRuntime ? null : requirements, !liveRuntime);
+  const valid = requirements ? requirementsValid(requirements, capOptions) : false;
+  useEffect(() => {
+    interactiveCapacity.options().then(setCapOptions).catch(() => {});
+  }, []);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -28,7 +47,7 @@ export default function InteractiveDetails() {
 
     connection.current?.abort(); setConnectionState('');
     if (loadedRoute.current !== id) {
-      loadedRoute.current = id; setRuntime(null); runtimeLatest.current = null; currentRuntime.current = '';
+      loadedRoute.current = id; setRuntime(null); runtimeLatest.current = null; currentRuntime.current = ''; setRequirements(null);
     }
     async function load() {
       try {
@@ -41,6 +60,13 @@ export default function InteractiveDetails() {
         if (identity !== currentRuntime.current) { connection.current?.abort(); setConnectionState(''); currentRuntime.current = identity; }
         setRuntime(previous => previous && running && previous.generation > running.generation ? previous : running);
         setWorkspace(item); setLines(logs.lines); setError('');
+        setRequirements((prev) => {
+          if (prev) return prev;
+          const fromRuntime = running?.requirements ?? null;
+          const fromWorkspace = item.default_resource_requirements ?? null;
+          const fallback = capOptions?.defaults ?? { gpu_model: null, minimum_vram_gb: 4, cpu_cores: 2, memory_gb: 8, disk_gb: 20 };
+          return normalizeRequirements((fromRuntime ?? fromWorkspace ?? fallback) as ResourceRequirements, capOptions?.defaults ?? null);
+        });
         if (['QUEUED', 'BUILDING'].includes(item.revision.state) || (running && !['STOPPED','FAILED'].includes(running.state))) timer = setTimeout(load, 2000);
       } catch (err) { if (active) {
         connection.current?.abort(); currentRuntime.current = ''; setConnectionState(''); setRuntime(null);
@@ -50,7 +76,7 @@ export default function InteractiveDetails() {
     }
     void load();
     return () => { active = false; clearTimeout(timer); connection.current?.abort(); };
-  }, [id, reload]);
+  }, [id, reload, capOptions === null]);
   async function cancel() {
     setCancelling(true);
     try { await interactive.cancel(id!); setReload(value => value + 1); }
@@ -59,11 +85,11 @@ export default function InteractiveDetails() {
   }
   useEffect(() => { startKey.current = null; }, [id]);
   async function startRuntime() {
-    if (busy) return;
+    if (busy || !requirements) return;
     const requestedId = id;
     setBusy(true); setError('');
     startKey.current ??= crypto.randomUUID();
-    try { const value = await interactive.start(id!, startKey.current); if (routeId.current !== requestedId) return; runtimeLatest.current = value; setRuntime(value); startKey.current = null; setReload(v => v + 1); }
+    try { const value = await interactive.start(id!, startKey.current, requirements); if (routeId.current !== requestedId) return; runtimeLatest.current = value; setRuntime(value); startKey.current = null; setReload(v => v + 1); }
     catch (err) { setError(err instanceof Error ? err.message : 'Start failed'); }
     finally { setBusy(false); }
   }
@@ -90,6 +116,10 @@ export default function InteractiveDetails() {
       if (!controller.signal.aborted && identity === currentRuntime.current) setConnectionState(err instanceof Error ? err.message : 'Connection failed');
     } finally { connectionBusy.current = false; }
   }
+  const imageReady = workspace?.revision.state === 'IMAGE_READY';
+  const canRequest = imageReady && (!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && valid && !!requirements;
+  const noCapable = preview && preview.matching_online === 0;
+  const allBusy = preview && preview.matching_online > 0 && preview.available_now === 0;
   return <div className="card">
     <Link to="/interactive">All workspaces</Link>
     {error && <div role="alert"><p>{error}</p><button className="btn btn-secondary" onClick={() => setReload(value => value + 1)}>Retry</button></div>}
@@ -97,6 +127,8 @@ export default function InteractiveDetails() {
     {workspace && <>
       <h1>{workspace.name}</h1>
       <p>Source: {workspace.source_type === 'UPLOAD' ? 'Uploaded workspace' : 'Existing job'} · Revision {workspace.revision.revision_number}</p>
+      {workspace.source_type === 'UPLOAD' && workspace.revision.requested_base_image && <p>Base image: <code>{workspace.revision.requested_base_image}</code></p>}
+      {workspace.source_type !== 'UPLOAD' && workspace.revision.source_image_tag && <p>Base image inherited from existing job: <code>{workspace.revision.source_image_tag}</code></p>}
       <p role="status">{workspace.revision.state === 'IMAGE_READY' ? 'Image ready' : workspace.revision.state}</p>
       {workspace.revision.failure_reason && <p role="alert">{workspace.revision.failure_reason}</p>}
       {workspace.revision.image_tag && <p>Image tag: <code>{workspace.revision.image_tag}</code></p>}
@@ -104,14 +136,31 @@ export default function InteractiveDetails() {
       <pre aria-label="Build logs" style={{ whiteSpace: 'pre-wrap' }}>{lines.join('\n') || 'No build logs yet.'}</pre>
       {['QUEUED', 'BUILDING'].includes(workspace.revision.state) && <button className="btn btn-secondary" disabled={cancelling} onClick={cancel}>Cancel build</button>}
       <p>This runtime is temporary. Stop discards unsaved runtime changes; the saved source image remains available.</p>
-      {runtime && <><p role="status">Runtime: {runtime.state.toLowerCase()}</p>
+      {runtime && <><p role="status">Runtime: {runtimeLabel(runtime.state)}</p>
         {runtime.failure_detail && <p role="alert">{runtime.failure_detail}</p>}
+        {runtime.assigned_machine && <p>Assigned machine: {runtime.assigned_machine.display_name} · {runtime.assigned_machine.gpu_model ?? 'GPU'} · {runtime.assigned_machine.total_vram_gb?.toFixed(0) ?? '?'} GB VRAM</p>}
         {runtime.lifetime_deadline && <p>Runtime deadline: {runtime.lifetime_deadline}</p>}</>}
-      {workspace.revision.state === 'IMAGE_READY' && (!runtime || ['STOPPED','FAILED'].includes(runtime.state)) &&
-        <button className="btn" disabled={busy} onClick={startRuntime}>Start</button>}{' '}
+      {imageReady && (!runtime || ['STOPPED','FAILED'].includes(runtime.state)) && <>
+        <h2>Request interactive access</h2>
+        {!imageReady && <p role="status">Workspace image is still building.</p>}
+        {requirements && <ResourceRequirementsForm value={requirements} options={capOptions} onChange={setRequirements} />}
+        {!valid && <p role="alert" className="error-text">Requirements are outside operator bounds.</p>}
+        <div style={{ marginTop: '1rem' }}>
+          <CapacitySummary preview={preview} loading={previewLoading} />
+          {previewError && <p role="alert" className="error-text">{previewError}</p>}
+        </div>
+        <div style={{ marginTop: '1rem' }}>
+          <MachineGrid machines={preview?.machines ?? []} />
+        </div>
+        {noCapable && <p role="status">No capable online machine exists. Reduce requirements or wait for a suitable worker to come online.</p>}
+        {allBusy && <p role="status">Matching machines are busy. You can queue and the scheduler will assign one when free.</p>}
+        <button className="btn" disabled={busy || !canRequest || !!noCapable} onClick={startRuntime}>
+          {allBusy ? 'Queue interactive access' : 'Request interactive access'}
+        </button>
+      </>}
       {runtime && !['STOPPED','FAILED'].includes(runtime.state) && <button className="btn btn-secondary" disabled={busy || runtime.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop</button>}{' '}
       <button className="btn btn-secondary" disabled={busy || runtime?.state !== 'READY' || runtime.desired_state !== 'RUNNING' || connectionState === 'Checking connection…'} onClick={connect}>Connect</button>{' '}
-      {runtime?.editor_capable && connectionState === 'Connected successfully' && <Link className="btn" to={`/interactive/${id}/editor`}>Open Editor</Link>}{' '}
+      {runtime?.state === 'READY' && <Link className="btn" to={`/interactive/${id}/editor`}>Open Editor</Link>}{' '}
       {runtime && !runtime.editor_capable && <span title="Start a new editor-capable runtime after the workspace editor rollout is enabled">Editor unavailable for this runtime</span>}{' '}
       <button className="btn btn-secondary" disabled title="Saving is not available in this phase">Save as new revision</button>
       {connectionState && <p role="status">{connectionState}</p>}

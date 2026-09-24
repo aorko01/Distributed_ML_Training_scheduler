@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { interactive, type SourceJob, type Creation } from '../services/interactive';
+import { interactive, interactiveCapacity, type SourceJob, type Creation, type CapacityOptions, type ResourceRequirements } from '../services/interactive';
 import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
+import { ResourceRequirementsForm } from '../features/interactive-capacity/ResourceRequirementsForm';
+import { CapacitySummary } from '../features/interactive-capacity/CapacitySummary';
+import { MachineGrid } from '../features/interactive-capacity/MachineGrid';
+import { useCapacityPreview } from '../features/interactive-capacity/useCapacityPreview';
+import { normalizeRequirements, requirementsValid } from '../features/interactive-capacity/requirements';
 
 export default function InteractiveCreate() {
   const [searchParams] = useSearchParams();
@@ -20,16 +25,31 @@ export default function InteractiveCreate() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [reload, setReload] = useState(0);
+  const [capOptions, setCapOptions] = useState<CapacityOptions | null>(null);
+  const [requirements, setRequirements] = useState<ResourceRequirements>({
+    gpu_model: null, minimum_vram_gb: 4, cpu_cores: 2, memory_gb: 8, disk_gb: 20,
+  });
   const submittingRef = useRef(false);
   const key = useRef<string | null>(null);
   const navigate = useNavigate();
   const base = selectedCuda?.tag ?? '';
+  const selectedJob = jobs.find((j) => j.id === job) ?? null;
+  const { preview, loading: previewLoading, error: previewError } = useCapacityPreview(requirements, true);
   useEffect(() => {
     if (requestedSource === 'job') {
       setSource('job');
     }
   }, [requestedSource]);
-  useEffect(() => { key.current = null; }, [source, name, base, job, file]);
+  useEffect(() => { key.current = null; }, [source, name, base, job, file, JSON.stringify(requirements)]);
+  useEffect(() => {
+    let active = true;
+    interactiveCapacity.options().then((opts) => {
+      if (!active) return;
+      setCapOptions(opts);
+      setRequirements((prev) => normalizeRequirements(prev, opts.defaults));
+    }).catch(() => { /* form remains usable with client defaults */ });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     let active = true;
     setLoading(true); setError(''); setVersions([]); setJobs([]);
@@ -84,8 +104,8 @@ export default function InteractiveCreate() {
     setConfirmEmpty(false);
     if (submittingRef.current) return;
     const input: Creation = source === 'upload'
-      ? { kind: 'upload', name, baseImageId: base, file }
-      : { kind: 'job', name, sourceJobId: job };
+      ? { kind: 'upload', name, baseImageId: base, file, requirements }
+      : { kind: 'job', name, sourceJobId: job, requirements };
     key.current ??= crypto.randomUUID();
     submittingRef.current = true; setSubmitting(true); setError('');
     try { const workspace = await interactive.create(input, key.current); navigate(`/interactive/${workspace.id}`); }
@@ -93,6 +113,7 @@ export default function InteractiveCreate() {
     finally { submittingRef.current = false; setSubmitting(false); }
   }
 
+  const valid = requirementsValid(requirements, capOptions);
   if (confirmEmpty) return <div className="card">
     <div role="alertdialog" aria-modal="true" aria-labelledby="empty-workspace-title" style={{ maxWidth: 480, margin: '0 auto', textAlign: 'center' }}>
       <h2 id="empty-workspace-title" style={{ marginTop: 0 }}>Create an empty workspace?</h2>
@@ -105,7 +126,7 @@ export default function InteractiveCreate() {
     </div>
   </div>;
   return <div className="card">
-    <p>Create an isolated interactive workspace image. Runtime placement is not yet available.</p>
+    <p>Create an isolated interactive workspace image, then request interactive access on a matching machine.</p>
     <form onSubmit={submit}>
       <fieldset disabled={submitting} style={{ border: 0, padding: 0 }}>
         <div className="form-group"><label className="form-label" htmlFor="source">Workspace source</label>
@@ -134,13 +155,28 @@ export default function InteractiveCreate() {
           </div>
           <div className="form-group"><label className="form-label" htmlFor="archive">Workspace ZIP (optional — leave empty to start fresh, up to 64 MiB)</label>
             <input id="archive" type="file" accept=".zip" onChange={e => setFile(e.target.files?.[0] ?? null)} /></div>
-        </> : <div className="form-group"><label className="form-label" htmlFor="source-job">Existing job</label>
+        </> : <div className="form-group">
+          <label className="form-label" htmlFor="source-job">Existing job</label>
           <select id="source-job" className="form-select" value={job} onChange={e => setJob(e.target.value)} disabled={loading} required>
             {jobs.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}
-          </select>{!loading && jobs.length === 0 && !error && <p>No jobs with an available image.</p>}</div>}
+          </select>
+          {!loading && jobs.length === 0 && !error && <p>No jobs with an available image.</p>}
+          {selectedJob?.source_image_label && <p>Base image inherited from existing job: <code>{selectedJob.source_image_label}</code></p>}
+        </div>}
+        <h3 style={{ marginTop: '1.5rem' }}>Minimum system requirements</h3>
+        <p>Values are minimums (≥). GPU model is optional; “Any GPU” with enough VRAM matches any model.</p>
+        <ResourceRequirementsForm value={requirements} options={capOptions} onChange={setRequirements} />
+        {!valid && <p role="alert" className="error-text">Requirements are outside operator bounds.</p>}
+        <div style={{ marginTop: '1rem' }}>
+          <CapacitySummary preview={preview} loading={previewLoading} />
+          {previewError && <p role="alert" className="error-text">{previewError}</p>}
+        </div>
+        <div style={{ marginTop: '1rem' }}>
+          <MachineGrid machines={preview?.machines ?? []} />
+        </div>
         {loading && <p role="status">Loading choices…</p>}
         {error && <div role="alert"><p>{error}</p><button type="button" className="btn btn-secondary" onClick={() => setReload(value => value + 1)}>Reload choices</button></div>}
-        <button className="btn btn-primary" type="submit" disabled={submitting || loading || !name.trim() || (source === 'upload' ? !base : !job)}>
+        <button className="btn btn-primary" type="submit" disabled={submitting || loading || !valid || !name.trim() || (source === 'upload' ? !base : !job)}>
           {submitting ? 'Creating…' : 'Create workspace'}
         </button>
       </fieldset>
