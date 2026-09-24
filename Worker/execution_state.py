@@ -119,19 +119,70 @@ class Coordinator:
                 raise ValueError("Unknown assignment")
             return json.loads(row[0])
 
+    def estimation_active(self, exclude_assignment_id=None, exclude_job_id=None):
+        with self.lock:
+            for record in self.records():
+                if record.get("released"):
+                    continue
+                if record.get("kind") != "vram_estimation":
+                    continue
+                if (
+                    exclude_assignment_id
+                    and record.get("assignment_id") == exclude_assignment_id
+                ):
+                    continue
+                if (
+                    exclude_job_id
+                    and record.get("payload", {}).get("id") == exclude_job_id
+                ):
+                    continue
+                return True
+            return False
+
+    def other_assignments_active(self, exclude_assignment_id=None, exclude_job_id=None):
+        with self.lock:
+            for record in self.records():
+                if record.get("released"):
+                    continue
+                if (
+                    exclude_assignment_id
+                    and record.get("assignment_id") == exclude_assignment_id
+                ):
+                    continue
+                if (
+                    exclude_job_id
+                    and record.get("payload", {}).get("id") == exclude_job_id
+                ):
+                    # Same job as the assignment being started; not "other" work.
+                    continue
+                return True
+            return False
+
+    def can_start(self, kind, assignment_id=None, job_id=None):
+        """Admission for the already-claimed assignment being started.
+
+        Unlike may_request_work (which gates new claim RPCs), this excludes
+        the assignment itself so the first estimation is not blocked by its
+        own journal entry. Estimation runs exclusively: it starts only when
+        no other unreleased work exists. Batch training starts only when no
+        estimation is active, but multiple batches may run in parallel.
+        """
+        with self.lock:
+            if kind == "vram_estimation":
+                return not self.other_assignments_active(
+                    exclude_assignment_id=assignment_id,
+                    exclude_job_id=job_id,
+                )
+            return not self.estimation_active()
+
     def may_request_work(self):
         with self.lock:
-            estimation_active = any(
-                not record.get("released")
-                and record["kind"] == "vram_estimation"
-                for record in self.records()
-            )
             return (
                 not self.paused
                 and not self.draining
                 and self.mode not in MODES_BLOCKING
                 and not self.claim_pending
-                and not estimation_active
+                and not self.estimation_active()
             )
 
     def available(self):

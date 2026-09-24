@@ -312,8 +312,17 @@ class ManagedWorker:
             target = lambda: manager.run(record)
         else:
             if not self.executor.try_begin_job(
-                record["payload"]["id"], record["payload"].get("vram_required")
+                record["payload"]["id"],
+                record["payload"].get("vram_required"),
+                kind=record.get("kind"),
+                assignment_id=assignment_id,
             ):
+                logger.warning(
+                    "Rejected overlapping %s assignment %s: exclusive VRAM "
+                    "estimation already active; releasing claim without running",
+                    record.get("kind", "unknown"),
+                    assignment_id,
+                )
                 self.coordinator.update(assignment_id, uncertain=True)
                 self.coordinator.mode = "UNCERTAIN"
                 return

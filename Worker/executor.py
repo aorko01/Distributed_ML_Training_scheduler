@@ -829,7 +829,11 @@ class JobExecutor:
         image_name = job.get("image_tag") or f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
         vram_required = job.get("vram_required")
 
-        self._register_job(job_id, vram_required)
+        self._register_job(
+            job_id,
+            vram_required,
+            kind="vram_estimation" if flag == "vram_estimation" else "batch_training",
+        )
         self._finalize_job_log_state(job_id)
 
         try:
@@ -997,37 +1001,72 @@ class JobExecutor:
             if scan_held:
                 self.end_resume_scan()
 
-    def try_begin_job(self, job_id: str, vram_required: float | None = None) -> bool:
+    def try_begin_job(self, job_id: str, vram_required: float | None = None,
+                      kind: str | None = None,
+                      assignment_id: str | None = None) -> bool:
         with self._active_jobs_lock:
-            if hasattr(self, 'coordinator') and not self.coordinator.may_request_work():
-                return False
+            is_estimation = kind == "vram_estimation"
+            if hasattr(self, 'coordinator'):
+                coordinator = self.coordinator
+                if is_estimation:
+                    # The just-accepted estimation itself must not block its own
+                    # start; exclude it so only *other* work blocks admission.
+                    # This keeps exactly one estimation running: may_request_work
+                    # already stops new claims while one is journalled.
+                    if not coordinator.can_start(
+                        "vram_estimation",
+                        assignment_id=assignment_id,
+                        job_id=job_id,
+                    ):
+                        return False
+                elif not coordinator.can_start("batch_training"):
+                    return False
             max_jobs = int(runtime_config.get("max_concurrent_jobs") or 2)
             occupied = len(self._active_jobs) + len(self._resuming)
             if (
                 self._resume_scan_active
-                or occupied >= max_jobs
                 or job_id in self._active_jobs
                 or job_id in self._pending
                 or job_id in self._resuming
             ):
                 return False
+            if is_estimation:
+                # VRAM estimation measures the workload in isolation on the
+                # shared GPU; it runs strictly one at a time and never beside
+                # batch training.
+                if occupied > 0:
+                    return False
+            else:
+                if occupied >= max_jobs:
+                    return False
+                # Never start batch training beside a running estimation.
+                if any(
+                    job.get("kind") == "vram_estimation"
+                    for job in self._active_jobs.values()
+                ):
+                    return False
             self._active_jobs[job_id] = {
                 "started_at": time.time(),
                 "vram_required": vram_required,
+                "kind": "vram_estimation" if is_estimation else "batch_training",
             }
             self._pending.add(job_id)
             return True
 
-    def _register_job(self, job_id: str, vram_required: float | None = None):
+    def _register_job(self, job_id: str, vram_required: float | None = None,
+                      kind: str | None = None):
         """Track a job as currently being executed."""
         with self._active_jobs_lock:
             self._resuming.discard(job_id)
             if job_id in self._active_jobs:
                 self._pending.discard(job_id)
+                if kind:
+                    self._active_jobs[job_id]["kind"] = kind
                 return
             self._active_jobs[job_id] = {
                 "started_at": time.time(),
                 "vram_required": vram_required,
+                "kind": kind or "batch_training",
             }
 
     def _unregister_job(self, job_id: str):
