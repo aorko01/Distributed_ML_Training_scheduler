@@ -13,6 +13,8 @@ export interface Revision {
   failure_reason: string | null;
   requested_base_image?: string | null;
   source_image_tag?: string | null;
+  developer_profile?: string | null;
+  package_hint?: string | null;
 }
 export interface Workspace {
   id: string;
@@ -34,6 +36,10 @@ export interface Runtime {
   desired_state: 'RUNNING' | 'STOPPED'; failure_detail: string | null; lifetime_deadline: string | null;
   access_service?: 'terminal' | 'workspace'; application_protocol?: 'terminal-stream-v1' | 'workspace-stream-v1'; editor_capable?: boolean;
   allow_internet?: boolean;
+  developer_mode?: boolean;
+  package_capable?: boolean;
+  save_enabled?: boolean;
+  training_submission_enabled?: boolean;
   requirements?: ResourceRequirements | null;
   assigned_machine?: AssignedMachine | null;
   workspace_name?: string;

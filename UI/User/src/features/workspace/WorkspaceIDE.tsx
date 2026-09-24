@@ -531,7 +531,7 @@ export default function WorkspaceIDE() {
 
   return (
     <div className="ide-shell" data-testid="workspace-ide">
-      <IDETitleBar workspaceId={id ?? ''} name={header.name} runtimeState={header.runtimeState} liveOnly phase={snap.phase} dirtyCount={dirtyCount} saving={savingAll} onSaveAll={() => void saveAll()} onReconnect={reconnect} onStop={() => void stopRuntime()} internetEnabled={snap.runtime?.allow_internet} saveEnabled={snap.runtime?.editor_capable === true} submitEnabled={snap.runtime?.editor_capable === true} saveState={durableState} onSaveForLater={() => void saveForLater()} onSubmitTraining={() => void submitTraining()} />
+      <IDETitleBar workspaceId={id ?? ''} name={header.name} runtimeState={header.runtimeState} liveOnly phase={snap.phase} dirtyCount={dirtyCount} saving={savingAll} onSaveAll={() => void saveAll()} onReconnect={reconnect} onStop={() => void stopRuntime()} internetEnabled={snap.runtime?.allow_internet} packageCapable={snap.runtime?.package_capable} developerMode={snap.runtime?.developer_mode} saveEnabled={snap.runtime?.editor_capable === true && snap.runtime?.save_enabled === true} submitEnabled={snap.runtime?.editor_capable === true && snap.runtime?.training_submission_enabled === true} saveState={durableState} onSaveForLater={() => void saveForLater()} onSubmitTraining={() => void submitTraining()} />
       {(snap.phase === 'disconnected' || snap.phase === 'reconnecting' || snap.phase === 'fatal') && (
         <div className="ide-banner" role="alert">
           <span>{snap.message}{snap.closeCode !== null ? ` (code ${snap.closeCode})` : ''} · Unsaved work is kept in memory.</span>

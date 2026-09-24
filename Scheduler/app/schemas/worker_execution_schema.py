@@ -52,6 +52,12 @@ class Inventory(Strict):
     nvidia_runtime: bool
     quota_supported: bool
     interactive_ready: bool
+    # Developer-mode advertisement (plan.md §3/§6). Workers predate this
+    # field report False; the Scheduler treats a developer runtime on such a
+    # Worker as ineligible rather than silently presenting a sudo-disabled
+    # or offline runtime as ready.
+    developer_mode_capable: bool = False
+    internet_egress_capable: bool = False
     gpus: Annotated[list[GPU], Field(max_length=64)]
 
 

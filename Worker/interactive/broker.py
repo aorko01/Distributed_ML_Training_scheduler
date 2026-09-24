@@ -23,6 +23,49 @@ from Access_Container.interactive_access.protocol import (
 
 log = logging.getLogger("broker")
 
+#: Prepared account home for developer-profile images. The old /tmp default
+#: sent user installs and caches to a surprising location and hid the
+#: prepared account's home.
+DEVELOPER_HOME = "/home/dml"
+DEVELOPER_VENV = "/opt/dml-venv"
+
+
+def workload_env(client, container_id):
+    """Build the Docker exec environment from the prepared image config.
+
+    Inherits the image's PATH and VIRTUAL_ENV so the browser shell uses the
+    same user-owned venv as `python train.py`; falls back to the developer
+    defaults when the daemon cannot report them. HOME is the validated
+    account home, never /tmp.
+    """
+    env = {"TERM": "xterm", "HOME": DEVELOPER_HOME}
+    try:
+        inspected = client.api.inspect_container(container_id)
+        image_env = ((inspected.get("Config") or {}).get("Env") or [])
+        values = {}
+        for entry in image_env:
+            if not isinstance(entry, str) or "=" not in entry:
+                continue
+            key, _, val = entry.partition("=")
+            values[key] = val
+        home = values.get("HOME") or DEVELOPER_HOME
+        if isinstance(home, str) and home.startswith("/") and len(home) <= 256:
+            env["HOME"] = home
+        path = values.get("PATH")
+        if isinstance(path, str) and path and len(path) <= 4096:
+            env["PATH"] = path
+        elif DEVELOPER_VENV not in env.get("PATH", ""):
+            env["PATH"] = DEVELOPER_VENV + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        venv = values.get("VIRTUAL_ENV")
+        if isinstance(venv, str) and venv and len(venv) <= 1024:
+            env["VIRTUAL_ENV"] = venv
+        elif DEVELOPER_VENV in (path or ""):
+            env["VIRTUAL_ENV"] = DEVELOPER_VENV
+    except Exception:
+        env.setdefault("PATH", DEVELOPER_VENV + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        env.setdefault("VIRTUAL_ENV", DEVELOPER_VENV)
+    return env
+
 
 class UnsafeSession(Exception):
     pass
@@ -51,7 +94,7 @@ class DockerSession:
                 privileged=False,
                 user=user,
                 workdir=workdir,
-                environment={"TERM": "xterm", "HOME": "/tmp"},
+                environment=workload_env(client, container_id),
             )["Id"]
             self.stream = client.api.exec_start(self.exec_id, tty=True, socket=True)
             self.sock = self.stream._sock

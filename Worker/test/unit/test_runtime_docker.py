@@ -258,3 +258,95 @@ def test_private_pull_uses_protected_long_registry_token(monkeypatch, tmp_path):
         with pytest.raises(ValueError):
             DockerOps(coordinator, "worker", client).pull(r)
         launch.assert_not_called()
+
+
+def _dev_record():
+    r = record()
+    r["payload"]["launch_spec"]["developer_mode"] = True
+    r["payload"]["launch_spec"]["allow_internet"] = True
+    return r
+
+
+def _dev_attrs():
+    r = record()
+    return {
+        "RepoDigests": [r["payload"]["image_digest_ref"]],
+        "Os": "linux",
+        "Architecture": "amd64",
+        "Config": {
+            "User": "10001:10001",
+            "WorkingDir": "/workspace",
+            "Labels": {"io.dml.developer-profile": "v1"},
+        },
+    }
+
+
+def test_developer_pull_requires_gates_and_profile(monkeypatch, tmp_path):
+    r = _dev_record()
+    coordinator = MagicMock()
+    coordinator.authoritative.return_value = True
+    client = MagicMock()
+    client.images.get.return_value.attrs = _dev_attrs()
+    monkeypatch.setenv("INTERACTIVE_REGISTRY_PREFIXES", "registry.example")
+    monkeypatch.setenv("INTERACTIVE_ALLOW_DEVELOPER_MODE", "1")
+    monkeypatch.setenv("INTERACTIVE_ALLOW_INTERNET", "1")
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.returncode = 0
+    with patch("interactive.docker_ops.subprocess.Popen", return_value=proc), patch(
+        "interactive.docker_ops.tempfile.TemporaryDirectory"
+    ) as directory, patch("interactive.docker_ops.Path.mkdir"):
+        directory.return_value.__enter__.return_value = str(tmp_path)
+        _, user, workdir = DockerOps(coordinator, "worker", client).pull(r)
+        assert (user, workdir) == ("10001:10001", "/workspace")
+    # Missing local developer gate fails before workload start.
+    monkeypatch.setenv("INTERACTIVE_ALLOW_DEVELOPER_MODE", "0")
+    with patch("interactive.docker_ops.subprocess.Popen", return_value=proc), patch(
+        "interactive.docker_ops.tempfile.TemporaryDirectory"
+    ) as directory, patch("interactive.docker_ops.Path.mkdir"):
+        directory.return_value.__enter__.return_value = str(tmp_path)
+        with pytest.raises(RuntimeFailure) as exc:
+            DockerOps(coordinator, "worker", client).pull(r)
+        assert exc.value.code == "START_FAILED"
+    # Missing image label is an image failure even with gates on.
+    monkeypatch.setenv("INTERACTIVE_ALLOW_DEVELOPER_MODE", "1")
+    bad = _dev_attrs()
+    bad["Config"] = {"User": "10001:10001", "WorkingDir": "/workspace", "Labels": {}}
+    client.images.get.return_value.attrs = bad
+    with patch("interactive.docker_ops.subprocess.Popen", return_value=proc), patch(
+        "interactive.docker_ops.tempfile.TemporaryDirectory"
+    ) as directory, patch("interactive.docker_ops.Path.mkdir"):
+        directory.return_value.__enter__.return_value = str(tmp_path)
+        with pytest.raises(RuntimeFailure) as exc:
+            DockerOps(coordinator, "worker", client).pull(r)
+        assert exc.value.code == "UNSUPPORTED_IMAGE"
+
+
+def test_workload_developer_omits_privilege_drops_but_keeps_limits(monkeypatch):
+    r = _dev_record()
+    coordinator = MagicMock()
+    coordinator.authoritative.return_value = True
+    ops = DockerOps(coordinator, "worker", MagicMock())
+    ops.create = MagicMock()
+    inv = {
+        "complete": True,
+        "gpus": [{"uuid": "GPU-assigned", "busy": False, "processes": []}],
+        "free_disk_gb": 200,
+        "free_ram_gb": 64,
+    }
+    monkeypatch.setattr("hardware.execution_inventory", lambda *args, **kwargs: inv)
+    monkeypatch.setenv("INTERACTIVE_ALLOW_DEVELOPER_MODE", "1")
+    monkeypatch.setenv("INTERACTIVE_ALLOW_INTERNET", "1")
+    ops.workload(r, "sha256:image", "10001:10001", "/workspace")
+    kwargs = ops.create.call_args.kwargs
+    assert "cap_drop" not in kwargs and "security_opt" not in kwargs
+    assert kwargs.get("network_mode") is None
+    assert kwargs.get("privileged", False) is not True
+    assert "volumes" not in kwargs and "ports" not in kwargs
+    assert kwargs["device_requests"][0]["DeviceIDs"] == ["GPU-assigned"]
+    # Strict mode keeps drops even when developer gate is on.
+    ops.create.reset_mock()
+    ops.workload(record(), "sha256:image", "1000", "/workspace")
+    strict = ops.create.call_args.kwargs
+    assert strict["cap_drop"] == ["ALL"]
+    assert strict["security_opt"] == ["no-new-privileges:true"]

@@ -32,12 +32,22 @@ def test_dockerfiles_and_tags():
     assert 'COPY project/' in output and 'pip install' in output
     assert 'USER 10001:10001' in output
     assert 'CMD ' not in output
-    assert all(word not in output.lower() for word in ('tailscale', 'openssh', 'sudo', 'docker.sock', 'password', 'token'))
+    # Developer profile v1: sudo/venv/home are required; unrelated agents,
+    # sockets, and credentials stay out of the workload image.
+    assert all(word not in output.lower() for word in ('tailscale', 'openssh', 'docker.sock', 'password', 'token'))
+    assert 'sudo' in output.lower()
+    assert '/opt/dml-venv/bin/python -m pip install' in output
+    assert 'PIP_BREAK_SYSTEM_PACKAGES' not in output
+    assert 'io.dml.developer-profile' in output and '"v1"' in output
+    assert 'VIRTUAL_ENV=/opt/dml-venv' in output and 'HOME=/home/dml' in output
+    assert output.rstrip().endswith('USER 10001:10001')
+    assert 'VOLUME' not in output
     derived = build.dockerfile(item('EXISTING_JOB'), base, False)
     assert derived.startswith('FROM ' + base)
     assert 'COPY' not in derived and 'CMD' not in derived
     assert 'WORKDIR /workspace' in derived
     assert 'USER 10001:10001' in derived
+    assert 'io.dml.developer-profile' in derived
     first = build.tag_for(source)
     source['attempt_id'] = str(uuid.uuid4())
     assert build.tag_for(source) != first
@@ -91,6 +101,13 @@ def test_existing_job_resolves_digest_and_pushes():
     assert command.call_args_list[0].args[0] == ['pull', 'user/source:build-a']
     assert command.call_args_list[-1].args[0] == ['push', build.tag_for(source)]
     assert result['image_digest_ref'].endswith('@sha256:' + 'b' * 64)
+    assert result['developer_profile'] == 'v1'
+
+
+def test_build_reports_developer_profile_and_snapshot_propagates_label():
+    assert build.developer_profile_of_attrs({'Config': {'Labels': {'io.dml.developer-profile': 'v1'}}}) == 'v1'
+    assert build.developer_profile_of_attrs({'Config': {'Labels': {}}}) is None
+    assert build.developer_profile_of_attrs({}) is None
 
 
 @pytest.mark.parametrize('kind', ['user', 'system', 'cancelled'])

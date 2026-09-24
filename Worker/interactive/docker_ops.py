@@ -49,6 +49,29 @@ def workload_internet_enabled() -> bool:
     return value in ("1", "true", "yes")
 
 
+# Operator opt-in for the shared-kernel sudo profile (plan.md §3/§6).
+# Default off; enforced independently of the Scheduler flag and never taken
+# from a browser-supplied value. The existing strict path keeps its controls
+# when this is off.
+def developer_mode_enabled() -> bool:
+    value = os.getenv("INTERACTIVE_ALLOW_DEVELOPER_MODE", "0").strip().lower()
+    return value in ("1", "true", "yes")
+
+
+DEVELOPER_PROFILE_LABEL = "io.dml.developer-profile"
+DEVELOPER_PROFILE_VERSION = "v1"
+DEVELOPER_USER = "10001:10001"
+DEVELOPER_WORKDIR = "/workspace"
+
+
+def workload_developer_mode(spec) -> bool:
+    """Server-owned developer flag from the immutable launch spec."""
+    try:
+        return bool(spec.get("developer_mode"))
+    except Exception:
+        return False
+
+
 def workload_network_mode(spec) -> str | None:
     """None lets docker-py omit the key so the daemon default bridge applies."""
     allow = bool(spec.get("allow_internet")) and workload_internet_enabled()
@@ -238,6 +261,18 @@ class DockerOps:
             or len(workdir) > 1024
         ):
             raise RuntimeFailure("UNSUPPORTED_IMAGE")
+        if workload_developer_mode(spec):
+            # Authoritative local gates: a developer runtime must never start
+            # as a silent strict/offline runtime. Fail before any workload.
+            if not developer_mode_enabled():
+                raise RuntimeFailure("START_FAILED")
+            if bool(spec.get("allow_internet")) and not workload_internet_enabled():
+                raise RuntimeFailure("START_FAILED")
+            labels = config.get("Labels") or {}
+            if labels.get(DEVELOPER_PROFILE_LABEL) != DEVELOPER_PROFILE_VERSION:
+                raise RuntimeFailure("UNSUPPORTED_IMAGE")
+            if user != DEVELOPER_USER or workdir != DEVELOPER_WORKDIR:
+                raise RuntimeFailure("UNSUPPORTED_IMAGE")
         return image.id, user, workdir
 
     def create(self, record, component, image, **kwargs):
@@ -302,16 +337,22 @@ class DockerOps:
         ):
             raise RuntimeFailure("DISK_FULL")
         network = workload_network_mode(spec)
+        developer = workload_developer_mode(spec)
+        if developer:
+            # Re-check locally: Scheduler placement is advisory, the Worker's
+            # own gates remain authoritative. Never silently downgrade.
+            if not developer_mode_enabled():
+                raise RuntimeFailure("START_FAILED")
+            if bool(spec.get("allow_internet")) and not workload_internet_enabled():
+                raise RuntimeFailure("START_FAILED")
         logger.info(
-            "Launching workload assignment_id=%s network=%s gpu_uuid=%s",
+            "Launching workload assignment_id=%s network=%s gpu_uuid=%s developer=%s",
             record["assignment_id"],
             "bridge" if network is None else network,
             p["gpu_uuid"],
+            developer,
         )
-        return self.create(
-            record,
-            "workload",
-            image_id,
+        base_kwargs = dict(
             entrypoint="/bin/sh",
             command=[
                 "-c",
@@ -322,8 +363,6 @@ class DockerOps:
             healthcheck={"test": ["NONE"]},
             init=True,
             network_mode=network,
-            cap_drop=["ALL"],
-            security_opt=["no-new-privileges:true"],
             pids_limit=spec["pids"],
             nano_cpus=int(spec["cpu"] * 1e9),
             mem_limit=int(spec["memory_gb"] * 1024**3),
@@ -332,6 +371,19 @@ class DockerOps:
             device_requests=[
                 DeviceRequest(device_ids=[p["gpu_uuid"]], capabilities=[["gpu"]])
             ],
+        )
+        if developer:
+            # Operator-enabled developer mode: Docker's normal restricted
+            # capability set with setuid permitted so `sudo` works inside the
+            # workload only. Never privileged, host mounts/net, extra GPUs.
+            return self.create(record, "workload", image_id, **base_kwargs)
+        return self.create(
+            record,
+            "workload",
+            image_id,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+            **base_kwargs
         )
 
     def unit(self, record, runtime_dir, endpoint_dir):

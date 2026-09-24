@@ -99,9 +99,25 @@ def public(runtime, db=None):
         # Operator egress capability for the web terminal (plan.md Phase 1).
         # Derived from the pinned launch_spec; the browser can never set it.
         try:
-            item["allow_internet"] = bool((runtime.launch_spec or {}).get("allow_internet"))
+            spec = runtime.launch_spec or {}
+            item["allow_internet"] = bool(spec.get("allow_internet"))
+            item["developer_mode"] = bool(spec.get("developer_mode"))
+            # Fully package-capable only when the operator pinned developer
+            # mode and the Scheduler internet gate; the Worker re-verifies its
+            # own gates before launch. The UI distinguishes this from a proven
+            # external connection (no probe is performed here).
+            item["package_capable"] = bool(spec.get("developer_mode")) and bool(spec.get("allow_internet"))
         except Exception:
             item["allow_internet"] = False
+            item["developer_mode"] = False
+            item["package_capable"] = False
+        try:
+            from app.services.scheduling.config import Settings as _Settings
+            item["save_enabled"] = bool(_Settings.from_env().workspace_save)
+            item["training_submission_enabled"] = bool(_Settings.from_env().workspace_training_submission)
+        except Exception:
+            item["save_enabled"] = False
+            item["training_submission_enabled"] = False
         item["requirements"] = requirements_from_spec(runtime.launch_spec or {})
         if db is not None:
             try:
@@ -191,6 +207,16 @@ def start(db, owner, workspace_id, key, body):
         raise HTTPException(422, "Requirements outside operator bounds") from None
     except (OverflowError, Exception):
         raise HTTPException(503, "Invalid runtime profile") from None
+    # Developer mode is server-owned and pinned at creation (plan.md §4/§6).
+    # Only a revision reported by the trusted Builder as prepared ('v1') may
+    # run with developer_mode=true. Older revisions stay on the strict path;
+    # the revision public payload carries the actionable rebuild hint. The
+    # launch_spec hash covers only the canonical client request, so an
+    # idempotent retry returns the originally pinned runtime even if operator
+    # policy changed meanwhile (handled by the early return above).
+    prepared = getattr(revision, 'developer_profile', None) == 'v1'
+    if spec.get("developer_mode") and not prepared:
+        spec = {**spec, "developer_mode": False}
     if (
         spec["cpu"] <= 0
         or spec["memory_gb"] <= 0

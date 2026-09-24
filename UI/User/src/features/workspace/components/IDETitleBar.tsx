@@ -1,13 +1,18 @@
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Save, Wifi, WifiOff } from 'lucide-react';
 import type { ConnPhase } from '../workspaceTypes';
-export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, dirtyCount, saving, onSaveAll, onReconnect, onStop, internetEnabled, saveEnabled, submitEnabled, saveState, onSaveForLater, onSubmitTraining }: { workspaceId: string; name: string; runtimeState: string; liveOnly: boolean; phase: ConnPhase; dirtyCount: number; saving: boolean; onSaveAll: () => void; onReconnect: () => void; onStop: () => void; internetEnabled?: boolean; saveEnabled?: boolean; submitEnabled?: boolean; saveState?: string | null; onSaveForLater?: () => void; onSubmitTraining?: () => void }) {
+export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, dirtyCount, saving, onSaveAll, onReconnect, onStop, internetEnabled, packageCapable, developerMode, saveEnabled, submitEnabled, saveState, onSaveForLater, onSubmitTraining }: { workspaceId: string; name: string; runtimeState: string; liveOnly: boolean; phase: ConnPhase; dirtyCount: number; saving: boolean; onSaveAll: () => void; onReconnect: () => void; onStop: () => void; internetEnabled?: boolean; packageCapable?: boolean; developerMode?: boolean; saveEnabled?: boolean; submitEnabled?: boolean; saveState?: string | null; onSaveForLater?: () => void; onSubmitTraining?: () => void }) {
   const connected = phase === 'connected';
   const internetTitle = internetEnabled === true
-    ? 'Operator-enabled egress: pip install, datasets and curl work in the web terminal'
+    ? 'Operator-enabled egress for this runtime: pip install, datasets and curl work in the web terminal'
     : internetEnabled === false
       ? 'Internet disabled by operator: pip install and dataset downloads fail with DNS errors'
       : 'Internet capability unknown';
+  const packageTitle = packageCapable === true
+    ? 'Package-capable developer runtime: try `pip install six` and `sudo apt-get install ffmpeg`, then `python train.py`'
+    : developerMode === true && internetEnabled !== true
+      ? 'Developer runtime without network for this runtime: sudo works but pip downloads fail'
+      : 'Packages need a new workspace image built with the developer profile and operator package gates';
   const saveTitle = saveEnabled === true
     ? 'Capture the exact workload filesystem (code + installed packages) into a portable revision'
     : 'Durable snapshot publishing is not yet available on this deployment';
@@ -24,6 +29,11 @@ export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, 
       {internetEnabled !== undefined && (
         <span className={`ide-pill ${internetEnabled ? 'ide-pill-ready' : 'ide-pill-bad'}`} role="status" title={internetTitle}>
           {internetEnabled ? <Wifi size={13} /> : <WifiOff size={13} />} {internetEnabled ? 'online' : 'offline'}
+        </span>
+      )}
+      {packageCapable !== undefined && (
+        <span className={`ide-pill ${packageCapable ? 'ide-pill-ready' : 'ide-pill-bad'}`} role="status" title={packageTitle}>
+          {packageCapable ? 'packages ready' : 'packages unavailable'}
         </span>
       )}
       {saveState && <span className="ide-pill" role="status" title={`Durable save state: ${saveState}`}>{saveState}</span>}

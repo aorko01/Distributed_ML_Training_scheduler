@@ -24,6 +24,57 @@ from .failure_diagnostics import (
 
 logger = logging.getLogger("managed_worker")
 
+
+def smoke_workload(workload, user, developer_mode):
+    """Fenced startup checks before READY (plan.md §6).
+
+    Strict mode keeps its existing expectations; developer mode expects the
+    shell user 10001, passwordless sudo to uid 0, a working venv pip, an
+    importable torch, and the image-owned editor helper interpreter. Local
+    only: no external package downloads here.
+    """
+    from .file_service import FILE_HELPER_PYTHON
+    checks = []
+    if developer_mode:
+        checks.append((["id", "-u"], user, lambda out: out.strip() == b"10001"))
+    # Always verify the helper interpreter exists so user pip changes cannot
+    # silently break the editor.
+    checks.append(([FILE_HELPER_PYTHON, "--version"], None, None))
+    for args, as_user, _ in checks:
+        try:
+            if as_user is not None:
+                result = workload.exec_run(args, user=as_user, demux=False)
+            else:
+                result = workload.exec_run(args, demux=False)
+            code = getattr(result, "exit_code", result[0] if isinstance(result, tuple) else 1)
+            if code != 0:
+                raise RuntimeFailure("START_FAILED")
+        except RuntimeFailure:
+            raise
+        except Exception as exc:
+            raise RuntimeFailure("START_FAILED") from exc
+    # Developer-only content checks with output validation.
+    if developer_mode:
+        try:
+            sudo_out = workload.exec_run(["sudo", "-n", "id", "-u"], user=user, demux=False)
+            pip_out = workload.exec_run(["python", "-m", "pip", "--version"], user=user, demux=False)
+            torch_out = workload.exec_run(["python", "-c", "import torch; print(torch.__version__)"], user=user, demux=False)
+            for result, expect in ((sudo_out, b"0"), (pip_out, None), (torch_out, None)):
+                code = getattr(result, "exit_code", result[0] if isinstance(result, tuple) else 1)
+                output = getattr(result, "output", result[1] if isinstance(result, tuple) else b"")
+                if isinstance(output, tuple):
+                    output = b"".join(x or b"" for x in output)
+                if code != 0:
+                    raise RuntimeFailure("START_FAILED")
+                if expect is not None and (output or b"").strip() != expect:
+                    raise RuntimeFailure("START_FAILED")
+                if expect is None and not (output or b"").strip():
+                    raise RuntimeFailure("START_FAILED")
+        except RuntimeFailure:
+            raise
+        except Exception as exc:
+            raise RuntimeFailure("START_FAILED") from exc
+
 #: Default interactive session cap (10 minutes). Overridable via
 #: ``INTERACTIVE_MAX_DURATION_SECONDS`` in the Worker ``.env``. Read on every
 #: check (not cached at import) so a lowered value applies to running
@@ -126,6 +177,12 @@ class Manager:
             workload = await asyncio.to_thread(
                 self.ops.workload, record, image, user, workdir
             )
+            # Fenced startup validation before READY: workload-local only, no
+            # external downloads. Failures clean up through the existing path
+            # below instead of leaving a superficially READY runtime.
+            stage = "workload-smoke"
+            developer = bool((record.get("payload") or {}).get("launch_spec", {}).get("developer_mode"))
+            await asyncio.to_thread(smoke_workload, workload, user, developer)
             authority = lambda: self.authority(assignment_id)
             self.broker = Broker(
                 root / "broker.sock",

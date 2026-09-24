@@ -72,6 +72,16 @@ class Ready(Attempt):
     image_tag: str
     image_digest_ref: str
     resolved_base_digest: str
+    developer_profile: str | None = None
+
+    @field_validator('developer_profile')
+    @classmethod
+    def profile(cls, value):
+        if value is None:
+            return None
+        if value != 'v1':
+            raise ValueError('unsupported developer profile')
+        return value
 
     @field_validator('image_digest_ref', 'resolved_base_digest')
     @classmethod

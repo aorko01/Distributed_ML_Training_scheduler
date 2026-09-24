@@ -56,9 +56,10 @@ def test_snapshot_import_happy_path_and_portable_tag():
         it.pop('snapshot_sha256')
         it.pop('snapshot_size')
         with patch.object(build, 'run_command', return_value=''):
-            digest = build.import_snapshot(it, client, 'linux/amd64', '10001:10001', '/workspace')
+            result = build.import_snapshot(it, client, 'linux/amd64', '10001:10001', '/workspace')
     client.images.load.assert_called_once()
     client.api.tag.assert_any_call('sha256:' + 'b' * 64, build.SNAPSHOT_CLEAN_REFERENCE, build.SNAPSHOT_CLEAN_TAG)
+    digest = result['digest_ref'] if isinstance(result, dict) else result
     assert digest.endswith('@sha256:' + 'c' * 64)
 
 
@@ -131,11 +132,11 @@ def test_training_derivation_sets_exec_form_cmd():
     it.pop('snapshot_size')
     with patch.object(build, 'download', return_value=iter([b'artifact-bytes'])):
         with patch.object(build, 'run_command', return_value=''):
-            digest = build.import_snapshot(
+            result = build.import_snapshot(
                 it, client, 'linux/amd64', '10001:10001', '/workspace',
                 training_command=['python', 'train.py', '--epochs', '10'],
             )
-    assert digest is not None
+    assert result is not None
     client.api.build.assert_called_once()
     kwargs = client.api.build.call_args.kwargs
     context = kwargs['fileobj']

@@ -17,6 +17,11 @@ logger = logging.getLogger("file_service")
 MAX_TEXT = 2 * 1024 * 1024
 MAX_PAGE = 200
 
+#: Image-owned interpreter for the fixed editor helper. It lives outside
+#: /opt/dml-venv so ordinary user `pip install`/`uninstall` cannot remove the
+#: helper's stdlib-only dependencies. Validated before READY (see manager).
+FILE_HELPER_PYTHON = "/usr/bin/python3"
+
 
 class FileServiceError(Exception):
     def __init__(self, code="UNAVAILABLE"):
@@ -184,8 +189,9 @@ finally: os.close(r)
 
 class FileService:
     """Invoke the fixed helper with bounded JSON input/output."""
-    def __init__(self, client, container_id, user, root):
+    def __init__(self, client, container_id, user, root, helper_python=FILE_HELPER_PYTHON):
         self.client, self.container_id, self.user, self.root = client, container_id, user, root
+        self.helper_python = helper_python or FILE_HELPER_PYTHON
 
     def call(self, operation, **values):
         request = {"operation": operation, "root": self.root, **values}
@@ -197,7 +203,7 @@ class FileService:
             raise FileServiceError("TOO_LARGE")
         try:
             created = self.client.api.exec_create(
-                self.container_id, cmd=["python3", "-c", HELPER], stdin=True,
+                self.container_id, cmd=[self.helper_python, "-c", HELPER], stdin=True,
                 stdout=True, stderr=False, tty=False, privileged=False, user=self.user,
                 workdir="/",
             )["Id"]

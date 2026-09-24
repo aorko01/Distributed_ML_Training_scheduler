@@ -87,6 +87,13 @@ def extract(data, destination):
     return projects[0]
 
 
+DEVELOPER_PROFILE = 'v1'
+DEVELOPER_PROFILE_LABEL = 'io.dml.developer-profile'
+DEVELOPER_USER = '10001:10001'
+DEVELOPER_HOME = '/home/dml'
+DEVELOPER_VENV = '/opt/dml-venv'
+
+
 def dockerfile(item, base, upload):
     if not REFERENCE.fullmatch(base) or '@sha256:' not in base:
         raise BuildFailure('system')
@@ -94,19 +101,66 @@ def dockerfile(item, base, upload):
     # root default.  The Worker rejects root workloads before launch, and the
     # unprivileged account also keeps the mounted workspace writable without
     # granting runtime container privileges.
-    lines = [f'FROM {base}', 'USER root', 'WORKDIR /workspace']
-    if upload:
-        lines += ['COPY project/ /workspace/', 'RUN pip install --no-cache-dir -r requirements.txt']
-    lines += [
+    #
+    # Developer profile v1 (plan.md §5): the image user stays 10001:10001
+    # (dml), but the image prepares a user-owned venv, passwordless sudo for
+    # `apt`, and a real home/shell so `pip install` / `sudo apt-get install`
+    # work from the browser terminal without a venv activation step.
+    lines = [
+        f'FROM {base}',
+        'USER root',
+        'WORKDIR /workspace',
+        # dml account with a usable shell and home (not nologin, not /tmp).
         'RUN getent group 10001 >/dev/null || groupadd --gid 10001 dml',
-        'RUN id -u 10001 >/dev/null 2>&1 || useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin dml',
-        'RUN chown -R 10001:10001 /workspace',
-        'USER 10001:10001',
+        'RUN id -u 10001 >/dev/null 2>&1 || useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash dml',
+        'RUN mkdir -p /workspace /home/dml /opt/dml-venv && chown 10001:10001 /workspace /home/dml',
+        # Bootstrap OS tooling as root. Noninteractive, no recommends, and the
+        # apt index is removed from the layer afterwards.
+        'RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends '
+        'sudo ca-certificates curl git pkg-config build-essential python3-venv && '
+        'rm -rf /var/lib/apt/lists/*',
+        # Workspace venv with access to the base CUDA stack. ENV (not an
+        # activation script) makes it the default for every later RUN, exec,
+        # and `python train.py`.
+        f'RUN python3 -m venv --system-site-packages {DEVELOPER_VENV} && '
+        f'chown -R 10001:10001 {DEVELOPER_VENV} && '
+        f'{DEVELOPER_VENV}/bin/python -c "import sys; assert sys.prefix != sys.base_prefix"',
+        f'ENV VIRTUAL_ENV={DEVELOPER_VENV}',
+        f'ENV PATH={DEVELOPER_VENV}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        f'ENV HOME={DEVELOPER_HOME}',
+    ]
+    if upload:
+        lines += [
+            'COPY project/ /workspace/',
+            f'RUN {DEVELOPER_VENV}/bin/python -m pip install --no-cache-dir -r /workspace/requirements.txt',
+            f'RUN {DEVELOPER_VENV}/bin/python -c "import torch; print(torch.__version__)"',
+        ]
+    else:
+        lines += [
+            f'RUN {DEVELOPER_VENV}/bin/python -c "import torch; print(torch.__version__)"',
+        ]
+    lines += [
+        # Passwordless sudo for dml only. Root-owned 0440, validated below.
+        'RUN printf "dml ALL=(ALL) NOPASSWD:ALL\\n" > /etc/sudoers.d/dml && chmod 0440 /etc/sudoers.d/dml && visudo -cf /etc/sudoers.d/dml',
+        'RUN chown -R 10001:10001 /workspace /home/dml /opt/dml-venv',
     ]
     # Labels are JSON-quoted, sourced from validated Scheduler data.
     for key, value in {'workspace': item['workspace_id'], 'revision': item['id'], 'origin': item['origin'], 'source-job': item.get('source_job_id') or ''}.items():
         lines.append(f'LABEL io.dml.{key}={json.dumps(value)}')
+    lines.append(f'LABEL {DEVELOPER_PROFILE_LABEL}={json.dumps(DEVELOPER_PROFILE)}')
+    lines.append(f'USER {DEVELOPER_USER}')
     return '\n'.join(lines) + '\n'
+
+
+def developer_profile_of_attrs(attrs):
+    """Report the prepared developer profile from inspected image attrs."""
+    try:
+        labels = ((attrs or {}).get('Config') or {}).get('Labels') or {}
+        if labels.get(DEVELOPER_PROFILE_LABEL) == DEVELOPER_PROFILE:
+            return DEVELOPER_PROFILE
+    except Exception:
+        pass
+    return None
 
 
 def run_command(args, cancel):
@@ -226,6 +280,7 @@ def import_snapshot(item, client, platform, user, workdir, training_command=None
         raise BuildFailure('system')
     if config.get('Volumes'):
         raise BuildFailure('system')
+    profile = developer_profile_of_attrs(attrs)
     # Normalize through the exact staging name so the retag below is exact.
     client.api.tag(loaded_id, SNAPSHOT_CLEAN_REFERENCE, SNAPSHOT_CLEAN_TAG)
     staged = client.images.get(SNAPSHOT_CLEAN_REFERENCE + ':' + SNAPSHOT_CLEAN_TAG)
@@ -248,7 +303,10 @@ def import_snapshot(item, client, platform, user, workdir, training_command=None
     digest = client.images.get_registry_data(tag).attrs['Descriptor']['digest']
     if not DIGEST.fullmatch(digest):
         raise BuildFailure('system')
-    return repository + '@' + digest
+    result = {'digest_ref': repository + '@' + digest, 'developer_profile': profile}
+    if training_command is not None:
+        return result
+    return result
 
 
 def build(client, item, cancel):
@@ -257,16 +315,22 @@ def build(client, item, cancel):
     if item.get('origin') == 'SNAPSHOT':
         check(cancel)
         api.log(item, 'Importing workspace snapshot')
-        digest_ref = import_snapshot(
+        imported = import_snapshot(
             item, client,
             item.get('platform', 'linux/amd64'),
             item.get('user', '10001:10001'),
             item.get('workdir', '/workspace'),
             training_command=item.get('training_command'),
         )
+        # import_snapshot returns a dict; tolerate a legacy plain digest string.
+        if isinstance(imported, dict):
+            digest_ref, snapshot_profile = imported['digest_ref'], imported.get('developer_profile')
+        else:
+            digest_ref, snapshot_profile = imported, None
         check(cancel)
         tag = tag_for(item)
-        return {'image_tag': tag, 'image_digest_ref': digest_ref, 'resolved_base_digest': digest_ref}
+        return {'image_tag': tag, 'image_digest_ref': digest_ref, 'resolved_base_digest': digest_ref,
+                'developer_profile': snapshot_profile}
     tag = tag_for(item)
     with tempfile.TemporaryDirectory(prefix='interactive-build-') as temporary:
         root = Path(temporary)
@@ -326,7 +390,8 @@ def build(client, item, cancel):
         check(cancel)
         if not DIGEST.fullmatch(digest):
             raise BuildFailure('system')
-        return {'image_tag': tag, 'image_digest_ref': tag.rsplit(':', 1)[0] + '@' + digest, 'resolved_base_digest': base}
+        return {'image_tag': tag, 'image_digest_ref': tag.rsplit(':', 1)[0] + '@' + digest, 'resolved_base_digest': base,
+                'developer_profile': DEVELOPER_PROFILE}
 
 
 def process(client, item, registry):

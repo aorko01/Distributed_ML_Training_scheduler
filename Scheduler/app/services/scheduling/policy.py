@@ -58,6 +58,24 @@ def _model_matches(gpu, spec):
     return (not models) or (gpu.get("model") in models)
 
 
+def _developer_ineligibility(inv, spec):
+    """Developer-mode placement gate (plan.md §3/§6).
+
+    A runtime pinned with developer_mode=true must only land on a Worker
+    that advertised the developer capability. When the pinned spec also
+    carries allow_internet, the Worker must have advertised egress too;
+    otherwise the runtime would present as package-capable while pip fails.
+    Strict runtimes are unaffected.
+    """
+    if not spec.get("developer_mode"):
+        return None
+    if not inv.get("developer_mode_capable"):
+        return "developer_mode_unavailable"
+    if spec.get("allow_internet") and not inv.get("internet_egress_capable"):
+        return "internet_egress_unavailable"
+    return None
+
+
 def capability_ineligibility(snapshot, spec):
     """Total-hardware check: can this worker ever satisfy the request?"""
     inv = snapshot.inventory
@@ -90,6 +108,9 @@ def capability_ineligibility(snapshot, spec):
         for gpu in gpus
     ):
         reasons.append("no_compatible_gpu")
+    dev = _developer_ineligibility(inv, spec)
+    if dev:
+        reasons.append(dev)
     return ",".join(reasons) or None
 
 
@@ -128,6 +149,9 @@ def availability_ineligibility(snapshot, spec):
         for gpu in gpus
     ):
         reasons.append("no_compatible_gpu")
+    dev = _developer_ineligibility(inv, spec)
+    if dev:
+        reasons.append(dev)
     return ",".join(reasons) or None
 
 
@@ -170,6 +194,9 @@ def interactive_ineligibility(snapshot, spec):
         for gpu in gpus
     ):
         reasons.append("no_compatible_gpu")
+    dev = _developer_ineligibility(inv, spec)
+    if dev:
+        reasons.append(dev)
     return ",".join(reasons) or None
 
 

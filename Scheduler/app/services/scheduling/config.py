@@ -38,6 +38,14 @@ class Settings:
         return value
 
 
+def developer_mode_enabled() -> bool:
+    return os.getenv("INTERACTIVE_DEVELOPER_MODE_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+
+
+def internet_enabled() -> bool:
+    return os.getenv("INTERACTIVE_INTERNET_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+
+
 def _float_env(name, default):
     try:
         value = float(os.getenv(name, str(default)))
@@ -70,7 +78,8 @@ def operator_defaults():
             x.strip() for x in os.getenv("INTERACTIVE_GPU_MODELS", "").split(",") if x.strip()
         ],
         "allow_root": os.getenv("INTERACTIVE_ALLOW_ROOT", "0") == "1",
-        "allow_internet": os.getenv("INTERACTIVE_INTERNET_ENABLED", "0") == "1",
+        "allow_internet": internet_enabled(),
+        "developer_mode": developer_mode_enabled(),
     }
 
 
@@ -124,6 +133,7 @@ def _validate_profile_shape(profile):
         )
         or not isinstance(profile["allow_internet"], bool)
         or not isinstance(profile["allow_root"], bool)
+        or not isinstance(profile.get("developer_mode", False), bool)
         or not 1 <= profile["disk_gb"] <= 1000000
         or profile["pull_headroom_gb"] < 1
         or not 16 <= profile["pids"] <= 4096

@@ -166,3 +166,14 @@ def test_directory_stat_returns_version_and_guards_rename_delete():
     stat2 = call(tmp, {"operation": "stat", "root": str(tmp), "path": "d2"})
     assert stat2["ok"] is True
     assert call(tmp, {"operation": "delete", "root": str(tmp), "path": "d2", "expected_version": "stale"}) == {"ok": False, "code": "CONFLICT"}
+
+
+def test_helper_uses_image_owned_interpreter_outside_venv():
+    from interactive.file_service import FILE_HELPER_PYTHON
+
+    assert FILE_HELPER_PYTHON == "/usr/bin/python3"
+    assert "/opt/dml-venv" not in FILE_HELPER_PYTHON
+    client = _client_for({"ok": True, "entries": []})
+    FileService(client, "c", "10001", "/workspace").call("list", path="")
+    cmd = client.api.exec_create.call_args.kwargs["cmd"]
+    assert cmd[0] == "/usr/bin/python3" and cmd[1] == "-c"

@@ -132,3 +132,23 @@ def test_error_after_exec_launch_stops_only_exact_workload(monkeypatch):
         DockerSession(client, "exact-workload", "1000", "/workspace", 80, 24)
     client.api.exec_start.return_value.close.assert_called_once()
     client.api.stop.assert_called_once_with("exact-workload", timeout=3)
+
+
+def test_workload_env_uses_home_and_venv_not_tmp():
+    from interactive.broker import workload_env
+
+    client = MagicMock()
+    client.api.inspect_container.return_value = {
+        "State": {"Pid": 1},
+        "Config": {"Env": ["PATH=/opt/dml-venv/bin:/usr/bin:/bin", "VIRTUAL_ENV=/opt/dml-venv", "HOME=/home/dml"]},
+    }
+    env = workload_env(client, "workload")
+    assert env["HOME"] == "/home/dml"
+    assert env["VIRTUAL_ENV"] == "/opt/dml-venv"
+    assert env["PATH"].startswith("/opt/dml-venv/bin")
+    assert env["TERM"] == "xterm"
+    # Missing config falls back to developer defaults, never /tmp.
+    client.api.inspect_container.return_value = {"State": {"Pid": 1}}
+    fallback = workload_env(client, "workload")
+    assert fallback["HOME"] == "/home/dml"
+    assert "/opt/dml-venv/bin" in fallback["PATH"]

@@ -397,6 +397,62 @@ def test_start_owner_idempotency_and_pinning(db, monkeypatch):
     assert next_runtime["generation"] == runtime.generation + 1
 
 
+def test_developer_mode_pinned_only_for_prepared_revision(db, monkeypatch):
+    owner = make_user(db)
+    monkeypatch.setenv("INTERACTIVE_RUNTIME_ENABLED", "1")
+    monkeypatch.setenv("INTERACTIVE_DEVELOPER_MODE_ENABLED", "1")
+    monkeypatch.setenv("INTERACTIVE_INTERNET_ENABLED", "1")
+    w = Workspace(
+        id=identifier(), owner_user_id=owner.user_id, name="Dev",
+        source_type="UPLOAD", request_key=identifier(), request_hash="c" * 64,
+    )
+    db.add(w)
+    db.commit()
+    old = Revision(
+        id=identifier(), workspace_id=w.id, revision_number=1, origin="UPLOAD",
+        state="IMAGE_READY", source_object_key="k", requested_base_image="b",
+        resolved_base_digest="repo@sha256:" + "a" * 64,
+        image_tag="repo:t", image_digest_ref="repo/workload@sha256:" + "a" * 64,
+    )
+    db.add(old)
+    db.commit()
+    w.current_revision_id = old.id
+    db.commit()
+    first = runtimes.start(db, owner.user_id, w.id, identifier(), Start())
+    assert first["developer_mode"] is False
+    assert first["package_capable"] is False
+    assert db.get(Runtime, first["id"]).launch_spec["developer_mode"] is False
+    # Prepared revision pins developer mode; retry keeps it after policy off.
+    old.developer_profile = "v1"
+    db.commit()
+    runtimes.stop(db, owner.user_id, first["id"])
+    key = identifier()
+    pinned = runtimes.start(db, owner.user_id, w.id, key, Start())
+    assert pinned["developer_mode"] is True
+    assert pinned["package_capable"] is True
+    monkeypatch.setenv("INTERACTIVE_DEVELOPER_MODE_ENABLED", "0")
+    assert runtimes.start(db, owner.user_id, w.id, key, Start())["id"] == pinned["id"]
+
+
+def test_developer_runtime_avoids_incapable_worker(db, monkeypatch):
+    from app.services.scheduling.policy import compatible_gpu
+
+    monkeypatch.setenv("INTERACTIVE_DEVELOPER_MODE_ENABLED", "1")
+    monkeypatch.setenv("INTERACTIVE_INTERNET_ENABLED", "1")
+    owner = make_user(db)
+    w = worker(db)
+    w.inventory = {**w.inventory}
+    db.commit()
+    _, runtime = workspace(db, owner.user_id, monkeypatch)
+    runtime.launch_spec = {**runtime.launch_spec, "developer_mode": True, "allow_internet": True}
+    db.commit()
+    snap = Snapshot(w.worker_id, "gpu", 16.0, 0, w.inventory)
+    assert compatible_gpu(snap, runtime.launch_spec) is None
+    w.inventory = {**w.inventory, "developer_mode_capable": True, "internet_egress_capable": True}
+    db.commit()
+    assert compatible_gpu(Snapshot(w.worker_id, "gpu", 16.0, 0, w.inventory), runtime.launch_spec) == "GPU-test"
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

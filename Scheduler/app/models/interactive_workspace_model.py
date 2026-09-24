@@ -59,6 +59,10 @@ class InteractiveImageRevision(Base):
     parent_revision_id = Column(String)
     snapshot_operation_id = Column(String, unique=True)
     source_image_metadata = Column(JSON)
+    # Prepared developer image profile (plan.md §4-5). 'v1' when the Builder
+    # produced the sudo/venv/home profile; NULL for older revisions which stay
+    # eligible only for the existing strict runtime mode.
+    developer_profile = Column(String, nullable=True)
     build_logs = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

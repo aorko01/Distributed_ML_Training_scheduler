@@ -48,6 +48,12 @@ def public(db, item):
         # registry credentials, builder leases, or internal image metadata.
         base['revision']['requested_base_image'] = getattr(rev, 'requested_base_image', None)
         base['revision']['source_image_tag'] = getattr(rev, 'source_image_tag', None)
+        # Developer-profile readiness: 'v1' means the revision was built with
+        # the prepared sudo/venv/home profile. Older revisions (None) stay on
+        # the strict runtime; the UI shows an actionable rebuild hint.
+        base['revision']['developer_profile'] = getattr(rev, 'developer_profile', None)
+        if getattr(rev, 'developer_profile', None) != 'v1' and rev.state == 'IMAGE_READY':
+            base['revision']['package_hint'] = 'create a new workspace image to enable package installation'
     return base
 
 
@@ -269,15 +275,23 @@ def mark_ready(db, attempt):
     expected_suffix = f':revision-{rev.id}-attempt-{rev.attempt_id}'
     if not repository.endswith('/interactive-' + rev.workspace_id) or not attempt.image_tag.endswith(expected_suffix) or attempt.image_digest_ref.split('@')[0] != repository:
         raise HTTPException(422, 'Image reference does not match build attempt')
+    profile = getattr(attempt, 'developer_profile', None)
     if rev.state == 'IMAGE_READY':
         if (rev.image_tag, rev.image_digest_ref, rev.resolved_base_digest) != (attempt.image_tag, attempt.image_digest_ref, attempt.resolved_base_digest):
             raise HTTPException(409, 'Immutable revision already published')
+        # Additive profile label may arrive on a re-delivered callback; never
+        # mutate an immutable ready revision beyond recording it when absent.
+        if getattr(rev, 'developer_profile', None) is None and profile == 'v1':
+            rev.developer_profile = 'v1'
+            db.commit()
         return {'status': 'ok'}
     rev.state = 'IMAGE_READY'
     rev.build_logs = ((rev.build_logs or []) + ['Image ready'])[-1000:]
     rev.image_tag = attempt.image_tag
     rev.image_digest_ref = attempt.image_digest_ref
     rev.resolved_base_digest = attempt.resolved_base_digest
+    if hasattr(rev, 'developer_profile'):
+        rev.developer_profile = profile if profile == 'v1' else None
     rev.lease_until = None
     values = {'current_revision_id': rev.id}
     # A ready initial source is startable; later snapshot publications advance

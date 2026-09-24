@@ -236,6 +236,75 @@ additive migration and assignment tombstones for stale-message fencing. No globa
 Docker prune, image deletion, volume deletion or Headscale reset is part of runtime
 cleanup. Source image retention follows `interactive-images-operations.md`.
 
+## Usable interactive development workspaces (package-capable runtimes)
+
+A ready developer runtime lets the user edit code in the browser, install
+ordinary Python and Ubuntu/Debian packages from its terminal, and run that
+code on the assigned GPU. In a newly built, operator-enabled development
+workspace these commands work without special pip flags or a manual venv
+activation step:
+
+```sh
+id
+pwd                              # /workspace
+python -c 'import torch; print(torch.cuda.is_available())'
+pip install six
+python -c 'import six; print(six.__version__)'
+sudo -n apt-get update
+sudo -n apt-get install -y ffmpeg
+ffmpeg -version
+python train.py
+```
+
+Editor saves go to the **live** container and are visible to
+`python train.py` immediately. Packages and code persist across browser
+terminal close/reopen while the same runtime is alive. Installation uses the
+workload container only, never the Access container or Worker host.
+
+Image contract (Builder developer-profile `v1`, label
+`io.dml.developer-profile=v1`):
+
+```text
+User:       10001:10001
+WorkingDir: /workspace
+HOME:       /home/dml
+VIRTUAL_ENV:/opt/dml-venv
+PATH:       /opt/dml-venv/bin:<base-image PATH>
+```
+
+`/workspace`, `/opt/dml-venv`, and `/home/dml` are ordinary writable paths
+(no Docker volumes). Product guidance is `pip install <name>` and
+`sudo apt-get install <name>`; `sudo pip install` is discouraged because it
+bypasses the user-owned venv. This phase stops at the live runtime: no Docker
+commit, snapshots, Save for Later, image publication, or training submission.
+The UI keeps **live-only** messaging and does not imply Stop preserves edits.
+
+Operator gates (all four required for a fully package-capable runtime,
+default off, Scheduler and Worker enforced independently; never from the
+browser):
+
+```ini
+# Scheduler env (requires restart):
+INTERACTIVE_DEVELOPER_MODE_ENABLED=1
+INTERACTIVE_INTERNET_ENABLED=1
+# Worker /etc/dml/worker.env (requires restart, new runtimes only):
+INTERACTIVE_ALLOW_DEVELOPER_MODE=1
+INTERACTIVE_ALLOW_INTERNET=1
+```
+
+The Scheduler pins server-owned `developer_mode` into the immutable launch
+spec only for Builder revisions reporting `developer-profile=v1`; older
+revisions stay on the strict runtime with an actionable "create a new
+workspace image to enable package installation" hint. The Worker verifies the
+pulled digest's label, UID 10001, and `/workspace` workdir before applying
+the relaxed workload settings (Docker default capabilities, no
+`no-new-privileges`, bridge network). Mismatches fail before workload start
+and never present an offline or sudo-disabled runtime as ready. The workload
+smoke check runs `id -u`, `sudo -n id -u`, `python -m pip --version`,
+a torch import, and the image-owned `/usr/bin/python3` editor helper before
+READY. Roll back by disabling admission of new developer runtimes and letting
+current assignments stop through the normal fenced path.
+
 ## Opt-in workload egress and durable snapshots (Option B)
 
 Default stays offline: the workload launches with `network_mode=none`, so `pip
