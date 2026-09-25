@@ -4,8 +4,6 @@ import { Server, Gauge, ListOrdered, Cpu, TrendingUp } from 'lucide-react';
 import RingChart from '../components/RingChart';
 import BarChart from '../components/BarChart';
 import {
-  clusterOverview as mockOverview,
-  throughput as mockThroughput,
   type ThroughputPeriod,
   type ThroughputPoint,
 } from '../data/mock';
@@ -28,14 +26,15 @@ const REFRESH_INTERVAL_MS = 5000;
 const Overview: React.FC = () => {
   const [period, setPeriod] = useState<ThroughputPeriod>('weekly');
   const [stats, setStats] = useState<OverviewStats>({
-    nodes_online: mockOverview.nodesOnline,
-    nodes_total: mockOverview.nodesTotal,
-    cluster_load: mockOverview.clusterLoad,
-    queue_depth: mockOverview.queueDepth,
-    gpus_allocated: mockOverview.gpusAllocated,
-    gpus_total: mockOverview.gpusTotal,
+    nodes_online: 0,
+    nodes_total: 0,
+    cluster_load: 0,
+    queue_depth: 0,
+    gpus_allocated: 0,
+    gpus_total: 0,
+    distribution: { batch: 0, experimentation: 0, idle: 100 },
   });
-  const [throughputData, setThroughputData] = useState<ThroughputPoint[]>(mockThroughput[period]);
+  const [throughputData, setThroughputData] = useState<ThroughputPoint[]>([]);
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
   const navigate = useNavigate();
 
@@ -79,7 +78,7 @@ const Overview: React.FC = () => {
     queueDepth: stats.queue_depth,
     gpusAllocated: stats.gpus_allocated,
     gpusTotal: stats.gpus_total,
-    distribution: mockOverview.distribution,
+    distribution: stats.distribution ?? { batch: 0, experimentation: 0, idle: 100 },
   };
 
   const distributionSegments = [
@@ -88,7 +87,8 @@ const Overview: React.FC = () => {
     { label: 'Idle', value: distribution.idle, color: 'var(--idle-color)' },
   ];
 
-  const totalDistribution = distribution.batch + distribution.experimentation + distribution.idle;
+  const totalDistribution =
+    distribution.batch + distribution.experimentation + distribution.idle || 1;
 
   const gpuUsagePercent = gpusTotal > 0 ? Math.round((gpusAllocated / gpusTotal) * 100) : 0;
 

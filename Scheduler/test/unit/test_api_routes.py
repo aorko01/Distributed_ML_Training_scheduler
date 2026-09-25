@@ -9,7 +9,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.api import admin_workers_route, auth_route, docker_route, jobs_route
+from app.api import (
+    admin_jobs_route,
+    admin_users_route,
+    admin_workers_route,
+    auth_route,
+    docker_route,
+    jobs_route,
+)
 from app.api import resource_route
 from app.api import scheduler_route, worker_route
 from app.models.job_model import JobStatus
@@ -724,6 +731,141 @@ class TestAdminWorkerCredentials:
 
         assert client.delete("/admin/workers/credentials/w1").status_code == 204
         assert client.delete("/admin/workers/credentials/w1").status_code == 404
+
+
+class TestAdminUsers:
+    def _client(self, db, admin=None):
+        app = FastAPI()
+        app.include_router(admin_users_route.router)
+        app.dependency_overrides[deps.get_db] = lambda: db
+        if admin is not None:
+            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
+        return TestClient(app, raise_server_exceptions=False)
+
+    def _admin(self, db):
+        admin = make_user(db)
+        admin.is_superuser = True
+        return admin
+
+    def test_requires_authentication(self, db):
+        assert self._client(db).get("/admin/users").status_code == 401
+
+    def test_forbids_non_admin(self, db):
+        client = self._client(db, admin=make_user(db))
+        assert client.get("/admin/users").status_code == 403
+
+    def test_list_reports_real_counts(self, db):
+        from test.helpers import make_job as _make_job
+
+        admin = self._admin(db)
+        user = make_user(db)
+        _make_job(db, user.user_id, gpu_hour=1.5)
+        _make_job(db, user.user_id, gpu_hour=2.5)
+        client = self._client(db, admin=admin)
+        body = client.get("/admin/users").json()
+        entry = next(u for u in body if u["user_id"] == user.user_id)
+        assert entry["jobs_count"] == 2
+        assert entry["gpu_hours"] == 4.0
+        assert entry["is_active"] is True
+        assert entry["is_superuser"] is False
+
+    def test_update_and_guards(self, db):
+        admin = self._admin(db)
+        user = make_user(db)
+        client = self._client(db, admin=admin)
+        resp = client.patch(
+            f"/admin/users/{user.user_id}", json={"is_active": False}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["is_active"] is False
+        resp = client.patch(
+            f"/admin/users/{user.user_id}", json={"is_superuser": True}
+        )
+        assert resp.json()["is_superuser"] is True
+        # cannot demote/deactivate yourself
+        assert client.patch(
+            f"/admin/users/{admin.user_id}", json={"is_superuser": False}
+        ).status_code == 400
+        assert client.patch(
+            f"/admin/users/{admin.user_id}", json={"is_active": False}
+        ).status_code == 400
+        assert client.patch("/admin/users/ghost", json={"is_active": False}).status_code == 404
+
+    def test_delete_guards(self, db):
+        from test.helpers import make_job as _make_job
+
+        admin = self._admin(db)
+        client = self._client(db, admin=admin)
+        assert client.delete(f"/admin/users/{admin.user_id}").status_code == 400
+        busy = make_user(db)
+        _make_job(db, busy.user_id)
+        assert client.delete(f"/admin/users/{busy.user_id}").status_code == 400
+        quiet = make_user(db)
+        assert client.delete(f"/admin/users/{quiet.user_id}").status_code == 204
+        assert client.delete(f"/admin/users/{quiet.user_id}").status_code == 404
+
+
+class TestAdminJobs:
+    def _client(self, db, admin=None):
+        app = FastAPI()
+        app.include_router(admin_jobs_route.router)
+        app.dependency_overrides[deps.get_db] = lambda: db
+        if admin is not None:
+            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
+        return TestClient(app, raise_server_exceptions=False)
+
+    def _admin(self, db):
+        admin = make_user(db)
+        admin.is_superuser = True
+        return admin
+
+    def test_requires_authentication(self, db):
+        assert self._client(db).get("/admin/jobs/queue").status_code == 401
+
+    def test_forbids_non_admin(self, db):
+        assert (
+            self._client(db, admin=make_user(db)).get("/admin/jobs/queue").status_code
+            == 403
+        )
+
+    def test_queue_lists_only_active_jobs(self, db):
+        from app.models.job_model import JobStatus
+        from test.helpers import make_job as _make_job
+
+        admin = self._admin(db)
+        user = make_user(db)
+        queued = _make_job(db, user.user_id, status=JobStatus.RUNNABLE)
+        _make_job(db, user.user_id, status=JobStatus.COMPLETED)
+        client = self._client(db, admin=admin)
+        body = client.get("/admin/jobs/queue").json()
+        ids = [j["id"] for j in body]
+        assert queued.id in ids
+        assert len(body) == 1
+        assert body[0]["username"] == user.username
+        assert body[0]["status"] == "RUNNABLE"
+        assert body[0]["priority"] == "NORMAL"
+
+    def test_set_priority(self, db):
+        from app.models.job_model import JobPriority, JobStatus
+        from test.helpers import make_job as _make_job
+
+        admin = self._admin(db)
+        user = make_user(db)
+        job = _make_job(
+            db, user.user_id, status=JobStatus.RUNNABLE, priority=JobPriority.REQUESTED
+        )
+        client = self._client(db, admin=admin)
+        resp = client.patch(f"/admin/jobs/{job.id}/priority", json={"priority": "HIGH"})
+        assert resp.status_code == 200
+        assert resp.json()["priority"] == "HIGH"
+        resp = client.patch(f"/admin/jobs/{job.id}/priority", json={"priority": "NORMAL"})
+        assert resp.json()["priority"] == "NORMAL"
+        assert client.patch(
+            f"/admin/jobs/{job.id}/priority", json={"priority": "REQUESTED"}
+        ).status_code == 400
+        assert client.patch(
+            "/admin/jobs/ghost/priority", json={"priority": "HIGH"}
+        ).status_code == 404
 
 
 class TestWsAuthenticate:

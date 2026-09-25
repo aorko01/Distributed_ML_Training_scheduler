@@ -26,6 +26,12 @@ export interface NodesResponse {
   nodes: ApiNode[];
 }
 
+export interface ResourceDistribution {
+  batch: number;
+  experimentation: number;
+  idle: number;
+}
+
 export interface OverviewStats {
   nodes_online: number;
   nodes_total: number;
@@ -33,6 +39,30 @@ export interface OverviewStats {
   queue_depth: number;
   gpus_allocated: number;
   gpus_total: number;
+  distribution: ResourceDistribution;
+}
+
+export interface AdminUser {
+  user_id: string;
+  username: string;
+  email: string;
+  name: string | null;
+  is_active: boolean;
+  is_superuser: boolean;
+  jobs_count: number;
+  gpu_hours: number;
+  created_at: string | null;
+}
+
+export interface AdminQueueJob {
+  id: string;
+  name: string | null;
+  username: string | null;
+  status: string;
+  priority: 'HIGH' | 'NORMAL' | 'REQUESTED' | string;
+  vram_required: number | null;
+  reason_for_priority: string | null;
+  created_at: string | null;
 }
 
 export interface ThroughputPoint {
@@ -123,6 +153,80 @@ export async function registerWorkerCredential(
     throw new Error(detail);
   }
   return (await resp.json()) as WorkerCredential;
+}
+
+export async function fetchAdminUsers(): Promise<AdminUser[]> {
+  const resp = await authedFetch('/admin/users');
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch users: ${resp.status}`);
+  }
+  return (await resp.json()) as AdminUser[];
+}
+
+export async function updateAdminUser(
+  user_id: string,
+  patch: { is_active?: boolean; is_superuser?: boolean },
+): Promise<AdminUser> {
+  const resp = await authedFetch(`/admin/users/${encodeURIComponent(user_id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  if (!resp.ok) {
+    let detail = `Failed to update user: ${resp.status}`;
+    try {
+      const data = (await resp.json()) as { detail?: string };
+      if (data.detail) detail = data.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+  return (await resp.json()) as AdminUser;
+}
+
+export async function deleteAdminUser(user_id: string): Promise<void> {
+  const resp = await authedFetch(`/admin/users/${encodeURIComponent(user_id)}`, {
+    method: 'DELETE',
+  });
+  if (!resp.ok && resp.status !== 204) {
+    let detail = `Failed to delete user: ${resp.status}`;
+    try {
+      const data = (await resp.json()) as { detail?: string };
+      if (data.detail) detail = data.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+}
+
+export async function fetchJobQueue(): Promise<AdminQueueJob[]> {
+  const resp = await authedFetch('/admin/jobs/queue');
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch job queue: ${resp.status}`);
+  }
+  return (await resp.json()) as AdminQueueJob[];
+}
+
+export async function setJobPriority(
+  job_id: string,
+  priority: 'HIGH' | 'NORMAL',
+): Promise<AdminQueueJob> {
+  const resp = await authedFetch(`/admin/jobs/${encodeURIComponent(job_id)}/priority`, {
+    method: 'PATCH',
+    body: JSON.stringify({ priority }),
+  });
+  if (!resp.ok) {
+    let detail = `Failed to update priority: ${resp.status}`;
+    try {
+      const data = (await resp.json()) as { detail?: string };
+      if (data.detail) detail = data.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+  return (await resp.json()) as AdminQueueJob;
 }
 
 export async function revokeWorkerCredential(worker_id: string): Promise<void> {

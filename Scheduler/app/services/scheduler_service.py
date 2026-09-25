@@ -2,9 +2,39 @@ from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from app.models.interactive_runtime_model import WorkerAssignment
 from app.models.job_model import Job, JobStatus
 from app.models.worker_model import Worker
 from app.services.worker_service import get_all_workers
+
+
+def get_resource_distribution(db: Session, gpus_total: int) -> dict:
+    """Live workload mix for the admin Overview ring chart.
+
+    Derived from unreleased worker assignments: ``batch_training`` counts as
+    batch, ``interactive_access`` + ``vram_estimation`` count as
+    experimentation, and everything else up to GPU capacity counts as idle.
+    Percentages always sum to 100.
+    """
+    kinds = (
+        db.query(WorkerAssignment.kind)
+        .filter(WorkerAssignment.released_at.is_(None))
+        .all()
+    )
+    batch = sum(1 for (kind,) in kinds if kind == "batch_training")
+    experimentation = sum(
+        1 for (kind,) in kinds if kind in ("interactive_access", "vram_estimation")
+    )
+    capacity = max(int(gpus_total or 0), batch + experimentation)
+    if capacity <= 0:
+        return {"batch": 0, "experimentation": 0, "idle": 100}
+    batch_pct = round(100 * batch / capacity)
+    exp_pct = round(100 * experimentation / capacity)
+    return {
+        "batch": batch_pct,
+        "experimentation": exp_pct,
+        "idle": 100 - batch_pct - exp_pct,
+    }
 
 
 async def get_overview(db: Session) -> dict:
@@ -48,6 +78,7 @@ async def get_overview(db: Session) -> dict:
         "queue_depth": int(queue_depth),
         "gpus_allocated": int(gpus_allocated),
         "gpus_total": int(gpus_total),
+        "distribution": get_resource_distribution(db, gpus_total),
     }
 
 

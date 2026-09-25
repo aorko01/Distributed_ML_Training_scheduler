@@ -33,6 +33,12 @@ class TestGetOverview:
         assert overview["cluster_load"] == pytest.approx(75.0)
         # second worker falls back to num_gpus * load estimate: 4 * 100% = 4
         assert overview["gpus_allocated"] == 1 + 4
+        # no live assignments: everything idle
+        assert overview["distribution"] == {
+            "batch": 0,
+            "experimentation": 0,
+            "idle": 100,
+        }
 
     @pytest.mark.asyncio()
     async def test_empty_cluster(self, db):
@@ -47,7 +53,58 @@ class TestGetOverview:
             "queue_depth": 0,
             "gpus_allocated": 0,
             "gpus_total": 0,
+            "distribution": {"batch": 0, "experimentation": 0, "idle": 100},
         }
+
+
+class TestGetResourceDistribution:
+    def _assignment(self, db, worker_id, kind, suffix, job_id=None, released=False):
+        import uuid
+
+        from app.models.interactive_runtime_model import WorkerAssignment
+
+        now = datetime.now(timezone.utc)
+        row = WorkerAssignment(
+            worker_id=worker_id,
+            instance_id=f"inst-{suffix}",
+            kind=kind,
+            job_id=job_id,
+            attempt_token=uuid.uuid4().hex,
+            request_id=f"req-{suffix}",
+            request_hash="h" * 64,
+            payload={},
+            exclusive=False,
+            state="RELEASED" if released else "CLAIMED",
+            created_at=now,
+            lease_until=now + timedelta(minutes=5),
+            released_at=now if released else None,
+            cleanup_ack=released,
+        )
+        db.add(row)
+        db.commit()
+        return row
+
+    def test_live_assignments_split_batch_and_experimentation(self, db):
+        user = make_user(db)
+        worker = make_worker(db, worker_id="w1", num_gpus=4)
+        job = make_job(db, user.user_id, status=JobStatus.RUNNABLE)
+        self._assignment(db, worker.worker_id, "batch_training", "b1", job_id=job.id)
+        self._assignment(
+            db, worker.worker_id, "batch_training", "b2", job_id=job.id + "-x"
+        )
+        # released assignments must not count
+        self._assignment(
+            db, worker.worker_id, "batch_training", "b3", job_id="gone", released=True
+        )
+        out = scheduler_service.get_resource_distribution(db, 4)
+        assert out["batch"] == 50
+        assert out["experimentation"] == 0
+        assert out["idle"] == 50
+        assert sum(out.values()) == 100
+
+    def test_no_capacity_all_idle(self, db):
+        out = scheduler_service.get_resource_distribution(db, 0)
+        assert out == {"batch": 0, "experimentation": 0, "idle": 100}
 
 
 class TestCompletionTime:

@@ -1,10 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Server, Terminal, Unplug, Plus, Trash2 } from 'lucide-react';
+import { Search, Server, Plus, Trash2 } from 'lucide-react';
 import {
-  nodes as seedNodes,
   type ClusterNode,
-  type NodeStatus,
   type NodeSortKey,
 } from '../data/mock';
 import {
@@ -17,16 +15,17 @@ import {
   type WorkerCredential,
 } from '../services/api';
 
-type StatusFilter = 'all' | NodeStatus;
+type StatusFilter = 'all' | 'online' | 'offline';
 
-const STATUS_LABEL: Record<NodeStatus, string> = {
+const STATUS_LABEL: Record<'online' | 'offline', string> = {
   online: 'Online',
   offline: 'Offline',
-  draining: 'Draining',
 };
 
-const getStatusBadge = (status: NodeStatus) => (
-  <span className={`badge badge-${status}`}>{STATUS_LABEL[status]}</span>
+const getStatusBadge = (status: string) => (
+  <span className={`badge badge-${status}`}>
+    {STATUS_LABEL[status as 'online' | 'offline'] ?? status}
+  </span>
 );
 
 const roundMetric = (value: number | null | undefined, fallback = 0): number =>
@@ -57,7 +56,9 @@ const toClusterNode = (node: ApiNode): ClusterNode => ({
 const REFRESH_INTERVAL_MS = 5000;
 
 const Nodes: React.FC = () => {
-  const [nodeList, setNodeList] = useState<ClusterNode[]>(seedNodes);
+  const [nodeList, setNodeList] = useState<ClusterNode[]>([]);
+  const [nodesLoading, setNodesLoading] = useState(true);
+  const [nodesError, setNodesError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<NodeSortKey>('name');
@@ -77,6 +78,8 @@ const Nodes: React.FC = () => {
         const apiNodes = await fetchNodes();
         if (!cancelled) {
           setNodeList(apiNodes.map(toClusterNode));
+          setNodesError(null);
+          setNodesLoading(false);
         }
       } catch (err) {
         if (!cancelled) {
@@ -85,7 +88,8 @@ const Nodes: React.FC = () => {
             return;
           }
           console.error('Failed to load nodes:', err);
-          setNodeList(seedNodes);
+          setNodesError(err instanceof Error ? err.message : 'Failed to load nodes.');
+          setNodesLoading(false);
         }
       }
     };
@@ -176,21 +180,6 @@ const Nodes: React.FC = () => {
   const showFeedback = (msg: string) => {
     setActionFeedback(msg);
     window.setTimeout(() => setActionFeedback(null), 3000);
-  };
-
-  const handleDisconnect = (node: ClusterNode) => {
-    setNodeList((prev) =>
-      prev.map((n) =>
-        n.id === node.id
-          ? { ...n, status: n.status === 'online' ? 'offline' : 'online', load: 0, mem: 0, runningJobs: 0 }
-          : n,
-      ),
-    );
-    showFeedback(`${node.name} disconnected`);
-  };
-
-  const handleSsh = (node: ClusterNode) => {
-    showFeedback(`Opening SSH session to ${node.name} (${node.ip}:${node.sshPort})...`);
   };
 
   return (
@@ -293,7 +282,6 @@ const Nodes: React.FC = () => {
               <option value="all">All Statuses</option>
               <option value="online">Online</option>
               <option value="offline">Offline</option>
-              <option value="draining">Draining</option>
             </select>
           </div>
           <div className="toolbar-group">
@@ -329,6 +317,11 @@ const Nodes: React.FC = () => {
         )}
       </div>
 
+      {nodesLoading && <p>Loading nodes…</p>}
+      {nodesError && !nodesLoading && (
+        <p style={{ color: 'var(--status-failed)' }}>{nodesError}</p>
+      )}
+
       <div className="table-container">
         <table>
           <thead>
@@ -341,13 +334,12 @@ const Nodes: React.FC = () => {
               <th>Load</th>
               <th>Mem</th>
               <th>Jobs</th>
-              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {visibleNodes.length === 0 && (
+            {visibleNodes.length === 0 && !nodesLoading && (
               <tr>
-                <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
+                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
                   No nodes match the current filters.
                 </td>
               </tr>
@@ -393,25 +385,6 @@ const Nodes: React.FC = () => {
                   </div>
                 </td>
                 <td>{node.runningJobs}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleSsh(node)}
-                    >
-                      <Terminal size={14} />
-                      SSH
-                    </button>
-                    <button
-                      className="btn btn-danger btn-sm"
-                      onClick={() => handleDisconnect(node)}
-                      disabled={node.status === 'offline'}
-                    >
-                      <Unplug size={14} />
-                      Disconnect
-                    </button>
-                  </div>
-                </td>
               </tr>
             ))}
           </tbody>

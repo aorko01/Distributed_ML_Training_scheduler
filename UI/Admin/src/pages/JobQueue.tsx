@@ -1,36 +1,32 @@
-import React, { useMemo, useState } from 'react';
-import { ArrowUp, ArrowDown, Check, X, Zap, Clock, Search } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Check, X, Clock, Search } from 'lucide-react';
 import {
-  queueJobs as seedJobs,
-  type PriorityLevel,
-  type PriorityRequestStatus,
-  type QueueJob,
-} from '../data/mock';
+  fetchJobQueue,
+  setJobPriority,
+  UnauthorizedError,
+  type AdminQueueJob,
+} from '../services/api';
 
-type PriorityFilter = 'all' | PriorityLevel;
-type RequestFilter = 'all' | 'pending' | 'approved' | 'denied';
+type PriorityFilter = 'all' | 'HIGH' | 'NORMAL' | 'REQUESTED';
+type RequestFilter = 'all' | 'pending' | 'none';
 
-const PRIORITY_LABEL: Record<PriorityLevel, string> = {
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
+const PRIORITY_LABEL: Record<string, string> = {
+  HIGH: 'High',
+  NORMAL: 'Normal',
+  REQUESTED: 'Requested',
 };
 
-const getPriorityBadge = (p: PriorityLevel) => (
-  <span className={`badge badge-${p === 'high' ? 'failed' : p === 'medium' ? 'pending' : 'offline'}`}>
-    {PRIORITY_LABEL[p]}
+const getPriorityBadge = (p: string) => (
+  <span className={`badge badge-${p === 'HIGH' ? 'failed' : p === 'REQUESTED' ? 'pending' : 'offline'}`}>
+    {PRIORITY_LABEL[p] ?? p}
   </span>
 );
 
-const getRequestBadge = (r: PriorityRequestStatus) => {
-  if (r === 'none') return null;
-  if (r === 'approved') return <span className="badge badge-approved">Approved</span>;
-  if (r === 'denied') return <span className="badge badge-denied">Denied</span>;
-  return <span className="badge badge-priority-request">Priority Request</span>;
-};
-
-const formatRelative = (iso: string) => {
+const formatRelative = (iso: string | null) => {
+  if (!iso) return '—';
   const diffMs = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(diffMs)) return '—';
   const mins = Math.max(1, Math.round(diffMs / 60000));
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.round(mins / 60);
@@ -38,20 +34,58 @@ const formatRelative = (iso: string) => {
   return `${Math.round(hrs / 24)}d ago`;
 };
 
+const REFRESH_INTERVAL_MS = 5000;
+
 const JobQueue: React.FC = () => {
-  const [jobs, setJobs] = useState<QueueJob[]>(seedJobs);
+  const [jobs, setJobs] = useState<AdminQueueJob[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
   const [requestFilter, setRequestFilter] = useState<RequestFilter>('all');
   const [search, setSearch] = useState('');
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const queue = await fetchJobQueue();
+        if (!cancelled) {
+          setJobs(queue);
+          setLoadError(null);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          if (err instanceof UnauthorizedError) {
+            navigate('/login', { replace: true });
+            return;
+          }
+          setLoadError(err instanceof Error ? err.message : 'Failed to load job queue.');
+          setLoading(false);
+        }
+      }
+    };
+
+    void refresh();
+    const interval = window.setInterval(refresh, REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [navigate]);
 
   const visibleJobs = useMemo(() => {
     return jobs.filter((job) => {
       if (priorityFilter !== 'all' && job.priority !== priorityFilter) return false;
-      if (requestFilter !== 'all' && job.priorityRequest !== requestFilter) return false;
+      const pending = job.priority === 'REQUESTED';
+      if (requestFilter === 'pending' && !pending) return false;
+      if (requestFilter === 'none' && pending) return false;
       if (search.trim()) {
         const q = search.toLowerCase();
-        if (!`${job.name} ${job.user}`.toLowerCase().includes(q)) return false;
+        if (!`${job.name ?? ''} ${job.username ?? ''} ${job.id}`.toLowerCase().includes(q)) return false;
       }
       return true;
     });
@@ -62,31 +96,41 @@ const JobQueue: React.FC = () => {
     window.setTimeout(() => setActionFeedback(null), 3000);
   };
 
-  const move = (index: number, dir: -1 | 1) => {
-    const target = index + dir;
-    if (target < 0 || target >= jobs.length) return;
-    setJobs((prev) => {
-      const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-    showFeedback(`Moved ${jobs[index].name} ${dir === -1 ? 'up' : 'down'} in the queue`);
+  const decidePriority = async (job: AdminQueueJob, decision: 'HIGH' | 'NORMAL') => {
+    try {
+      const updated = await setJobPriority(job.id, decision);
+      setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+      showFeedback(
+        decision === 'HIGH'
+          ? `Priority approved for ${job.name ?? job.id}`
+          : `Priority request denied for ${job.name ?? job.id}`,
+      );
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      showFeedback(err instanceof Error ? err.message : 'Priority update failed.');
+    }
   };
 
-  const decidePriority = (job: QueueJob, decision: 'approved' | 'denied') => {
-    setJobs((prev) =>
-      prev.map((j) =>
-        j.id === job.id
-          ? { ...j, priorityRequest: decision, priority: decision === 'approved' ? 'high' : j.priority }
-          : j,
-      ),
+  if (loading) {
+    return (
+      <div className="fade-in">
+        <h1>Job Queue</h1>
+        <p>Loading job queue…</p>
+      </div>
     );
-    showFeedback(
-      decision === 'approved'
-        ? `Priority request approved for ${job.name}`
-        : `Priority request denied for ${job.name}`,
+  }
+
+  if (loadError) {
+    return (
+      <div className="fade-in">
+        <h1>Job Queue</h1>
+        <p style={{ color: 'var(--status-failed)' }}>{loadError}</p>
+      </div>
     );
-  };
+  }
 
   return (
     <div className="fade-in">
@@ -116,9 +160,9 @@ const JobQueue: React.FC = () => {
               onChange={(e) => setPriorityFilter(e.target.value as PriorityFilter)}
             >
               <option value="all">All Priorities</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
+              <option value="HIGH">High</option>
+              <option value="NORMAL">Normal</option>
+              <option value="REQUESTED">Requested</option>
             </select>
           </div>
           <div className="toolbar-group">
@@ -131,8 +175,7 @@ const JobQueue: React.FC = () => {
             >
               <option value="all">All Requests</option>
               <option value="pending">Pending Review</option>
-              <option value="approved">Approved</option>
-              <option value="denied">Denied</option>
+              <option value="none">No Request</option>
             </select>
           </div>
         </div>
@@ -159,8 +202,9 @@ const JobQueue: React.FC = () => {
               <th>#</th>
               <th>Job</th>
               <th>User</th>
+              <th>Status</th>
               <th>Priority</th>
-              <th>GPUs</th>
+              <th>VRAM req.</th>
               <th>Submitted</th>
               <th>Priority Request</th>
               <th>Actions</th>
@@ -169,90 +213,75 @@ const JobQueue: React.FC = () => {
           <tbody>
             {visibleJobs.length === 0 && (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
+                <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
                   No jobs match the current filters.
                 </td>
               </tr>
             )}
-            {visibleJobs.map((job) => {
-              const realIndex = jobs.findIndex((j) => j.id === job.id);
-              return (
-                <tr key={job.id}>
-                  <td style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
-                    {realIndex + 1}
-                  </td>
-                  <td>
-                    <div style={{ fontWeight: 600 }}>{job.name}</div>
-                    <div className="mono" style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
-                      {job.id}
-                    </div>
-                  </td>
-                  <td>{job.user}</td>
-                  <td>{getPriorityBadge(job.priority)}</td>
-                  <td>{job.gpuRequested}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
-                      <Clock size={14} color="var(--text-secondary)" />
-                      {formatRelative(job.submittedAt)}
-                    </span>
-                  </td>
-                  <td>
-                    {getRequestBadge(job.priorityRequest)}
-                    {job.priorityRequest === 'pending' && (
-                      <div style={{ display: 'flex', gap: '0.375rem', marginTop: '0.375rem' }}>
-                        <button
-                          className="btn btn-success btn-icon"
-                          onClick={() => decidePriority(job, 'approved')}
-                          title="Approve priority request"
-                        >
-                          <Check size={14} />
-                        </button>
-                        <button
-                          className="btn btn-danger btn-icon"
-                          onClick={() => decidePriority(job, 'denied')}
-                          title="Deny priority request"
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <button
-                        className="btn btn-secondary btn-icon"
-                        onClick={() => move(realIndex, -1)}
-                        disabled={realIndex === 0}
-                        title="Move up"
-                      >
-                        <ArrowUp size={14} />
-                      </button>
-                      <button
-                        className="btn btn-secondary btn-icon"
-                        onClick={() => move(realIndex, 1)}
-                        disabled={realIndex === jobs.length - 1}
-                        title="Move down"
-                      >
-                        <ArrowDown size={14} />
-                      </button>
-                      {job.priorityRequest === 'pending' && (
-                        <span style={{ alignSelf: 'center' }} title="Priority escalation requested">
-                          <Zap size={14} color="var(--status-building)" />
-                        </span>
+            {visibleJobs.map((job, index) => (
+              <tr key={job.id}>
+                <td style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                  {index + 1}
+                </td>
+                <td>
+                  <div style={{ fontWeight: 600 }}>{job.name || 'Untitled job'}</div>
+                  <div className="mono" style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                    {job.id}
+                  </div>
+                </td>
+                <td>{job.username ?? '—'}</td>
+                <td>
+                  <span className="badge badge-offline">{job.status}</span>
+                </td>
+                <td>{getPriorityBadge(job.priority)}</td>
+                <td>{job.vram_required != null ? `${job.vram_required} GB` : '—'}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
+                    <Clock size={14} color="var(--text-secondary)" />
+                    {formatRelative(job.created_at)}
+                  </span>
+                </td>
+                <td>
+                  {job.priority === 'REQUESTED' ? (
+                    <span>
+                      <span className="badge badge-priority-request">Priority Request</span>
+                      {job.reason_for_priority && (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.375rem' }}>
+                          {job.reason_for_priority}
+                        </div>
                       )}
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                  )}
+                </td>
+                <td>
+                  {job.priority === 'REQUESTED' ? (
+                    <div style={{ display: 'flex', gap: '0.375rem' }}>
+                      <button
+                        className="btn btn-success btn-icon"
+                        onClick={() => decidePriority(job, 'HIGH')}
+                        title="Approve priority request"
+                      >
+                        <Check size={14} />
+                      </button>
+                      <button
+                        className="btn btn-danger btn-icon"
+                        onClick={() => decidePriority(job, 'NORMAL')}
+                        title="Deny priority request"
+                      >
+                        <X size={14} />
+                      </button>
                     </div>
-                  </td>
-                </tr>
-              );
-            })}
+                  ) : (
+                    <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                  )}
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
-
-      <p style={{ marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-        Tip: Use the up/down arrows to reorder the queue. Approved priority requests automatically
-        promote a job to High priority.
-      </p>
     </div>
   );
 };
