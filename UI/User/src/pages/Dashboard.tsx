@@ -1,12 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchClusterStats, type ClusterStats } from '../services/stats';
-import { fetchJobs, type Job, type JobStatus } from '../services/jobs';
+import { fetchJobs, type Job } from '../services/jobs';
 import StatusBadge from '../components/StatusBadge';
 import { Activity, Clock, Server, CheckCircle2, Loader2 } from 'lucide-react';
 
-type StatusFilter = 'All' | JobStatus;
+type TrainingStatus = 'Estimating' | 'Running' | 'Retrying' | 'Completed' | 'Failed';
+type StatusFilter = 'All' | TrainingStatus;
 type SortKey = 'newest' | 'oldest' | 'name' | 'gpuHours';
+
+// Dashboard lists only jobs that reached batch training in some form.
+// Build-only phases (Queued / Building / Image ready) live on the Builds page.
+const TRAINING_STATUSES: TrainingStatus[] = ['Estimating', 'Running', 'Retrying', 'Completed', 'Failed'];
 
 const Dashboard: React.FC = () => {
   const [stats, setStats] = useState<ClusterStats | null>(null);
@@ -33,9 +38,10 @@ const Dashboard: React.FC = () => {
   }, []);
 
   const visibleJobs = useMemo(() => {
+    const trainingOnly = jobs.filter(job => (TRAINING_STATUSES as string[]).includes(job.status));
     const filtered = statusFilter === 'All'
-      ? jobs
-      : jobs.filter(job => job.status === statusFilter);
+      ? trainingOnly
+      : trainingOnly.filter(job => job.status === statusFilter);
 
     return [...filtered].sort((a, b) => {
       switch (sortBy) {
@@ -64,7 +70,7 @@ const Dashboard: React.FC = () => {
   return (
     <div className="fade-in">
       <h1>Dashboard Overview</h1>
-      
+
       {stats && (
         <div className="metrics-grid">
           <div className="metric-card">
@@ -98,8 +104,11 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
-        <h2 style={{ margin: 0 }}>My Jobs</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ margin: 0 }}>Training jobs</h2>
+          <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem' }}>Estimating, running, retried, completed or failed — builds live on the Builds page.</p>
+        </div>
         <div style={{ display: 'flex', gap: '1rem' }}>
           <div>
             <label className="form-label">Filter</label>
@@ -109,10 +118,7 @@ const Dashboard: React.FC = () => {
               value={statusFilter}
               onChange={e => setStatusFilter(e.target.value as StatusFilter)}
             >
-              <option value="All">All Statuses</option>
-              <option value="Pending">Queued</option>
-              <option value="Building">Building</option>
-              <option value="ImageReady">Image ready</option>
+              <option value="All">All training</option>
               <option value="Estimating">Estimating VRAM</option>
               <option value="Running">Training</option>
               <option value="Retrying">Retrying</option>
@@ -153,13 +159,13 @@ const Dashboard: React.FC = () => {
             {visibleJobs.length === 0 && (
               <tr>
                 <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
-                  No jobs match the current filters.
+                  No training jobs yet — submit training from the Training page once a build is ready.
                 </td>
               </tr>
             )}
             {visibleJobs.map(job => (
-              <tr 
-                key={job.id} 
+              <tr
+                key={job.id}
                 className="job-row"
                 onClick={() => navigate(`/jobs/${job.id}`)}
               >
