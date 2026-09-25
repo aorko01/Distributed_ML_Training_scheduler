@@ -7,10 +7,26 @@ import time
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+
+def _pool_kwargs() -> dict:
+    """Sized connection pool for Postgres; SQLite keeps test defaults."""
+    if not DATABASE_URL or DATABASE_URL.startswith("sqlite"):
+        return {}
+    return {
+        # Defaults raised from SQLAlchemy's 5/10: heartbeats + API +
+        # watchdog + interactive controller contend for connections.
+        "pool_size": int(os.getenv("DB_POOL_SIZE", "20")),
+        "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "20")),
+        "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT", "10")),
+        "pool_recycle": int(os.getenv("DB_POOL_RECYCLE", "300")),
+        "pool_pre_ping": True,
+    }
+
+
 # Retry mechanism: wait until the database is ready (useful for Docker setups)
 for i in range(30):  # retry for ~30 seconds
     try:
-        engine = create_engine(DATABASE_URL)
+        engine = create_engine(DATABASE_URL, **_pool_kwargs())
         conn = engine.connect()
         conn.close()
         print("Database connected successfully.")

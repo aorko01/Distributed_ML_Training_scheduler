@@ -47,9 +47,13 @@ services:
     - ./app:/app/app
     - ./uploads:/app/uploads
     - ./output:/app/output
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@db:5432/${POSTGRES_DB:-app}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://distributeml.zulfiker.xyz,https://admin.zulfiker.xyz}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-20}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-10}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-secret-key-change-in-production}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}

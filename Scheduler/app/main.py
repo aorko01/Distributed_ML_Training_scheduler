@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -67,10 +68,21 @@ async def bound_runtime_bodies(request, call_next):
         request._body = bytes(body)
     return await call_next(request)
 
-# CORS: allow all origins for now
+# CORS: explicit origins required when allow_credentials=True ("*" is
+# rejected by browsers for credentialed requests and Starlette emits "*"
+# on simple responses, causing confusing failures).
+def _cors_origins() -> list[str]:
+    raw = os.getenv(
+        "CORS_ORIGINS",
+        "https://distributeml.zulfiker.xyz,https://admin.zulfiker.xyz",
+    )
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins or ["https://distributeml.zulfiker.xyz"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
