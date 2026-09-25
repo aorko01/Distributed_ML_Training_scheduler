@@ -129,7 +129,12 @@ class TestWorkerRoutes:
         app.include_router(worker_route.router)
         app.dependency_overrides[worker_route.get_db] = lambda: db
         if admin is not None:
-            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
+            # Simulate an authenticated user at the get_current_user level so
+            # the real get_current_active_user -> get_current_superuser chain
+            # runs and enforces 403 for non-admins (overriding
+            # get_current_superuser directly would bypass the check entirely).
+            app.dependency_overrides[deps.get_db] = lambda: db
+            app.dependency_overrides[deps.get_current_user] = lambda: admin
         return TestClient(app, raise_server_exceptions=False)
 
     def test_register(self, db):
@@ -198,7 +203,12 @@ class TestSchedulerRoutes:
         app.include_router(scheduler_route.router)
         app.dependency_overrides[scheduler_route.get_db] = lambda: db
         if admin is not None:
-            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
+            # Simulate an authenticated user at the get_current_user level so
+            # the real get_current_active_user -> get_current_superuser chain
+            # runs and enforces 403 for non-admins (overriding
+            # get_current_superuser directly would bypass the check entirely).
+            app.dependency_overrides[deps.get_db] = lambda: db
+            app.dependency_overrides[deps.get_current_user] = lambda: admin
         return TestClient(app, raise_server_exceptions=False)
 
     def test_health(self, db):
@@ -669,7 +679,12 @@ class TestAdminWorkerCredentials:
         app.include_router(admin_workers_route.router)
         app.dependency_overrides[deps.get_db] = lambda: db
         if admin is not None:
-            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
+            # Simulate an authenticated user at the get_current_user level so
+            # the real get_current_active_user -> get_current_superuser chain
+            # runs and enforces 403 for non-admins (overriding
+            # get_current_superuser directly would bypass the check entirely).
+            app.dependency_overrides[deps.get_db] = lambda: db
+            app.dependency_overrides[deps.get_current_user] = lambda: admin
         return TestClient(app, raise_server_exceptions=False)
 
     def _admin(self, db):
@@ -739,7 +754,12 @@ class TestAdminUsers:
         app.include_router(admin_users_route.router)
         app.dependency_overrides[deps.get_db] = lambda: db
         if admin is not None:
-            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
+            # Simulate an authenticated user at the get_current_user level so
+            # the real get_current_active_user -> get_current_superuser chain
+            # runs and enforces 403 for non-admins (overriding
+            # get_current_superuser directly would bypass the check entirely).
+            app.dependency_overrides[deps.get_db] = lambda: db
+            app.dependency_overrides[deps.get_current_user] = lambda: admin
         return TestClient(app, raise_server_exceptions=False)
 
     def _admin(self, db):
@@ -811,7 +831,12 @@ class TestAdminJobs:
         app.include_router(admin_jobs_route.router)
         app.dependency_overrides[deps.get_db] = lambda: db
         if admin is not None:
-            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
+            # Simulate an authenticated user at the get_current_user level so
+            # the real get_current_active_user -> get_current_superuser chain
+            # runs and enforces 403 for non-admins (overriding
+            # get_current_superuser directly would bypass the check entirely).
+            app.dependency_overrides[deps.get_db] = lambda: db
+            app.dependency_overrides[deps.get_current_user] = lambda: admin
         return TestClient(app, raise_server_exceptions=False)
 
     def _admin(self, db):

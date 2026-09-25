@@ -39,7 +39,8 @@ const usingVramPercent = (node: ClusterNode): number => {
 const toClusterNode = (node: ApiNode): ClusterNode => ({
   id: node.worker_id,
   name: node.hostname || node.worker_id.slice(0, 8),
-  ip: node.ip_address || '—',
+  // IPs are intentionally not propagated to the UI.
+  ip: '—',
   gpuModel: node.gpu_type || 'Unknown',
   gpuCount: node.num_gpus || 0,
   vramPerGpu: node.total_vram || 0,
@@ -159,7 +160,7 @@ const Nodes: React.FC = () => {
       if (statusFilter !== 'all' && n.status !== statusFilter) return false;
       if (search.trim()) {
         const q = search.toLowerCase();
-        if (!`${n.name} ${n.ip} ${n.gpuModel}`.toLowerCase().includes(q)) return false;
+        if (!`${n.name} ${n.gpuModel}`.toLowerCase().includes(q)) return false;
       }
       return true;
     });
@@ -265,7 +266,7 @@ const Nodes: React.FC = () => {
               <input
                 className="form-input"
                 style={{ width: 220, paddingLeft: '2.25rem', paddingTop: '0.5rem', paddingBottom: '0.5rem' }}
-                placeholder="name, IP, GPU..."
+                placeholder="name, GPU..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -352,7 +353,7 @@ const Nodes: React.FC = () => {
                     <div>
                       <div style={{ fontWeight: 600 }}>{node.name}</div>
                       <div className="mono" style={{ color: 'var(--text-secondary)' }}>
-                        {node.ip}
+                        {node.id.slice(0, 8)}…
                       </div>
                     </div>
                   </div>

@@ -19,10 +19,28 @@ export const isAuthenticated = (): boolean => {
   return getToken() !== null;
 };
 
+export const isBlockedError = (err: unknown): boolean => {
+  if (!err || typeof err !== 'object') return false;
+  const status = (err as { status?: unknown }).status;
+  const message = err instanceof Error ? err.message : '';
+  if (status === 403 && /disabled|blocked|inactive/i.test(message)) return true;
+  return /your account has been disabled|account disabled/i.test(message);
+};
+
 export const login = async (username: string, password: string): Promise<void> => {
-  const token = await api.post<TokenResponse>('/auth/login', { username, password });
-  setToken(token.access_token);
-  setUsername(username);
+  try {
+    const token = await api.post<TokenResponse>('/auth/login', { username, password });
+    setToken(token.access_token);
+    setUsername(username);
+  } catch (err) {
+    // Never leave a (possibly stale) token behind when the account is blocked.
+    if (isBlockedError(err)) {
+      clearToken();
+      clearUsername();
+      throw new Error('Your account has been blocked. Contact an administrator.');
+    }
+    throw err;
+  }
 };
 
 export const register = async (

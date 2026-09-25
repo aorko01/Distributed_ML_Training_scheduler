@@ -1,31 +1,48 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { login, isAuthenticated } from '../services/auth';
-import { Activity } from 'lucide-react';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { login, isAuthenticated, isBlockedError } from '../services/auth';
+import { Activity, Ban } from 'lucide-react';
+
+const BLOCKED_MESSAGE = 'Your account has been blocked. Contact an administrator.';
 
 const Login: React.FC = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [blocked, setBlocked] = useState(false);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
     if (isAuthenticated()) {
       navigate('/');
+      return;
     }
-  }, [navigate]);
+    // Arriving here via the auth layer means the account was disabled
+    // mid-session (token revoked server-side).
+    if (searchParams.get('blocked') === '1') {
+      setBlocked(true);
+      setError(BLOCKED_MESSAGE);
+    }
+  }, [navigate, searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setBlocked(false);
 
     try {
       await login(username, password);
       navigate('/');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Invalid username or password.');
+      if (isBlockedError(err) || (err instanceof Error && /blocked|disabled/i.test(err.message))) {
+        setBlocked(true);
+        setError(BLOCKED_MESSAGE);
+      } else {
+        setError(err instanceof Error ? err.message : 'Invalid username or password.');
+      }
     } finally {
       setLoading(false);
     }
@@ -41,8 +58,9 @@ const Login: React.FC = () => {
         </div>
 
         {error && (
-          <div style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'var(--status-failed)', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.875rem' }}>
-            {error}
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', padding: '0.75rem', backgroundColor: blocked ? 'rgba(239, 68, 68, 0.15)' : 'rgba(239, 68, 68, 0.1)', color: blocked ? '#fca5a5' : 'var(--status-failed)', border: blocked ? '1px solid rgba(239, 68, 68, 0.4)' : 'none', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.875rem' }}>
+            {blocked && <Ban size={16} style={{ flexShrink: 0, marginTop: '0.125rem' }} />}
+            <span>{error}</span>
           </div>
         )}
 

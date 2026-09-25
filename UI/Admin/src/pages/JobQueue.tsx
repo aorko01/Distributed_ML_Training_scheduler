@@ -17,8 +17,44 @@ const PRIORITY_LABEL: Record<string, string> = {
   REQUESTED: 'Requested',
 };
 
+const getStatusBadge = (s: string) => {
+  const key = (s ?? '').toUpperCase();
+  const className =
+    key === 'FAILED'
+      ? 'badge-status-failed'
+      : key === 'COMPLETED'
+        ? 'badge-status-completed'
+        : key === 'IN_PROGRESS'
+          ? 'badge-status-progress'
+          : key === 'RUNNABLE'
+            ? 'badge-status-runnable'
+            : key === 'IMAGE_BUILDING'
+              ? 'badge-status-building'
+              : key === 'IMAGE_READY'
+                ? 'badge-status-ready'
+                : key === 'VRAM_ESTIMATION_PENDING'
+                  ? 'badge-status-estimating'
+                  : key === 'RETRY_NEEDED'
+                    ? 'badge-status-retry'
+                    : key === 'NOT_RUNNABLE'
+                      ? 'badge-status-neutral'
+                      : 'badge-status-neutral';
+  const label = key
+    ? key
+        .toLowerCase()
+        .split('_')
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ')
+    : s;
+  return <span className={`badge ${className}`}>{label}</span>;
+};
+
 const getPriorityBadge = (p: string) => (
-  <span className={`badge badge-${p === 'HIGH' ? 'failed' : p === 'REQUESTED' ? 'pending' : 'offline'}`}>
+  <span
+    className={`badge badge-${
+      p === 'HIGH' ? 'priority-high' : p === 'REQUESTED' ? 'priority-requested' : 'priority-normal'
+    }`}
+  >
     {PRIORITY_LABEL[p] ?? p}
   </span>
 );
@@ -231,7 +267,7 @@ const JobQueue: React.FC = () => {
                 </td>
                 <td>{job.username ?? '—'}</td>
                 <td>
-                  <span className="badge badge-offline">{job.status}</span>
+                  {getStatusBadge(job.status)}
                 </td>
                 <td>{getPriorityBadge(job.priority)}</td>
                 <td>{job.vram_required != null ? `${job.vram_required} GB` : '—'}</td>

@@ -23,6 +23,12 @@ export interface ApiError extends Error {
   status: number;
 }
 
+function isAccountDisabled(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const detail = (body as Record<string, unknown>).detail;
+  return typeof detail === 'string' && /disabled|blocked|inactive/i.test(detail);
+}
+
 function extractDetail(body: unknown, fallback: string): string {
   if (!body || typeof body !== 'object') return fallback;
   const detail = (body as Record<string, unknown>).detail;
@@ -65,6 +71,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       clearToken();
       clearUsername();
       window.location.href = '/login';
+    }
+
+    // A user disabled mid-session keeps a syntactically valid token, but
+    // guarded routes answer 400/403 ("Inactive user" / "Account disabled").
+    // Log them out and send them to the login page with the blocked notice.
+    if (getToken() && isAccountDisabled(body)) {
+      clearToken();
+      clearUsername();
+      window.location.href = '/login?blocked=1';
     }
 
     throw error;

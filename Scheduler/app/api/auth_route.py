@@ -36,6 +36,11 @@ def login(user_data: UserLogin, db: Session = Depends(get_db)):
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been disabled. Contact an administrator.",
+        )
     access_token = create_user_token(user)
     return {"access_token": access_token, "token_type": "bearer"}
 
