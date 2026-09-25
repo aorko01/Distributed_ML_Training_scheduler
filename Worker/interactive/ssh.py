@@ -120,6 +120,11 @@ def setup_workload_sshd(container) -> dict:
         # "Missing privilege separation directory: /run/sshd" without this.
         ["mkdir", "-p", "/run/sshd"],
         ["chmod", "0755", "/run/sshd"],
+        # Debian/Ubuntu useradd leaves dml password-locked (`!`); this
+        # sshd build denies locked accounts for ALL methods including
+        # pubkey ("User dml not allowed because account is locked"). `*`
+        # keeps password login impossible while allowing pubkey.
+        ["usermod", "-p", "*", "dml"],
         ["rm", "-f", SSH_HOST_KEY, SSH_HOST_PUB, SSH_CONFIG, SSH_PID],
     ]
     for args in steps:
@@ -132,7 +137,11 @@ def setup_workload_sshd(container) -> dict:
         raise RuntimeError("host keygen failed")
     for args in (["chmod", "0600", SSH_HOST_KEY], ["chmod", "0644", SSH_HOST_PUB],
                  ["touch", SSH_AUTH_KEYS], ["chmod", "0600", SSH_AUTH_KEYS],
-                 ["chown", "0:0", SSH_DIR, SSH_HOST_KEY, SSH_HOST_PUB, SSH_AUTH_KEYS]):
+                 ["chown", "0:0", SSH_DIR, SSH_HOST_KEY, SSH_HOST_PUB],
+                 # Keys file is user-owned: this sshd opens it as dml, so
+                 # root-owned 600 fails with "Could not open ... authorized
+                 # keys: Permission denied". 600 dml satisfies StrictModes too.
+                 ["chown", "10001:10001", SSH_AUTH_KEYS]):
         code, _ = _exec(container, args)
         if code != 0:
             raise RuntimeError("ssh perms failed")
@@ -178,12 +187,12 @@ def install_authorized_key(container, public_key: str) -> None:
     import base64 as _b64
     payload = _b64.b64encode((clean + "\n").encode()).decode()
     code, _ = _exec(container, ["sh", "-c",
-        "base64 -d >> %s <<'EOF'\n%s\nEOF\nchmod 0600 %s" % (SSH_AUTH_KEYS, payload, SSH_AUTH_KEYS)])
+        "base64 -d >> %s <<'EOF'\n%s\nEOF\nchmod 0600 %s; chown 10001:10001 %s" % (SSH_AUTH_KEYS, payload, SSH_AUTH_KEYS, SSH_AUTH_KEYS)])
     if code != 0:
         raise RuntimeError("key install failed")
-    # Re-verify no symlink swap / perms.
+    # Re-verify no symlink swap / perms (user-owned: sshd opens it as dml).
     code, out = _exec(container, ["stat", "-c", "%a %U", SSH_AUTH_KEYS])
-    if code != 0 or out.decode().strip() != "600 root":
+    if code != 0 or out.decode().strip() != "600 dml":
         raise RuntimeError("key file unsafe")
 
 

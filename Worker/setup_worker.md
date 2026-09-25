@@ -5,7 +5,13 @@ Run these on the **new worker machine**. You only need this repo checkout and
 
 ## 1. Prerequisites
 
-- Ubuntu with an NVIDIA driver installed (reboot after installing it).
+- **Ubuntu** with the proprietary NVIDIA driver installed (reboot after
+  installing it). The installer refuses non-Ubuntu hosts.
+- Root + systemd (the worker runs as a root systemd unit).
+- Docker storage that supports quotas — XFS with `pquota` is the safe
+  choice. A default ext4 root fails the quota preflight, and the scheduler
+  will never place interactive work on the host (silent, by design).
+- Network egress to the scheduler (`https://`), the registry, and Headscale.
 - A checkout of this repo (needs `Worker/`, `Access_Container/`,
   `deploy/interactive/worker/`).
 

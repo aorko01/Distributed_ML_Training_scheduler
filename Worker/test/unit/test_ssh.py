@@ -107,6 +107,38 @@ def test_setup_workload_sshd_creates_privsep_dir():
     flat = [c[0] for c in calls]
     assert ("mkdir", "-p", "/run/sshd") in flat
     assert ("chmod", "0755", "/run/sshd") in flat
+    # Locked dml account denies pubkey ("not allowed because account is
+    # locked"); `*` keeps password login impossible while allowing pubkey.
+    assert ("usermod", "-p", "*", "dml") in flat
+    # sshd opens the keys file as dml: root-owned 600 fails with
+    # "Could not open ... authorized keys: Permission denied".
+    assert ("chown", "10001:10001", _ssh.SSH_AUTH_KEYS) in flat
+
+
+def _pubkey():
+    import base64 as _b64
+    raw = b"\x00\x00\x00\x0bssh-ed25519" + b"\x00\x00\x00 " + bytes(range(32))
+    return "ssh-ed25519 " + _b64.b64encode(raw).decode()
+
+
+def test_install_authorized_key_user_owned():
+    from interactive import ssh as _ssh
+    calls = []
+    key = _pubkey()
+
+    def fake_exec(_container, args, user="root"):
+        calls.append(tuple(args))
+        if args == ["cat", _ssh.SSH_AUTH_KEYS]:
+            return 0, b""
+        if args[:1] == ["stat"]:
+            return 0, b"600 dml\n"
+        return 0, b""
+
+    with patch.object(_ssh, "_exec", side_effect=fake_exec):
+        _ssh.install_authorized_key(object(), key)
+    joined = [" ".join(c) for c in calls]
+    assert any("chown 10001:10001" in cmd for cmd in joined), \
+        "installed keys file must be handed to dml"
 
 
 class _FragmentedSocket:

@@ -17,6 +17,9 @@ def test_dockerfile_has_ssh_prereqs_and_label():
     # Existing developer profile preserved.
     assert "io.dml.developer-profile" in text
     assert "USER 10001:10001" in text
+    # Locked dml account denies pubkey even with the right key installed;
+    # `*` keeps password login impossible while allowing pubkey.
+    assert "usermod" in text and "'*'" in text
 
 
 def test_ssh_profile_detection():

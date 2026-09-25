@@ -121,6 +121,10 @@ def dockerfile(item, base, upload):
         # dml account with a usable shell and home (not nologin, not /tmp).
         'RUN getent group 10001 >/dev/null || groupadd --gid 10001 dml',
         'RUN id -u 10001 >/dev/null 2>&1 || useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash dml',
+        # Debian/Ubuntu useradd leaves the account password-locked (`!`);
+        # this sshd build denies locked accounts for ALL methods including
+        # pubkey. `*` keeps password login impossible while allowing pubkey.
+        "RUN usermod -p '*' dml",
         'RUN mkdir -p /workspace /home/dml /opt/dml-venv && chown 10001:10001 /workspace /home/dml',
         # Bootstrap OS tooling as root. Noninteractive, no recommends, and the
         # apt index is removed from the layer afterwards.
