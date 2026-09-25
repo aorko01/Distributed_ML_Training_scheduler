@@ -84,6 +84,31 @@ def test_ssh_image_capable_accepts_config_and_labels_shapes():
     assert ssh_image_capable(ops.image_labels("sha256:abc")) is True
 
 
+def test_setup_workload_sshd_creates_privsep_dir():
+    # Fresh workload containers have an empty /run tmpfs: without /run/sshd,
+    # `sshd -T` exits 255 ("Missing privilege separation directory").
+    from interactive import ssh as _ssh
+    calls = []
+
+    def fake_exec(_container, args, user="root"):
+        calls.append((tuple(args), user))
+        if args[:2] == ["sshd", "-T"]:
+            assert ("mkdir", "-p", "/run/sshd") in [tuple(c[0]) for c in calls], \
+                "privsep dir must be created before sshd -T"
+            return 0, b"permitrootlogin no\npasswordauthentication no\nport 2222\nallowusers dml\nx11forwarding no\nforcecommand /usr/local/bin/dml-ssh-session\n"
+        if args == ["cat", _ssh.SSH_HOST_PUB]:
+            return 0, b"ssh-ed25519 AAAA\n"
+        if args[:1] == ["cat"]:
+            return 0, b""
+        return 0, b""
+
+    with patch.object(_ssh, "_exec", side_effect=fake_exec):
+        _ssh.setup_workload_sshd(object())
+    flat = [c[0] for c in calls]
+    assert ("mkdir", "-p", "/run/sshd") in flat
+    assert ("chmod", "0755", "/run/sshd") in flat
+
+
 class _FragmentedSocket:
     def __init__(self, data):
         self.data = bytearray(data)

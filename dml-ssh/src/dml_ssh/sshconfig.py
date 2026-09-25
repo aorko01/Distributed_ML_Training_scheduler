@@ -19,7 +19,11 @@ def ensure_key(path: Path) -> Path:
 
 
 def snippet(alias, info, key_path, pub_path, scheduler):
-    proxy = f"dml-ssh proxy --runtime {info['runtime_id']} --generation {info.get('ssh_generation', info['generation'])} --public-key {shlex.quote(str(pub_path))}"
+    # Absolute proxy path: VS Code / GUI shells run with a minimal PATH
+    # (/usr/bin:/bin) where a conda-managed dml-ssh is not found. Embedding
+    # the resolved path keeps ProxyCommand working without manual symlinks.
+    exe = shutil.which("dml-ssh") or "dml-ssh"
+    proxy = f"{exe} proxy --runtime {info['runtime_id']} --generation {info.get('ssh_generation', info['generation'])} --public-key {shlex.quote(str(pub_path))}"
     return "\n".join([
         f"Host {alias}",
         f"    HostName {alias}",

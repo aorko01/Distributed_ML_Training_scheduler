@@ -111,9 +111,13 @@ def build():
     p = argparse.ArgumentParser(prog="dml-ssh")
     p.add_argument("--scheduler", default=os.getenv("DML_SCHEDULER_URL", ""))
     sub = p.add_subparsers(dest="cmd", required=True)
+    # --scheduler is global (before subcommand), but the UI paste form puts
+    # it after: `dml-ssh configure <id> --scheduler https://...`. Accept both
+    # by repeating the flag on subcommands that need it.
     l = sub.add_parser("login")
     l.add_argument("--username", default="")
     l.add_argument("--password", default="")
+    l.add_argument("--scheduler", default=argparse.SUPPRESS)
     l.set_defaults(func=cmd_login)
     o = sub.add_parser("logout")
     o.set_defaults(func=cmd_logout)
@@ -121,6 +125,7 @@ def build():
     c.add_argument("runtime")
     c.add_argument("--identity", default="")
     c.add_argument("--output", default="")
+    c.add_argument("--scheduler", default=argparse.SUPPRESS)
     c.set_defaults(func=cmd_configure)
     pr = sub.add_parser("proxy")
     pr.add_argument("--runtime", required=True)
@@ -128,6 +133,7 @@ def build():
     pr.add_argument("--public-key", required=True)
     pr.set_defaults(func=cmd_proxy)
     d = sub.add_parser("doctor")
+    d.add_argument("--scheduler", default=argparse.SUPPRESS)
     d.set_defaults(func=cmd_doctor)
     return p
 

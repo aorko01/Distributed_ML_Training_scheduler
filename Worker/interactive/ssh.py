@@ -115,6 +115,11 @@ def setup_workload_sshd(container) -> dict:
     steps = [
         ["mkdir", "-p", SSH_DIR],
         ["chmod", "0755", SSH_DIR],
+        # OpenSSH privilege-separation dir: /run is an empty tmpfs in fresh
+        # workload containers, so sshd -T and the daemon both fail with
+        # "Missing privilege separation directory: /run/sshd" without this.
+        ["mkdir", "-p", "/run/sshd"],
+        ["chmod", "0755", "/run/sshd"],
         ["rm", "-f", SSH_HOST_KEY, SSH_HOST_PUB, SSH_CONFIG, SSH_PID],
     ]
     for args in steps:
