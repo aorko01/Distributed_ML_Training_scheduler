@@ -1,6 +1,6 @@
 """Interactive image records are deliberately independent of batch Job states."""
 import uuid
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, CheckConstraint, JSON
+from sqlalchemy import Column, String, Integer, BigInteger, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, UniqueConstraint, CheckConstraint, JSON
 from sqlalchemy.sql import func
 from app.db.database import Base
 
@@ -30,6 +30,7 @@ class InteractiveWorkspace(Base):
         UniqueConstraint('id', 'owner_user_id'),
         ForeignKeyConstraint(['source_job_id', 'owner_user_id'], ['jobs.id', 'jobs.user_id']),
         ForeignKeyConstraint(['current_revision_id', 'id'], ['interactive_image_revisions.id', 'interactive_image_revisions.workspace_id'], use_alter=True, name='fk_workspace_current_revision'),
+        ForeignKeyConstraint(['saved_revision_id', 'id'], ['interactive_image_revisions.id', 'interactive_image_revisions.workspace_id'], use_alter=True, name='fk_workspace_saved_revision'),
         CheckConstraint("(source_type = 'UPLOAD' AND source_job_id IS NULL) OR (source_type = 'EXISTING_JOB' AND source_job_id IS NOT NULL)"),
     )
 
@@ -57,6 +58,7 @@ class InteractiveImageRevision(Base):
     excluded_until = Column(DateTime(timezone=True))
     attempt_count = Column(Integer, nullable=False, default=0)
     parent_revision_id = Column(String)
+    source_runtime_revision_id = Column(String)
     snapshot_operation_id = Column(String, unique=True)
     source_image_metadata = Column(JSON)
     # Prepared developer image profile (plan.md §4-5). 'v1' when the Builder
@@ -91,6 +93,7 @@ class WorkspaceSaveOperation(Base):
     assignment_id = Column(String)
     attempt_token = Column(String)
     parent_revision_id = Column(String, ForeignKey("interactive_image_revisions.id"), nullable=False)
+    expected_saved_revision_id = Column(String)
     purpose = Column(String, nullable=False)
     request_key = Column(String(128), nullable=False)
     request_hash = Column(String(64), nullable=False)
@@ -98,17 +101,39 @@ class WorkspaceSaveOperation(Base):
     capture_attempt_id = Column(String)
     artifact_id = Column(String)
     artifact_sha256 = Column(String(64))
-    artifact_size = Column(Integer)
+    artifact_size = Column(BigInteger)
+    storage_version = Column(String)
     image_id = Column(String)
     target_revision_id = Column(String, unique=True)
+    head_advanced = Column(Boolean)
+    stop_after_save = Column(Boolean, nullable=False, default=False)
     failure_code = Column(String)
     failure_detail = Column(String(256))
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     __table_args__ = (
         UniqueConstraint("runtime_id", "generation", "request_key"),
+        ForeignKeyConstraint(["expected_saved_revision_id", "workspace_id"], ["interactive_image_revisions.id", "interactive_image_revisions.workspace_id"]),
         CheckConstraint("purpose IN ('SAVE','TRAIN')"),
         CheckConstraint("state IN ('REQUESTED','CAPTURING','UPLOADING','PUBLISH_QUEUED','PUBLISHING','SUCCEEDED','FAILED','CANCELLED')"),
+    )
+
+
+class WorkspaceSnapshotArtifact(Base):
+    __tablename__ = "workspace_snapshot_artifacts"
+    id = Column(String, primary_key=True, default=new_id)
+    operation_id = Column(String, ForeignKey("workspace_save_operations.id"), nullable=False, unique=True)
+    upload_attempt_id = Column(String, nullable=False, unique=True)
+    storage_version = Column(String, nullable=False, unique=True)
+    sha256 = Column(String(64), nullable=False)
+    size = Column(BigInteger, nullable=False)
+    platform = Column(String, nullable=False)
+    image_id = Column(String, nullable=False)
+    state = Column(String, nullable=False, default="ACCEPTED")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    __table_args__ = (
+        CheckConstraint("size > 0"),
+        CheckConstraint("state IN ('STAGED','ACCEPTED','ABANDONED')"),
     )
 
 
@@ -117,9 +142,10 @@ class WorkspaceTrainingSubmission(Base):
     id = Column(String, primary_key=True, default=new_id)
     owner_user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
     workspace_id = Column(String, ForeignKey("interactive_workspaces.id"), nullable=False, index=True)
-    runtime_id = Column(String, ForeignKey("interactive_runtimes.id"), nullable=False, index=True)
-    generation = Column(Integer, nullable=False)
-    save_operation_id = Column(String, ForeignKey("workspace_save_operations.id"), nullable=False, unique=True)
+    runtime_id = Column(String, ForeignKey("interactive_runtimes.id"), nullable=True, index=True)
+    generation = Column(Integer, nullable=True)
+    save_operation_id = Column(String, ForeignKey("workspace_save_operations.id"), nullable=True, unique=True)
+    revision_id = Column(String, ForeignKey("interactive_image_revisions.id"), nullable=True)
     request_key = Column(String(128), nullable=False)
     request_hash = Column(String(64), nullable=False)
     settings = Column(JSON, nullable=False)
@@ -131,5 +157,6 @@ class WorkspaceTrainingSubmission(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     __table_args__ = (
         UniqueConstraint("runtime_id", "generation", "request_key"),
+        UniqueConstraint("owner_user_id", "workspace_id", "revision_id", "request_key"),
         CheckConstraint("state IN ('SAVING','WAITING_FOR_REVISION','STOPPING_RUNTIME','WAITING_FOR_RELEASE','PREPARING_JOB','JOB_CREATED','FAILED')"),
     )

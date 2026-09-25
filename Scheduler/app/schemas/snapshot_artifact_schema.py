@@ -13,6 +13,15 @@ class SnapshotFence(Strict):
     generation: int = Field(gt=0)
 
 
-class SnapshotComplete(SnapshotFence):
+class SnapshotUpload(SnapshotFence):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     size: int = Field(gt=0, le=8 * 1024 * 1024 * 1024)
+    image_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class SnapshotComplete(SnapshotUpload):
+    storage_version: str = Field(min_length=1, max_length=256)
+
+
+class SnapshotFailed(SnapshotFence):
+    code: str = Field(pattern=r"^[A-Z_]{3,64}$")

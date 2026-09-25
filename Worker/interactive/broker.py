@@ -257,6 +257,8 @@ class Broker:
         self.ssh_capable = False
         self.ssh_generation = None
         self.ssh_host_key = None
+        self.capture_gate = False
+        self.capture_lock = asyncio.Lock()
 
     def healthy(self):
         if self.stopping or not self.authority():
@@ -310,7 +312,7 @@ class Broker:
             if value["generation"] != self.ssh_generation:
                 await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
                 return
-            if not self.ssh_capable or not self.ssh_host_key:
+            if self.capture_gate or not self.ssh_capable or not self.ssh_host_key:
                 await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
                 return
             try:
@@ -516,7 +518,10 @@ class Broker:
                     break
                 kind, payload = incoming.result()
                 if kind == Type.STDIN:
-                    await asyncio.to_thread(session.write, payload)
+                    if not self.capture_gate:
+                        async with self.capture_lock:
+                            if not self.capture_gate:
+                                await asyncio.to_thread(session.write, payload)
                 elif kind == Type.RESIZE:
                     await asyncio.to_thread(session.resize, dimensions(payload))
                 elif kind == Type.CLOSE and not payload:

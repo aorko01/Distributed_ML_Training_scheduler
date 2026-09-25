@@ -13,7 +13,7 @@ from app.models.interactive_runtime_model import (
     InteractiveRuntime as Runtime,
     WorkerAssignment as Assignment,
 )
-from app.models.interactive_workspace_model import new_id
+from app.models.interactive_workspace_model import new_id, WorkspaceSaveOperation as Save, InteractiveWorkspace as Workspace
 from .types import Snapshot, Kind, now, utc
 from .config import Settings
 from .policy import (
@@ -440,6 +440,38 @@ def heartbeat(db, worker_id, body, settings=None):
             db.get(Runtime, assignment.runtime_id) if assignment.runtime_id else None
         )
         if runtime:
+            active_save = None
+            if assignment.runtime_id:
+                active_save = db.query(Save).filter(
+                    Save.assignment_id == assignment.id,
+                    Save.generation == assignment.generation,
+                    Save.state.in_(("REQUESTED", "CAPTURING", "UPLOADING", "PUBLISH_QUEUED", "PUBLISHING")),
+                ).order_by(Save.created_at).with_for_update().first()
+            if (settings.workspace_save and runtime.editor_capable
+                    and runtime.state == "READY" and runtime.desired_state == "RUNNING"
+                    and runtime.lifetime_deadline and active_save is None
+                    and timestamp < utc(runtime.lifetime_deadline)
+                    and utc(runtime.lifetime_deadline) - timestamp <= timedelta(seconds=180)):
+                auto_key = "auto-save-" + runtime.id + "-" + str(runtime.generation)
+                previous_auto = db.query(Save).filter_by(
+                    runtime_id=runtime.id, generation=runtime.generation, request_key=auto_key,
+                ).first()
+                if previous_auto is None:
+                    workspace = db.query(Workspace).filter_by(id=runtime.workspace_id).with_for_update().one()
+                    active_save = Save(
+                        id=new_id(), owner_user_id=runtime.owner_user_id,
+                        workspace_id=runtime.workspace_id, runtime_id=runtime.id,
+                        generation=runtime.generation, assignment_id=assignment.id,
+                        attempt_token=assignment.attempt_token,
+                        parent_revision_id=runtime.revision_id,
+                        expected_saved_revision_id=workspace.saved_revision_id,
+                        purpose="SAVE", request_key=auto_key,
+                        request_hash=digest({"purpose": "SAVE", "generation": runtime.generation,
+                                             "parent_revision_id": runtime.revision_id}),
+                        state="REQUESTED", stop_after_save=True,
+                    )
+                    db.add(active_save)
+                    db.flush()
             if (
                 runtime.startup_deadline
                 and runtime.state != "READY"
@@ -449,9 +481,10 @@ def heartbeat(db, worker_id, body, settings=None):
             if (
                 runtime.lifetime_deadline
                 and utc(runtime.lifetime_deadline) <= timestamp
+                and active_save is None
             ):
                 stop_runtime(runtime, "TIME_UP")
-            valid = valid and runtime.desired_state == "RUNNING"
+            valid = valid and (runtime.desired_state == "RUNNING" or active_save is not None)
             if valid:
                 runtime.health, runtime.health_at = (
                     report.health.model_dump(),
@@ -480,13 +513,23 @@ def heartbeat(db, worker_id, body, settings=None):
             assignment.lease_until = timestamp + timedelta(
                 seconds=settings.lease_seconds
             )
-            decisions.append(
-                {
-                    "assignment_id": assignment.id,
-                    "action": "renew",
-                    "lease_seconds": settings.lease_seconds,
-                }
-            )
+            decision = {"assignment_id": assignment.id, "action": "renew",
+                        "lease_seconds": settings.lease_seconds}
+            if (settings.workspace_save and runtime and runtime.state == "READY"
+                    and active_save is not None and active_save.runtime_id == runtime.id
+                    and active_save.attempt_token == assignment.attempt_token):
+                decision["save_active"] = True
+                if active_save.state == "REQUESTED":
+                    active_save.state = "CAPTURING"
+                if active_save.state in ("CAPTURING", "UPLOADING"):
+                    decision["capture_save"] = {
+                        "operation_id": active_save.id, "workspace_id": active_save.workspace_id,
+                        "runtime_id": runtime.id, "generation": runtime.generation,
+                        "assignment_id": assignment.id, "attempt_token": assignment.attempt_token,
+                        "parent_revision_id": active_save.parent_revision_id,
+                        "purpose": active_save.purpose,
+                    }
+            decisions.append(decision)
         else:
             if assignment.state != "CLEANING":
                 assignment.state = "LOST"

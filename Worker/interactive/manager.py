@@ -135,6 +135,11 @@ class Manager:
         self.broker = None
         self.endpoint = None
         self.failed = False
+        self.loop = None
+        self.capture_thread = None
+        self.capture_mutex = threading.Lock()
+        self.save_active = False
+        self.capture_lock_held = False
 
     def stop(self):
         self.cancel.set()
@@ -156,7 +161,133 @@ class Manager:
     def run(self, record):
         asyncio.run(self.execute(record))
 
+    async def _begin_capture(self):
+        self.broker.capture_gate = True
+        try:
+            await self.broker.capture_lock.acquire()
+            self.capture_lock_held = True
+        except BaseException:
+            self.broker.capture_gate = False
+            raise
+
+    async def _end_capture(self):
+        if self.broker:
+            if self.capture_lock_held:
+                self.broker.capture_lock.release()
+                self.capture_lock_held = False
+            self.broker.capture_gate = False
+
+    def request_save(self, command, record):
+        """Heartbeat dispatch is nonblocking; duplicate commands share a journal."""
+        if not self.broker or not self.loop or self.cancel.is_set():
+            return
+        if (command.get("assignment_id") != record["assignment_id"]
+                or command.get("attempt_token") != record["attempt_token"]
+                or command.get("generation") != record["generation"]
+                or command.get("runtime_id") != record["payload"]["runtime_id"]
+                or command.get("workspace_id") != record["payload"]["workspace_id"]):
+            return
+        with self.capture_mutex:
+            if self.capture_thread and self.capture_thread.is_alive():
+                return
+            self.capture_thread = threading.Thread(
+                target=self._save_operation, args=(command, record),
+                name="workspace-save-" + command["operation_id"], daemon=True,
+            )
+            self.capture_thread.start()
+
+    def _save_operation(self, command, record):
+        from . import snapshot
+        import requests
+
+        operation_id = command["operation_id"]
+        assignment_id = record["assignment_id"]
+        gate_open = False
+
+        def release_gate():
+            nonlocal gate_open
+            if gate_open:
+                try:
+                    asyncio.run_coroutine_threadsafe(self._end_capture(), self.loop).result(timeout=20)
+                finally:
+                    gate_open = False
+
+        try:
+            if not self.authority(assignment_id):
+                return
+            saved = snapshot.load_snapshot(self.coordinator.path, operation_id)
+            artifact = saved.get("artifact") if saved else None
+            artifact_path = saved.get("artifact_path") if saved else None
+            image_id = saved.get("image_id") if saved else None
+            if not (artifact and artifact_path and image_id and Path(artifact_path).is_file()):
+                gate_future = asyncio.run_coroutine_threadsafe(self._begin_capture(), self.loop)
+                try:
+                    gate_future.result(timeout=30)
+                    gate_open = True
+                except Exception:
+                    gate_future.cancel()
+                    asyncio.run_coroutine_threadsafe(self._end_capture(), self.loop).result(timeout=20)
+                    raise
+                latest = self.coordinator.get(assignment_id)
+                captured = snapshot.capture(
+                    self.ops, self.coordinator, command["workspace_id"], operation_id,
+                    latest, time.monotonic, state_dir=self.coordinator.path,
+                    on_committed=release_gate, authority=lambda: self.authority(assignment_id),
+                )
+                artifact, artifact_path, image_id = (
+                    captured["artifact"], captured["artifact_path"], captured["image_id"]
+                )
+            release_gate()
+            if not self.authority(assignment_id):
+                return
+            receipt_body = {**artifact, "image_id": image_id}
+            capability = self.api.snapshot_capability(operation_id, record, receipt_body)
+            upload_deadline = time.monotonic() + 3600
+
+            def file_chunks():
+                with open(artifact_path, "rb") as stream:
+                    while True:
+                        if time.monotonic() > upload_deadline:
+                            raise snapshot.CaptureDenied("CAPTURE_TIMEOUT", "upload deadline exceeded")
+                        if not self.authority(assignment_id):
+                            raise snapshot.CaptureDenied("LEASE_LOST")
+                        chunk = stream.read(1 << 20)
+                        if not chunk:
+                            break
+                        yield chunk
+
+            response = requests.put(
+                capability["upload_url"], data=file_chunks(),
+                headers={"Authorization": "Snapshot " + capability["upload_token"],
+                         "Content-Type": "application/gzip"}, timeout=(10, 3600),
+            )
+            response.raise_for_status()
+            storage_version = response.json()["storage_version"]
+            if not self.authority(assignment_id):
+                return
+            self.api.snapshot_complete(operation_id, record, receipt_body, storage_version)
+            snapshot.journal_snapshot(self.coordinator.path, operation_id,
+                                      {"state": "accepted", "storage_version": storage_version})
+            with suppress(Exception):
+                self.ops.client.images.remove(snapshot.staging_tag(operation_id), force=False)
+            with suppress(OSError):
+                Path(artifact_path).unlink()
+        except snapshot.CaptureDenied as exc:
+            release_gate()
+            with suppress(Exception):
+                self.api.snapshot_failed(operation_id, record, exc.code)
+            logger.warning("Workspace save rejected operation_id=%s code=%s", operation_id, exc.code)
+        except Exception as exc:
+            release_gate()
+            # An interrupted upload or Scheduler outage retains the local
+            # artifact. A repeated fenced decision resumes this operation.
+            logger.warning("Workspace save retry operation_id=%s stage=%s",
+                           operation_id, type(exc).__name__)
+        finally:
+            release_gate()
+
     async def execute(self, record):
+        self.loop = asyncio.get_running_loop()
         assignment_id = record["assignment_id"]
         root = Path("/run/dml-interactive") / assignment_id
         endpoint_dir = Path("/run/dml-interactive-endpoints") / assignment_id
@@ -351,7 +482,7 @@ class Manager:
             session_start = time.monotonic()
             while authority():
                 limit = max_duration_seconds(ssh_active=bool(self.ssh_report.get("ready")))
-                if limit and time.monotonic() - session_start >= limit:
+                if limit and time.monotonic() - session_start >= limit and not self.save_active:
                     logger.warning(
                         "Interactive runtime time up assignment_id=%s limit=%ds",
                         assignment_id,

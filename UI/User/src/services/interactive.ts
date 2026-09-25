@@ -25,6 +25,9 @@ export interface Workspace {
   source_job_id: string | null;
   default_resource_requirements?: ResourceRequirements | null;
   revision: Revision;
+  saved_revision_id?: string | null;
+  saved_revision?: Pick<Revision, 'id' | 'revision_number' | 'state' | 'image_digest_ref' | 'developer_profile' | 'ssh_profile'> | null;
+  training_submission_enabled?: boolean;
 }
 export interface AssignedMachine {
   display_name: string;
@@ -50,10 +53,19 @@ export interface Runtime {
 export interface WorkspaceSave {
   id: string; workspace_id: string; runtime_id: string; generation: number; state: string;
   target_revision_id: string | null; failure_code: string | null; failure_detail: string | null;
+  image_digest_ref?: string | null; head_advanced?: boolean | null; stop_after_save?: boolean;
 }
 export interface TrainingSubmission {
-  id: string; workspace_id: string; runtime_id: string; state: string; job_id: string | null;
+  id: string; workspace_id: string; runtime_id: string | null; revision_id?: string | null; state: string; job_id: string | null;
   failure_code: string | null; failure_detail: string | null;
+}
+export interface TrainingSettings {
+  name: string; command: string; resume_command?: string | null;
+  priority?: 'NORMAL' | 'REQUESTED' | 'HIGH'; reason_for_priority?: string | null;
+}
+export interface RevisionHistory {
+  saved_revision_id: string | null;
+  items: Array<{ id: string; revision_number: number; origin: string; state: Revision['state']; image_digest_ref: string | null; is_saved_head: boolean }>;
 }
 export interface ConnectionGrant {
   wss_url: string; ticket: string; expires_at: string; runtime_id: string; generation: number;
@@ -173,8 +185,9 @@ export const interactiveCapacity = {
 
 export const interactive = {
   runtime: (id: string) => request<Runtime | null>(`/${encodeURIComponent(id)}/runtime`),
-  start: (id: string, key: string, requirements?: ResourceRequirements) => request<Runtime>(`/${encodeURIComponent(id)}/runtimes`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(requirements ? { requirements } : {}) }),
+  start: (id: string, key: string, requirements?: ResourceRequirements, revisionId?: string) => request<Runtime>(`/${encodeURIComponent(id)}/runtimes`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify({ ...(requirements ? { requirements } : {}), ...(revisionId ? { revision_id: revisionId } : {}) }) }),
   stop: (id: string) => request<Runtime>(`/runtimes/${encodeURIComponent(id)}/stop`, { method: 'POST' }, '/interactive'),
   mine: () => request<Runtime[]>('/runtimes/mine', {}, '/interactive'),
   connection: (id: string, signal?: AbortSignal) => request<ConnectionGrant>(`/runtimes/${encodeURIComponent(id)}/connection`, { method: 'POST', signal }, '/interactive'),
@@ -191,10 +204,22 @@ export const interactive = {
       body: JSON.stringify({ generation, parent_revision_id: parentRevisionId }),
     }, '/interactive'),
   saveStatus: (saveId: string) => request<WorkspaceSave>(`/saves/${encodeURIComponent(saveId)}`, {}, '/interactive'),
-  submitTraining: (runtimeId: string, key: string, generation: number, parentRevisionId: string, settings: { name: string; command: string; resume_command?: string | null; priority?: string }) =>
+  saveAndStop: (runtimeId: string, key: string, generation: number, parentRevisionId: string) =>
+    request<WorkspaceSave>(`/runtimes/${encodeURIComponent(runtimeId)}/save-and-stop`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify({ generation, parent_revision_id: parentRevisionId }),
+    }, '/interactive'),
+  submitTraining: (runtimeId: string, key: string, generation: number, parentRevisionId: string, settings: TrainingSettings) =>
     request<TrainingSubmission>(`/runtimes/${encodeURIComponent(runtimeId)}/training-submissions`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
       body: JSON.stringify({ generation, parent_revision_id: parentRevisionId, settings }),
+    }, '/interactive'),
+  trainingStatus: (submissionId: string) => request<TrainingSubmission>(`/training-submissions/${encodeURIComponent(submissionId)}`, {}, '/interactive'),
+  revisions: (workspaceId: string) => request<RevisionHistory>(`/workspaces/${encodeURIComponent(workspaceId)}/revisions`, {}, '/interactive'),
+  trainRevision: (workspaceId: string, revisionId: string, key: string, settings: TrainingSettings) =>
+    request<TrainingSubmission>(`/workspaces/${encodeURIComponent(workspaceId)}/revisions/${encodeURIComponent(revisionId)}/training-submissions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify(settings),
     }, '/interactive'),
   create: (input: Creation, key: string) => {
     const { path, init } = creationRequest(input, key);

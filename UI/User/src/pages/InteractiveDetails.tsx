@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { interactive, interactiveCapacity, type Workspace, type Runtime, type CapacityOptions, type ResourceRequirements } from '../services/interactive';
+import { interactive, interactiveCapacity, type Workspace, type Runtime, type CapacityOptions, type ResourceRequirements, type RevisionHistory, type TrainingSettings } from '../services/interactive';
+import { TrainingSettingsForm } from '../features/workspace/components/TrainingSettingsForm';
 import { schedulerOrigin } from '../services/api';
 import { ResourceRequirementsForm } from '../features/interactive-capacity/ResourceRequirementsForm';
 import { CapacitySummary } from '../features/interactive-capacity/CapacitySummary';
@@ -29,6 +30,12 @@ export default function InteractiveDetails() {
   const routeId = useRef(id); routeId.current = id;
   const startKey = useRef<string | null>(null);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [history, setHistory] = useState<RevisionHistory | null>(null);
+  const [selectedRevision, setSelectedRevision] = useState<string | null>(null);
+  const [trainRevision, setTrainRevision] = useState<string | null>(null);
+  const [trainSettings, setTrainSettings] = useState<TrainingSettings>({ name: 'Workspace training', command: 'python train.py', priority: 'NORMAL' });
+  const [trainingJobId, setTrainingJobId] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<string | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
@@ -52,7 +59,7 @@ export default function InteractiveDetails() {
     }
     async function load() {
       try {
-        const [item, logs, running] = await Promise.all([interactive.detail(id!), interactive.logs(id!), interactive.runtime(id!)]);
+        const [item, logs, running, revisions] = await Promise.all([interactive.detail(id!), interactive.logs(id!), interactive.runtime(id!), interactive.revisions(id!)]);
         if (!active) return;
         const latest = runtimeLatest.current;
         if (latest && running && latest.generation > running.generation) { timer = setTimeout(load, 2000); return; }
@@ -61,6 +68,7 @@ export default function InteractiveDetails() {
         if (identity !== currentRuntime.current) { connection.current?.abort(); setConnectionState(''); currentRuntime.current = identity; }
         setRuntime(previous => previous && running && previous.generation > running.generation ? previous : running);
         setWorkspace(item); setLines(logs.lines); setError('');
+        setHistory(revisions);
         setRequirements((prev) => {
           if (prev) return prev;
           const fromRuntime = running?.requirements ?? null;
@@ -68,7 +76,7 @@ export default function InteractiveDetails() {
           const fallback = capOptions?.defaults ?? { gpu_model: null, minimum_vram_gb: 4, cpu_cores: 2, memory_gb: 8, disk_gb: 20 };
           return normalizeRequirements((fromRuntime ?? fromWorkspace ?? fallback) as ResourceRequirements, capOptions?.defaults ?? null);
         });
-        if (['QUEUED', 'BUILDING'].includes(item.revision.state) || (running && !['STOPPED','FAILED'].includes(running.state))) timer = setTimeout(load, 2000);
+        if (['QUEUED', 'BUILDING'].includes(item.revision.state) || (running && !['STOPPED','FAILED'].includes(running.state)) || saveState) timer = setTimeout(load, 2000);
       } catch (err) { if (active) {
         connection.current?.abort(); currentRuntime.current = ''; setConnectionState(''); setRuntime(null);
         setWorkspace(null); setLines([]); setError(err instanceof Error ? err.message : 'Could not load workspace');
@@ -85,22 +93,97 @@ export default function InteractiveDetails() {
     finally { setCancelling(false); }
   }
   useEffect(() => { startKey.current = null; }, [id]);
+  async function pollDetailSave(operationId: string) {
+    if (routeId.current !== id) return;
+    try {
+      const status = await interactive.saveStatus(operationId);
+      if (routeId.current !== id) return;
+      setSaveState(status.state);
+      if (['REQUESTED', 'CAPTURING', 'UPLOADING', 'PUBLISH_QUEUED', 'PUBLISHING'].includes(status.state)) {
+        window.setTimeout(() => void pollDetailSave(operationId), 3000);
+      } else {
+        sessionStorage.removeItem(`dml-detail-save:${id}`);
+        sessionStorage.removeItem(`dml-detail-save-key:${status.runtime_id}:${status.generation}`);
+        setBusy(false);
+        setReload(v => v + 1);
+        if (status.state === 'FAILED') setError(status.failure_code ?? 'Save failed; runtime remains available');
+      }
+    } catch { window.setTimeout(() => void pollDetailSave(operationId), 5000); }
+  }
+  async function pollDetailTraining(submissionId: string) {
+    if (routeId.current !== id) return;
+    try {
+      const current = await interactive.trainingStatus(submissionId);
+      if (routeId.current !== id) return;
+      if (current.state === 'JOB_CREATED' || current.state === 'FAILED') {
+        sessionStorage.removeItem(`dml-detail-training:${id}`);
+        if (current.revision_id) sessionStorage.removeItem(`dml-detail-training-key:${id}:${current.revision_id}`);
+        setBusy(false);
+        if (current.state === 'JOB_CREATED') { setTrainingJobId(current.job_id); setTrainRevision(null); }
+        else setError(current.failure_code ?? 'Training submission failed');
+      } else window.setTimeout(() => void pollDetailTraining(submissionId), 3000);
+    } catch { window.setTimeout(() => void pollDetailTraining(submissionId), 5000); }
+  }
+  useEffect(() => {
+    if (!id) return;
+    const saveId = sessionStorage.getItem(`dml-detail-save:${id}`);
+    const trainingId = sessionStorage.getItem(`dml-detail-training:${id}`);
+    if (saveId) { setBusy(true); void pollDetailSave(saveId); }
+    if (trainingId) { setBusy(true); void pollDetailTraining(trainingId); }
+  }, [id]);
   async function startRuntime() {
     if (busy || !requirements) return;
     const requestedId = id;
     setBusy(true); setError('');
     startKey.current ??= crypto.randomUUID();
-    try { const value = await interactive.start(id!, startKey.current, requirements); if (routeId.current !== requestedId) return; runtimeLatest.current = value; setRuntime(value); startKey.current = null; setReload(v => v + 1); }
+    try { const value = await interactive.start(id!, startKey.current, requirements, selectedRevision ?? undefined); if (routeId.current !== requestedId) return; runtimeLatest.current = value; setRuntime(value); startKey.current = null; setReload(v => v + 1); }
     catch (err) { setError(err instanceof Error ? err.message : 'Start failed'); }
     finally { setBusy(false); }
   }
   async function stopRuntime() {
     if (!runtime || busy) return;
     const stoppingId = id;
-    setBusy(true); connection.current?.abort(); setConnectionState('');
-    try { const stopped = await interactive.stop(runtime.id); if (routeId.current !== stoppingId) return; runtimeLatest.current = stopped; setRuntime(stopped); setReload(v => v + 1); }
+    setBusy(true); setError('');
+    try {
+      if (runtime.save_enabled && runtime.state === 'READY') {
+        const keyName = `dml-detail-save-key:${runtime.id}:${runtime.generation}`;
+        const key = sessionStorage.getItem(keyName) ?? crypto.randomUUID().replace(/-/g, '');
+        sessionStorage.setItem(keyName, key);
+        const save = await interactive.saveAndStop(runtime.id, key, runtime.generation, runtime.revision_id);
+        setSaveState(save.state);
+        sessionStorage.setItem(`dml-detail-save:${id}`, save.id);
+        void pollDetailSave(save.id);
+      } else {
+        const stopped = await interactive.stop(runtime.id);
+        if (routeId.current !== stoppingId) return;
+        connection.current?.abort(); setConnectionState('');
+        runtimeLatest.current = stopped; setRuntime(stopped); setReload(v => v + 1);
+      }
+    }
     catch (err) { setError(err instanceof Error ? err.message : 'Stop failed'); }
+    finally { if (!runtime.save_enabled || runtime.state !== 'READY') setBusy(false); }
+  }
+  async function discardRuntime() {
+    if (!runtime || busy || !window.confirm('Discard changes made since the last saved revision and stop this runtime?')) return;
+    setBusy(true); setError('');
+    try {
+      const stopped = await interactive.stop(runtime.id);
+      connection.current?.abort(); setConnectionState('');
+      runtimeLatest.current = stopped; setRuntime(stopped); setReload(v => v + 1);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Stop failed'); }
     finally { setBusy(false); }
+  }
+  async function submitSavedRevision() {
+    if (!id || !trainRevision) return;
+    setBusy(true); setError('');
+    try {
+      const keyName = `dml-detail-training-key:${id}:${trainRevision}`;
+      const key = sessionStorage.getItem(keyName) ?? crypto.randomUUID().replace(/-/g, '');
+      sessionStorage.setItem(keyName, key);
+      const sub = await interactive.trainRevision(id, trainRevision, key, trainSettings);
+      sessionStorage.setItem(`dml-detail-training:${id}`, sub.id);
+      void pollDetailTraining(sub.id);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Training submission failed'); setBusy(false); }
   }
   async function connect() {
     if (!runtime || connectionBusy.current) return;
@@ -117,7 +200,7 @@ export default function InteractiveDetails() {
       if (!controller.signal.aborted && identity === currentRuntime.current) setConnectionState(err instanceof Error ? err.message : 'Connection failed');
     } finally { connectionBusy.current = false; }
   }
-  const imageReady = workspace?.revision.state === 'IMAGE_READY';
+  const imageReady = workspace?.saved_revision?.state === 'IMAGE_READY' || workspace?.revision.state === 'IMAGE_READY';
   const canRequest = imageReady && (!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && valid && !!requirements;
   const noCapable = preview && preview.matching_online === 0;
   const allBusy = preview && preview.matching_online > 0 && preview.available_now === 0;
@@ -137,13 +220,16 @@ export default function InteractiveDetails() {
       {workspace.revision.ssh_hint && <p role="status">VS Code Remote-SSH: {workspace.revision.ssh_hint}.</p>}
       <pre aria-label="Build logs" style={{ whiteSpace: 'pre-wrap' }}>{lines.join('\n') || 'No build logs yet.'}</pre>
       {['QUEUED', 'BUILDING'].includes(workspace.revision.state) && <button className="btn btn-secondary" disabled={cancelling} onClick={cancel}>Cancel build</button>}
-      <p>This runtime is temporary. Stop discards unsaved runtime changes; the saved source image remains available.</p>
+      <p>Editor Save and VS Code file Save update the live runtime. Save for Later publishes a durable revision. Save VS Code buffers and finish terminal commands before requesting a revision. After starting Save and Stop, avoid further edits; its snapshot captures one instant before the runtime ends.</p>
+      {workspace.saved_revision && <p>Last durable revision: {workspace.saved_revision.revision_number} · <code>{workspace.saved_revision.image_digest_ref}</code></p>}
+      {saveState && <p role="status">Save and Stop: {saveState}</p>}
       {runtime && <><p role="status">Runtime: {runtimeLabel(runtime.state)}</p>
         {runtime.failure_detail && <p role="alert">{runtime.failure_detail}</p>}
         {runtime.assigned_machine && <p>Assigned machine: {runtime.assigned_machine.display_name} · {runtime.assigned_machine.gpu_model ?? 'GPU'} · {runtime.assigned_machine.total_vram_gb?.toFixed(0) ?? '?'} GB VRAM</p>}
         {runtime.lifetime_deadline && <p>Runtime deadline: {runtime.lifetime_deadline}</p>}</>}
       {imageReady && (!runtime || ['STOPPED','FAILED'].includes(runtime.state)) && <>
         <h2>Request interactive access</h2>
+        {history && <label>Revision to open<select value={selectedRevision ?? workspace.saved_revision_id ?? workspace.revision.id} onChange={(e) => setSelectedRevision(e.target.value)}>{history.items.filter((revision) => revision.state === 'IMAGE_READY').map((revision) => <option key={revision.id} value={revision.id}>Revision {revision.revision_number}{revision.is_saved_head ? ' (saved head)' : ''}</option>)}</select></label>}
         {!imageReady && <p role="status">Workspace image is still building.</p>}
         {requirements && <ResourceRequirementsForm value={requirements} options={capOptions} onChange={setRequirements} />}
         {!valid && <p role="alert" className="error-text">Requirements are outside operator bounds.</p>}
@@ -162,7 +248,7 @@ export default function InteractiveDetails() {
       </>}
       {runtime && (runtime as unknown as { ssh_ready?: boolean; ssh_status?: string; ssh_generation?: number }).ssh_ready && runtime.state === 'READY' && <>
         <h2>Connect with VS Code</h2>
-        <p>Native Remote-SSH into the workload container (<code>dml</code>, <code>/workspace</code>). Live only: Stop ends SSH immediately. Copy-paste on your machine:</p>
+        <p>Native Remote-SSH into the workload container (<code>dml</code>, <code>/workspace</code>). Save and Stop publishes a revision before ending SSH. Copy-paste on your machine:</p>
         <pre>{`dml-ssh configure ${runtime.id} --scheduler ${schedulerOrigin()}\n# VS Code: Remote-SSH: Connect to Host -> dml-${runtime.id}-g${(runtime as unknown as { ssh_generation?: number }).ssh_generation ?? runtime.generation}\n# Open folder /workspace`}</pre>
       </>}
       {runtime && !(runtime as unknown as { ssh_ready?: boolean }).ssh_ready && runtime.state === 'READY' && (runtime as unknown as { ssh_capable?: boolean }).ssh_capable !== true && <p role="status">SSH unavailable for this runtime (rebuild from an SSH-capable revision).</p>}
@@ -174,11 +260,14 @@ export default function InteractiveDetails() {
         {runtime && !['STOPPED', 'FAILED', 'READY'].includes(runtime.state) && <p role="status">Your runtime is still starting — the connect command appears here once it is READY and SSH-capable.</p>}
         {runtime?.state === 'READY' && <p role="status">This runtime is not SSH-capable: rebuild the image from an SSH-capable revision, then start a new runtime.</p>}
       </>}
-      {runtime && !['STOPPED','FAILED'].includes(runtime.state) && <button className="btn btn-secondary" disabled={busy || runtime.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop</button>}{' '}
+      {runtime && !['STOPPED','FAILED'].includes(runtime.state) && <button className="btn btn-secondary" disabled={busy || runtime.desired_state === 'STOPPED'} onClick={stopRuntime}>{runtime.save_enabled ? 'Save and Stop' : 'Stop'}</button>}{' '}
+      {runtime?.save_enabled && !['STOPPED','FAILED'].includes(runtime.state) && <button className="btn btn-secondary" disabled={busy || runtime.desired_state === 'STOPPED'} onClick={() => void discardRuntime()}>Discard changes and stop</button>}{' '}
       <button className="btn btn-secondary" disabled={busy || runtime?.state !== 'READY' || runtime.desired_state !== 'RUNNING' || connectionState === 'Checking connection…'} onClick={connect}>Connect</button>{' '}
       {runtime?.state === 'READY' && <Link className="btn" to={`/interactive/${id}/editor`}>Open Editor</Link>}{' '}
       {runtime && !runtime.editor_capable && <span title="Start a new editor-capable runtime after the workspace editor rollout is enabled">Editor unavailable for this runtime</span>}{' '}
-      <button className="btn btn-secondary" disabled title="Saving is not available in this phase">Save as new revision</button>
+      {history && <section><h2>Saved revision history</h2><ul>{history.items.map((revision) => <li key={revision.id}>Revision {revision.revision_number}: {revision.state}{revision.is_saved_head ? ' · current saved head' : ''} {revision.state === 'IMAGE_READY' && (!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && <button className="btn btn-secondary" disabled={busy || !workspace.training_submission_enabled} onClick={() => { setTrainRevision(revision.id); setTrainSettings({ name: `${workspace.name} training`, command: 'python train.py', priority: 'NORMAL' }); }}>Train this revision</button>}</li>)}</ul></section>}
+      {trainRevision && <section><h3>Train saved revision</h3><TrainingSettingsForm value={trainSettings} onChange={setTrainSettings} /><button className="btn" disabled={busy} onClick={() => void submitSavedRevision()}>Create training Job</button><button className="btn btn-secondary" onClick={() => setTrainRevision(null)}>Cancel</button></section>}
+      {trainingJobId && <p role="status">Training Job created: <Link to={`/jobs/${trainingJobId}`}>Open Job</Link></p>}
       {connectionState && <p role="status">{connectionState}</p>}
     </>}
   </div>;

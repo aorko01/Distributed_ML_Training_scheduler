@@ -18,6 +18,7 @@ def record():
         "payload": {
             "runtime_id": "rt1",
             "workspace_id": "ws1",
+            "revision_id": "rev1",
             "generation": 1,
             "launch_spec": {"platform": "linux/amd64", "disk_gb": 20, "allow_root": False},
         },
@@ -25,7 +26,9 @@ def record():
 
 
 def labelled(workload, assignment_id="a1"):
-    workload.labels = {"dml.component": "workload", "dml.assignment": assignment_id}
+    workload.labels = {"dml.component": "workload", "dml.assignment": assignment_id,
+                       "dml.runtime": "rt1", "dml.workspace": "ws1",
+                       "dml.revision": "rev1", "dml.generation": "1"}
     return workload
 
 
@@ -46,6 +49,18 @@ def test_workload_internet_gate_reads_env(monkeypatch):
     assert snapshot.workload_internet_enabled() is False
 
 
+def test_ssh_state_must_be_on_docker_tmpfs_host_config():
+    config = {"User": "10001:10001", "WorkingDir": "/workspace"}
+    # Docker inspect reports tmpfs in HostConfig.Tmpfs, not Mounts.
+    assert snapshot._check_config(
+        config, mounts=[], ssh_required=True,
+        host_config={"Tmpfs": {"/run/dml-vscode-ssh": "rw,nosuid,noexec,size=1m"}},
+    ) == config
+    with pytest.raises(CaptureDenied) as exc:
+        snapshot._check_config(config, mounts=[], ssh_required=True, host_config={})
+    assert exc.value.code == "SSH_STATE_UNSAFE"
+
+
 def test_capture_rejects_missing_authority():
     coordinator = MagicMock()
     coordinator.authoritative.return_value = False
@@ -53,7 +68,7 @@ def test_capture_rejects_missing_authority():
         capture(MagicMock(), coordinator, "ws1", "op1", record(), frozen_time)
 
 
-def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
+def test_capture_happy_path_commits_then_exports_without_holding_pause(monkeypatch, tmp_path):
     coordinator = MagicMock()
     coordinator.authoritative.return_value = True
     coordinator.get.return_value = record()
@@ -62,34 +77,26 @@ def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
     workload.attrs = {"Config": {"User": "10001:10001", "WorkingDir": "/workspace"}}
     image = MagicMock()
     image.id = "sha256:image"
-    workload.commit.return_value = image
     ops = MagicMock()
+    ops.commit_image.return_value = image
     ops.authority.return_value = True
     ops.get_workload.return_value = workload
     ops.client = MagicMock()
     progress = MagicMock()
-    completed = []
+    committed = []
 
-    def fake_upload(client, assignment_id, image_id, destination, deadline):
+    def fake_upload(client, assignment_id, image_id, destination, deadline, authority):
+        assert committed == ["commit finished"]
         return {"sha256": "f" * 64, "size": 10}
 
-    def fake_complete(client, operation_id, workspace_id, artifact):
-        completed.append((operation_id, workspace_id, artifact))
-        return True
-
     monkeypatch.setattr(snapshot, "_upload", fake_upload)
-    monkeypatch.setattr(snapshot, "complete", fake_complete)
-    monkeypatch.setattr(snapshot, "CAPTURE_PAUSED_SECONDS", 30)
     result = capture(
         ops, coordinator, "ws1", "op1", record(), frozen_time,
         progress=progress, upload_chunk=1 << 20, state_dir=tmp_path,
+        on_committed=lambda: committed.append("commit finished"),
     )
-    # Exact-label pause: pause called on the labelled workload, never on the daemon.
     ops.get_workload.assert_called_once_with(record())
-    workload.pause.assert_called_once_with(timeout=30)
-    workload.commit.assert_called_once()
-    commit_tag = workload.commit.call_args.args[0]
-    assert commit_tag.startswith("dml-snapshot-op1:")
+    ops.commit_image.assert_called_once_with(record(), "dml-snapshot-op1", "capture")
     # Config preserved for the Builder validation step.
     assert result["image_id"] == "sha256:image"
     assert result["config"]["User"] == "10001:10001"
@@ -99,9 +106,8 @@ def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
     # Export ran through the mocked upload path (exact image id asserted
     # inside _upload unit tests, not here).
     assert result["artifact"]["sha256"] == "f" * 64
-    # Gate restored (unpause) even after success since commit completed.
-    assert workload.unpause.called or not workload.paused
-    assert completed == [("op1", "ws1", result["artifact"])]
+    assert committed == ["commit finished"]
+    workload.pause.assert_not_called()
     # A capture record was journaled with attempt metadata.
     persisted = coordinator.persist.call_args_list[0].args[0]
     assert persisted["snapshot_operation_id"] == "op1"
@@ -150,10 +156,10 @@ def test_capture_rejects_volume_backed_image():
     with pytest.raises(CaptureDenied) as exc:
         capture(ops, coordinator, "ws1", "op1", record(), frozen_time)
     assert exc.value.code == "VOLUME_IMAGE"
-    workload.commit.assert_not_called()
+    ops.commit_image.assert_not_called()
 
 
-def test_capture_timeout_unpauses_and_denies(monkeypatch):
+def test_capture_commit_failure_unpauses_and_denies(monkeypatch):
     coordinator = MagicMock()
     coordinator.authoritative.return_value = True
     coordinator.get.return_value = record()
@@ -161,21 +167,15 @@ def test_capture_timeout_unpauses_and_denies(monkeypatch):
     labelled(workload)
     workload.attrs = {"Config": {"User": "10001:10001", "WorkingDir": "/workspace"}}
 
-    def hung_pause(timeout=None):
-        import time as real_time
-
-        real_time.sleep(0.05)
-
-    workload.pause.side_effect = hung_pause
     ops = MagicMock()
+    ops.commit_image.side_effect = RuntimeError("daemon commit timeout")
+    workload.status = "paused"
     ops.authority.return_value = True
     ops.get_workload.return_value = workload
-    monkeypatch.setattr(snapshot, "CAPTURE_PAUSED_SECONDS", 0.01)
     with pytest.raises(CaptureDenied) as exc:
         capture(ops, coordinator, "ws1", "op1", record(), frozen_time)
-    assert exc.value.code == "CAPTURE_TIMEOUT"
-    workload.unpause.assert_called_once_with(timeout=10)
-    workload.commit.assert_not_called()
+    assert exc.value.code == "CAPTURE_FAILED"
+    workload.unpause.assert_called_once_with()
 
 
 def test_journal_record_is_crash_safe(tmp_path):
@@ -204,4 +204,3 @@ def test_stale_capture_never_publishes(tmp_path):
     })
     assert snapshot.load_snapshot(tmp_path, "op-old")["generation"] == 1
     assert snapshot.load_snapshot(tmp_path, "op-new")["generation"] == 2
-

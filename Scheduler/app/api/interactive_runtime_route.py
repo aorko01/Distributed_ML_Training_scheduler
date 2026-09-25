@@ -7,7 +7,7 @@ from app.models.interactive_workspace_model import WorkspaceTrainingSubmission
 from app.services import interactive_runtime_service as service
 from app.services import workspace_editor_service as workspace_service
 from app.services import cli_auth_service as cli_auth
-from app.schemas.workspace_editor_schema import SaveRequest, TrainingRequest
+from app.schemas.workspace_editor_schema import SaveRequest, TrainingRequest, TrainingSettings
 from app.services.interactive_management_client import ManagementClient
 
 
@@ -152,6 +152,14 @@ def save_status(save_id: str, user=Depends(get_current_active_user), db=Depends(
     return workspace_service.get_save(db, user.user_id, save_id)
 
 
+@router.post("/runtimes/{runtime_id}/save-and-stop", status_code=202)
+def save_and_stop(
+    runtime_id: str, body: SaveRequest, request_key=Depends(key),
+    user=Depends(get_current_active_user), db=Depends(get_db),
+):
+    return workspace_service.save_and_stop(db, user.user_id, runtime_id, request_key, body)
+
+
 @router.post("/runtimes/{runtime_id}/training-submissions", status_code=202)
 def training_submission(
     runtime_id: str, body: TrainingRequest, request_key=Depends(key),
@@ -166,6 +174,16 @@ def training_status(submission_id: str, user=Depends(get_current_active_user), d
     if not item:
         raise HTTPException(404, "Training submission not found")
     return workspace_service.submission_public(item)
+
+
+@router.post("/workspaces/{workspace_id}/revisions/{revision_id}/training-submissions", status_code=202)
+def revision_training_submission(
+    workspace_id: str, revision_id: str, body: TrainingSettings,
+    request_key=Depends(key), user=Depends(get_current_active_user), db=Depends(get_db),
+):
+    return workspace_service.create_revision_submission(
+        db, user.user_id, workspace_id, revision_id, request_key, body,
+    )
 
 
 @router.get("/workspaces/{workspace_id}/revisions")

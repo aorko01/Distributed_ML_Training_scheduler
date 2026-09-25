@@ -265,6 +265,14 @@ def reconcile_one(db, management):
             if endpoint["state"] == "READY":
                 runtime.state = "READY"
                 runtime.ready_at = runtime.ready_at or now()
+                if not runtime.lifetime_deadline:
+                    from .scheduling.config import Settings
+                    settings = Settings.from_env()
+                    if settings.workspace_save:
+                        # The local Worker cap starts when serving begins;
+                        # READY is the closest durable Scheduler timestamp.
+                        seconds = settings.ssh_lifetime_seconds if (runtime.launch_spec or {}).get("ssh_capable") else 600
+                        runtime.lifetime_deadline = runtime.ready_at + timedelta(seconds=seconds)
         elif runtime.desired_state == "STOPPED" and endpoint:
             db.commit()
             management.call("DELETE", "resources/" + resource)

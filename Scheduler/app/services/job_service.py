@@ -385,6 +385,10 @@ def _format_job_response(job: Job, flag: str) -> dict:
         "updated_at": job.updated_at,
         "device": job.device,
         "image_tag": job.image_tag,
+        "source_workspace_id": job.source_workspace_id,
+        "source_revision_id": job.source_revision_id,
+        "source_image_digest_ref": job.source_image_digest_ref,
+        "executable_image_digest_ref": job.executable_image_digest_ref,
         "image_builder_id": job.image_builder_id,
         "image_build_attempt_id": job.image_build_attempt_id,
     }

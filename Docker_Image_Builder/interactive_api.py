@@ -35,6 +35,15 @@ def claim():
     return request('claim', {'builder_id': BUILDER_ID})['work_item']
 
 
+def snapshot_descriptor(operation_id):
+    response = requests.get(
+        SCHEDULER_BASE_URL.rstrip('/') + '/internal/interactive/builds/snapshot/' + operation_id,
+        headers=headers(), timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def attempt(item):
     return {'builder_id': BUILDER_ID, 'revision_id': item['id'], 'attempt_id': item['attempt_id']}
 

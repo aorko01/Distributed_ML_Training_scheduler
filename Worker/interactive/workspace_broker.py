@@ -33,6 +33,7 @@ class WorkspaceSession:
         self.pending = None
         self.read_only = False
         self.send_lock = asyncio.Lock()
+        self.capture_lock = getattr(broker, "capture_lock", asyncio.Lock())
         self.closed = False
         self.exited = False
         # Disconnect-tracing counters. Payload bytes and file contents are
@@ -100,9 +101,13 @@ class WorkspaceSession:
                         # Stray keystrokes racing open/close must not kill the
                         # whole workspace socket; there is no shell to take them.
                         continue
+                    if getattr(self.broker, "capture_gate", False):
+                        continue
                     self.stdin_bytes += len(payload)
                     try:
-                        await asyncio.to_thread(self.pty.write, payload)
+                        async with self.capture_lock:
+                            if not getattr(self.broker, "capture_gate", False):
+                                await asyncio.to_thread(self.pty.write, payload)
                     except Exception as exc:
                         # Broken shell (EIO, timed-out sendall on a full pty,
                         # exec gone) ends the terminal, not the session: files
@@ -168,10 +173,13 @@ class WorkspaceSession:
         if operation == "write":
             if self.read_only or self.pending is not None or type(value.get("size")) is not int or not 0 <= value["size"] <= TEXT_FILE_LIMIT:
                 raise ProtocolError()
+            if getattr(self.broker, "capture_gate", False):
+                await self.result(identifier, error="READ_ONLY")
+                return
             self.pending = {"id": identifier, "request": value, "sequence": 0, "data": bytearray()}
             await self.result(identifier, state="receiving")
             return
-        if self.read_only and operation in {"create_file", "mkdir", "rename", "delete"}:
+        if (self.read_only or getattr(self.broker, "capture_gate", False)) and operation in {"create_file", "mkdir", "rename", "delete"}:
             await self.result(identifier, error="READ_ONLY")
             return
         await self.perform(identifier, operation, value)
@@ -179,7 +187,14 @@ class WorkspaceSession:
     async def perform(self, identifier, operation, value):
         args = {key: value[key] for key in ("path", "target", "expected_version", "cursor", "content") if key in value}
         try:
-            result = await asyncio.to_thread(self.files.call, operation, **args)
+            if operation in {"write", "create_file", "mkdir", "rename", "delete"}:
+                async with self.capture_lock:
+                    if getattr(self.broker, "capture_gate", False):
+                        await self.result(identifier, error="READ_ONLY")
+                        return
+                    result = await asyncio.to_thread(self.files.call, operation, **args)
+            else:
+                result = await asyncio.to_thread(self.files.call, operation, **args)
         except FileServiceError as exc:
             log.debug("workspace file op=%s path=%r error=%s %s", operation, value.get("path"), exc.code, self._summary())
             await self.result(identifier, error=exc.code)
@@ -233,7 +248,7 @@ class WorkspaceSession:
 
     async def pty_open(self, value):
         require_exact(value, {"columns", "rows", "shell"})
-        if self.read_only or self.pty or value["shell"] != "default" or type(value["columns"]) is not int or type(value["rows"]) is not int:
+        if self.read_only or getattr(self.broker, "capture_gate", False) or self.pty or value["shell"] != "default" or type(value["columns"]) is not int or type(value["rows"]) is not int:
             raise ProtocolError()
         try:
             self.pty = await asyncio.to_thread(DockerSession, self.broker.client, self.broker.container_id, self.broker.user, self.broker.workdir, value["columns"], value["rows"])

@@ -41,7 +41,7 @@ class TestSchedulerUrls:
         )
 
     def test_default_scheduler_url(self):
-        with patch.dict(os.environ, {}, clear=False):
+        with patch("dotenv.load_dotenv", return_value=False), patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SCHEDULER_API_URL", None)
             os.environ["DOCKER_HUB_USERNAME"] = "u"
             import config
@@ -78,7 +78,7 @@ class TestSettings:
         assert config.OBJECT_OUTPUT_BUCKET == "outputs"
 
     def test_missing_username_raises_key_error(self):
-        with patch.dict(os.environ, {}, clear=False):
+        with patch("dotenv.load_dotenv", return_value=False), patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DOCKER_HUB_USERNAME", None)
             import config
 

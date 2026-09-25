@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from app.models.interactive_workspace_model import (
     InteractiveWorkspace as Workspace,
     InteractiveImageRevision as Revision,
+    WorkspaceSaveOperation as Save,
 )
 from app.models.interactive_runtime_model import (
     InteractiveRuntime as Runtime,
@@ -20,6 +21,7 @@ from app.schemas.worker_execution_schema import (
     Fence,
     Result,
     Start,
+    Heartbeat,
 )
 from app.services import interactive_runtime_service as runtimes
 from app.services.scheduling import claims
@@ -144,6 +146,38 @@ def fence(assignment):
             for k in ("instance_id", "assignment_id", "attempt_token", "generation")
         }
     )
+
+
+def test_runtime_deadline_dispatches_one_auto_save_before_stop(db, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_EDITOR_ENABLED", "1")
+    monkeypatch.setenv("WORKSPACE_SAVE_ENABLED", "1")
+    owner = make_user(db)
+    w = worker(db)
+    _, runtime = workspace(db, owner.user_id, monkeypatch)
+    assigned = pull(db, w)
+    assignment = db.get(Assignment, assigned["assignment_id"])
+    runtime.state = "READY"
+    runtime.health = {"workload": True, "broker": True, "access": True, "endpoint": True}
+    runtime.lifetime_deadline = now() + timedelta(seconds=120)
+    assignment.state = "ACTIVE"
+    db.commit()
+
+    def beat(sequence):
+        return claims.heartbeat(db, w.worker_id, Heartbeat(
+            instance_id=w.instance_id, sequence=sequence, paused=False,
+            draining=False, inventory=inventory(), assignments=[{
+                **fence(assigned).model_dump(),
+                "health": {"workload": True, "broker": True, "access": True, "endpoint": True},
+            }],
+        ))
+
+    first = beat(1)["decisions"][0]
+    second = beat(2)["decisions"][0]
+    assert first["action"] == second["action"] == "renew"
+    assert first["capture_save"]["operation_id"] == second["capture_save"]["operation_id"]
+    save = db.get(Save, first["capture_save"]["operation_id"])
+    assert save.state == "CAPTURING" and save.stop_after_save is True
+    assert db.query(Save).filter_by(runtime_id=runtime.id).count() == 1
 
 
 def test_order_and_cleanup_hold(db, monkeypatch):

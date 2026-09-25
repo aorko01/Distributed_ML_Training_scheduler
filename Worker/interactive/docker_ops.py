@@ -414,6 +414,12 @@ class DockerOps:
                 DeviceRequest(device_ids=[p["gpu_uuid"]], capabilities=[["gpu"]])
             ],
         )
+        if ssh_spec_enabled(spec):
+            # Docker commit excludes mounts. Runtime host keys, authorized
+            # keys and sshd configuration must never enter a saved image.
+            base_kwargs["tmpfs"] = {
+                "/run/dml-vscode-ssh": "rw,nosuid,noexec,size=1m,mode=0755"
+            }
         if developer:
             # Operator-enabled developer mode: Docker's normal restricted
             # capability set with setuid permitted so `sudo` works inside the
@@ -498,6 +504,38 @@ class DockerOps:
         if any(actual.get(key) != value for key, value in expected.items()):
             raise RuntimeFailure("LOCAL_CONFLICT")
         return container
+
+    def commit_image(self, record, repository, tag):
+        """Use a bounded long-timeout client for a potentially large commit."""
+        self.authority(record)
+        workload = self.get_workload(record)
+        if workload is None:
+            raise RuntimeFailure("WORKLOAD_MISSING")
+        client = docker.from_env(timeout=300)
+        try:
+            container = client.containers.get(workload.id)
+            expected = labels(record, self.worker_id, "workload")
+            if any((container.labels or {}).get(key) != value for key, value in expected.items()):
+                raise RuntimeFailure("LOCAL_CONFLICT")
+            self.authority(record)
+            # The interactive workload runs a keepalive shell. Give the
+            # committed image a harmless default CMD. Engine keeps the
+            # inherited /bin/sh entrypoint even when commit sets it to null;
+            # batch explicitly clears it and supplies Python argv. A reopened
+            # runtime supplies its own loop.
+            config = dict((container.attrs or {}).get("Config") or {})
+            config["Entrypoint"] = None
+            config["Cmd"] = ["/bin/true"]
+            return container.commit(
+                repository=repository, tag=tag, pause=True,
+                conf=config,
+            )
+        finally:
+            client.close()
+
+    def snapshot_client(self):
+        """Export can run much longer than ordinary Docker health requests."""
+        return docker.from_env(timeout=1800)
 
     def remove_exact(self, record, container_id):
         try:

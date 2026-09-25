@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from minio import Minio
 
 from init_buckets import ensure_buckets
+from snapshot_transport import router as snapshot_router, SNAPSHOT_BUCKET
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
 MINIO_ROOT_USER = os.environ.get("MINIO_ROOT_USER", "minioadmin")
@@ -61,6 +62,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Object Store", version="1.0.0", lifespan=lifespan)
+app.include_router(snapshot_router)
+
+
+def ordinary_bucket(bucket: str):
+    # Snapshot objects have a separate authenticated transport. Generic
+    # upload, presign, list and download endpoints must never access them.
+    if bucket == SNAPSHOT_BUCKET:
+        raise HTTPException(status_code=404, detail="Bucket not found")
 
 
 @app.get("/health")
@@ -74,6 +83,7 @@ async def upload_object(
     object_key: str = Form(...),
     file: UploadFile = File(...),
 ):
+    ordinary_bucket(bucket)
     client = get_client()
 
     if not client.bucket_exists(bucket):
@@ -101,6 +111,7 @@ def presign_upload(
     object_key: str = Form(...),
     expires: int = Form(3600),
 ):
+    ordinary_bucket(bucket)
     client = get_client()
 
     if not client.bucket_exists(bucket):
@@ -128,6 +139,7 @@ def list_objects(bucket: str, prefix: str = ""):
     Used by workers to discover a job's previously uploaded output files
     (e.g. checkpoints) so a retry can restore them before resuming training.
     """
+    ordinary_bucket(bucket)
     client = get_client()
 
     if not client.bucket_exists(bucket):
@@ -157,6 +169,7 @@ def presign_download(
     object_key: str = Form(...),
     expires: int = Form(3600),
 ):
+    ordinary_bucket(bucket)
     """Presigned GET URL so large outputs can be downloaded straight from MinIO,
     bypassing the proxied endpoint that rejects large payloads."""
     client = get_client()
@@ -179,6 +192,7 @@ def presign_download(
 
 @app.get("/objects/{bucket}/{object_key:path}")
 def download_object(bucket: str, object_key: str):
+    ordinary_bucket(bucket)
     client = get_client()
 
     if not client.bucket_exists(bucket):

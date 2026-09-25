@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import shlex
 import shutil
 import logging
@@ -198,6 +199,13 @@ class JobExecutor:
         try:
             with self._docker_client_lock:
                 self.docker_client.images.pull(image_name)
+                if "@sha256:" in image_name:
+                    image = self.docker_client.images.get(image_name)
+                    digests = (image.attrs or {}).get("RepoDigests") or []
+                    def canonical(ref):
+                        return ref.removeprefix("docker.io/").removeprefix("index.docker.io/")
+                    if not any(canonical(ref) == canonical(image_name) for ref in digests):
+                        raise ValueError("Pulled image does not have the requested manifest digest")
             logger.info("Successfully pulled image: %s", image_name)
             return True
         except Exception as e:
@@ -227,7 +235,7 @@ class JobExecutor:
         return workdir
 
     def _prepare_output_mount(self, job_output_dir: str,
-                              image_name: str) -> tuple[str, set[str]]:
+                              image_name: str, workspace_revision: bool = False) -> tuple[str, set[str]]:
         """Make the host output dir behave as the container's working directory.
 
         Seeds the output dir with the image's WORKDIR contents and returns the
@@ -265,6 +273,8 @@ class JobExecutor:
         except subprocess.CalledProcessError as e:
             logger.warning("Failed to seed output dir from %s: %s",
                            image_name, e.stderr.strip())
+            if workspace_revision:
+                raise RuntimeError("Saved workspace could not be seeded for training") from e
             return CONTAINER_OUTPUT_MOUNT, set()
         finally:
             subprocess.run(
@@ -278,7 +288,19 @@ class JobExecutor:
                 baseline.add(os.path.join(root, name))
         write_baseline(job_output_dir, baseline)
         baseline.add(os.path.join(job_output_dir, META_FILE))
+        if workspace_revision:
+            self._make_workspace_owned(job_output_dir)
         return workdir, baseline
+
+    @staticmethod
+    def _make_workspace_owned(path: str):
+        """Keep the saved image's dml UID and make its output mount writable."""
+        if os.name != "posix":
+            raise RuntimeError("Workspace revision training requires a POSIX Worker")
+        for root, dirs, files in os.walk(path):
+            os.chown(root, 10001, 10001)
+            for name in dirs + files:
+                os.chown(os.path.join(root, name), 10001, 10001)
 
     @staticmethod
     def _container_user_args() -> list[str]:
@@ -343,7 +365,8 @@ class JobExecutor:
                 continue
         return tempfile.gettempdir()
 
-    def handle_vram_estimation(self, job_id: str, image_name: str, command: str):
+    def handle_vram_estimation(self, job_id: str, image_name: str, command: str,
+                               workspace_revision: bool = False):
         started_at = time.time()
         target_command = self._parse_python_command(command)
         if not target_command:
@@ -359,6 +382,8 @@ class JobExecutor:
         ) as report_dir:
             report_dir = os.path.realpath(report_dir)
             report_path = os.path.join(report_dir, "report.json")
+            if workspace_revision:
+                self._make_workspace_owned(report_dir)
             cmd = [
                 "docker", "run", "--rm", "--gpus", "all",
                 *self._managed_launch_args(job_id),
@@ -450,7 +475,8 @@ class JobExecutor:
         with self._job_logs_lock:
             self._job_logs.pop(job_id, None)
 
-    def handle_training(self, job_id: str, image_name: str, command: str | None = None):
+    def handle_training(self, job_id: str, image_name: str, command: str | None = None,
+                        workspace_revision: bool = False):
         started_at = time.time()
         logger.info("Training job received for job %s.", job_id)
         record_event("info", f"Job {job_id} training started")
@@ -461,7 +487,7 @@ class JobExecutor:
         self._remove_output_dir(job_output_dir)
         os.makedirs(job_output_dir, exist_ok=True)
 
-        mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name)
+        mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name, workspace_revision)
 
         store = ObjectStore()
         monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
@@ -478,11 +504,14 @@ class JobExecutor:
         self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
             monitor, started_at,
-            command_args=["sh", "-c", command] if command else None,
+            command_args=shlex.split(command) if workspace_revision and command else
+                         (["sh", "-c", command] if command else None),
+            workspace_revision=workspace_revision,
         )
 
     def handle_retry(self, job_id: str, image_name: str,
-                     resume_command: str | None, original_command: str | None):
+                     resume_command: str | None, original_command: str | None,
+                     workspace_revision: bool = False):
         started_at = time.time()
         logger.info("Retry job received for job %s.", job_id)
         record_event("info", f"Job {job_id} retry started")
@@ -495,7 +524,7 @@ class JobExecutor:
         if resume_command:
             resume_result = self._resume_attempt(
                 job_id, image_name, job_output_dir, store,
-                resume_command, started_at,
+                resume_command, started_at, workspace_revision,
             )
             if resume_result is None:
                 return
@@ -533,11 +562,12 @@ class JobExecutor:
 
         logger.info("Job %s: starting fresh training run.", job_id)
         record_event("info", f"Job {job_id} starting fresh training run")
-        self.handle_training(job_id, image_name, original_command)
+        self.handle_training(job_id, image_name, original_command, workspace_revision)
 
     def _resume_attempt(self, job_id: str, image_name: str,
-                        job_output_dir: str, store: ObjectStore,
-                        resume_command: str, started_at: float):
+                              job_output_dir: str, store: ObjectStore,
+                        resume_command: str, started_at: float,
+                        workspace_revision: bool = False):
         """Try to continue a job from its last checkpoints.
 
         If the output dir from a previous run is still on disk (this worker
@@ -564,7 +594,7 @@ class JobExecutor:
             self._remove_output_dir(job_output_dir)
             os.makedirs(job_output_dir, exist_ok=True)
 
-            mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name)
+            mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name, workspace_revision)
 
             # Restore the checkpoints into the workspace after the baseline is
             # recorded, so only the image's baked-in files are excluded from
@@ -579,7 +609,8 @@ class JobExecutor:
         success, failure_type, failure_reason = self._run_container(
             job_id, image_name, job_output_dir, mount_target, store,
             monitor, started_at,
-            command_args=["sh", "-c", resume_command],
+            command_args=shlex.split(resume_command) if workspace_revision else ["sh", "-c", resume_command],
+            workspace_revision=workspace_revision,
             finalize=False,
         )
 
@@ -627,11 +658,13 @@ class JobExecutor:
                               job_output_dir: str, mount_target: str,
                               store: ObjectStore, monitor: OutputFileMonitor,
                               started_at: float, command_args: list[str] | None = None,
-                              finalize: bool = True):
+                              finalize: bool = True,
+                              workspace_revision: bool = False):
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
                 *self._managed_launch_args(job_id),
-            *self._container_user_args(),
+            *([] if workspace_revision else self._container_user_args()),
+            *(["--entrypoint", ""] if workspace_revision else []),
             "-v", f"{_docker_host_path(job_output_dir)}:{mount_target}",
             image_name,
         ]
@@ -826,7 +859,16 @@ class JobExecutor:
             # An early validation return must release that reservation.
             self._unregister_job(job_id)
             return
+        workspace_revision = job.get("source_kind") == "WORKSPACE_REVISION"
         image_name = job.get("image_tag") or f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+        if workspace_revision:
+            digest = job.get("source_image_digest_ref")
+            if (not isinstance(digest, str) or
+                    not re.fullmatch(r"[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}", digest) or
+                    image_name != digest or job.get("executable_image_digest_ref") != digest):
+                self.api.mark_job_failed(job_id, "system", "Saved image digest is invalid")
+                self._unregister_job(job_id)
+                return
         vram_required = job.get("vram_required")
 
         self._register_job(
@@ -845,16 +887,24 @@ class JobExecutor:
                 return
 
             if flag == "vram_estimation":
-                self.handle_vram_estimation(job_id, image_name, job.get("command", ""))
+                if workspace_revision:
+                    self.handle_vram_estimation(job_id, image_name, job.get("command", ""), True)
+                else:
+                    self.handle_vram_estimation(job_id, image_name, job.get("command", ""))
             elif flag == "training":
                 save_running_job(job_id)
                 # The entry command travels with the job: images are built
                 # without one and the command is applied at run time.
-                self.handle_training(job_id, image_name, job.get("command"))
+                if workspace_revision:
+                    self.handle_training(job_id, image_name, job.get("command"), True)
+                else:
+                    self.handle_training(job_id, image_name, job.get("command"))
             elif flag == "retry":
                 save_running_job(job_id)
-                self.handle_retry(job_id, image_name, job.get("resume_command"),
-                                  job.get("command"))
+                if workspace_revision:
+                    self.handle_retry(job_id, image_name, job.get("resume_command"), job.get("command"), True)
+                else:
+                    self.handle_retry(job_id, image_name, job.get("resume_command"), job.get("command"))
             else:
                 logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)
                 try:
@@ -886,6 +936,11 @@ class JobExecutor:
             activated = True
             self._finalize_job_log_state(job_id)
             image_name = job.get("image_tag") or f"{DOCKER_HUB_USERNAME}/{job_id}:latest"
+            workspace_revision = job.get("source_kind") == "WORKSPACE_REVISION"
+            if workspace_revision and (image_name != job.get("source_image_digest_ref")
+                    or image_name != job.get("executable_image_digest_ref")
+                    or not re.fullmatch(r"[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}", image_name)):
+                raise ValueError("Invalid saved image digest")
             logger.info("Resuming persisted job %s after worker restart.", job_id)
             record_event("info", f"Resuming persisted job {job_id} after worker restart")
 
@@ -899,7 +954,7 @@ class JobExecutor:
                 return False
 
             self.handle_retry(job_id, image_name, job.get("resume_command"),
-                              job.get("command"))
+                              job.get("command"), workspace_revision)
             return True
         except Exception:
             logger.exception("Failed to resume persisted job %s", job_id)

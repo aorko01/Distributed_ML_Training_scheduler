@@ -225,6 +225,12 @@ class ManagedWorker:
                 if self.coordinator.renew(
                     assignment_id, sent, decision["lease_seconds"], response["sequence"]
                 ):
+                    command = decision.get("capture_save")
+                    manager = self.managers.get(assignment_id)
+                    if manager:
+                        manager.save_active = bool(decision.get("save_active"))
+                    if command and manager:
+                        manager.request_save(command, self.coordinator.get(assignment_id))
                     continue
             self.coordinator.update(assignment_id, uncertain=True)
             self.coordinator.mode = "CLEANING"

@@ -100,9 +100,14 @@ edits are instantly visible in the browser editor and vice versa.
 
 ## 5. Session end and safety notes
 
-- **Stop** in the web UI ends SSH immediately — VS Code disconnects on
-  purpose. Runtime files follow the usual temporary-runtime rule (unsaved
-  container changes are discarded; the saved image stays).
+- Save files in VS Code and finish terminal commands or SFTP transfers before
+  requesting **Save for Later**. The Docker commit captures one filesystem
+  instant; running multi-file operations are not an atomic application save.
+  Save for Later publishes a new revision while this SSH session stays open.
+- **Save and Stop** waits for a published revision, then ends the runtime and
+  disconnects VS Code. **Discard changes and stop** ends it without another
+  revision. The last published revision remains available to reopen or train.
+- An unexpected host loss may lose edits made after the last successful Save.
 - Never paste your browser's local-storage JWT into SSH configs or commands;
   `dml-ssh login` is the only supported credential path.
 - `dml-ssh proxy` output on stdout is binary SSH data only; diagnostics go to

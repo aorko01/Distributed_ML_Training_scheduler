@@ -11,7 +11,7 @@ from app.schemas.worker_execution_schema import (
     Fence,
     Cleanup,
 )
-from app.schemas.snapshot_artifact_schema import SnapshotFence, SnapshotComplete
+from app.schemas.snapshot_artifact_schema import SnapshotUpload, SnapshotComplete, SnapshotFailed
 from app.services import snapshot_artifact_service as snapshots
 from app.services.scheduling import claims
 from app.services import interactive_controller
@@ -64,9 +64,11 @@ def cleanup(body: Cleanup, worker=Depends(worker_auth), db=Depends(get_db)):
 
 
 @router.post("/saves/{operation_id}/upload-capability")
-def snapshot_capability(operation_id: str, body: SnapshotFence, worker=Depends(worker_auth), db=Depends(get_db)):
+def snapshot_capability(operation_id: str, body: SnapshotUpload, worker=Depends(worker_auth), db=Depends(get_db)):
     return snapshots.issue_capability(
         db, worker, operation_id, body.assignment_id, body.attempt_token, body.generation,
+        body.sha256, body.size, body.image_id,
+        instance_id=body.instance_id,
     )
 
 
@@ -74,8 +76,16 @@ def snapshot_capability(operation_id: str, body: SnapshotFence, worker=Depends(w
 def snapshot_complete(operation_id: str, body: SnapshotComplete, worker=Depends(worker_auth), db=Depends(get_db)):
     return snapshots.complete(
         db, worker, operation_id, body.assignment_id, body.attempt_token, body.generation,
-        body.sha256, body.size,
+        body.sha256, body.size, body.image_id, body.storage_version,
+        instance_id=body.instance_id,
     )
+
+
+@router.post("/saves/{operation_id}/failed")
+def snapshot_failed(operation_id: str, body: SnapshotFailed, worker=Depends(worker_auth), db=Depends(get_db)):
+    return snapshots.fail(db, worker, operation_id, body.assignment_id,
+                          body.attempt_token, body.generation, body.code,
+                          instance_id=body.instance_id)
 
 
 @router.post("/bootstrap")

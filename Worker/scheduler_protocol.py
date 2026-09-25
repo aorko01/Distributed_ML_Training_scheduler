@@ -91,6 +91,23 @@ class ExecutionAPI:
     def heartbeat(self, body):
         return self.call("heartbeat", body)
 
+    def snapshot_capability(self, operation_id, record, artifact):
+        return self.call(
+            f"saves/{operation_id}/upload-capability",
+            {**Fence.from_assignment(record).body(), **artifact},
+        )
+
+    def snapshot_complete(self, operation_id, record, artifact, storage_version):
+        return self.call(
+            f"saves/{operation_id}/complete",
+            {**Fence.from_assignment(record).body(), **artifact,
+             "storage_version": storage_version},
+        )
+
+    def snapshot_failed(self, operation_id, record, code):
+        return self.call(f"saves/{operation_id}/failed",
+                         {**Fence.from_assignment(record).body(), "code": code})
+
     def event(self, record, phase, health=None, failure_code=None, ssh=None):
         return self.call(
             "event",

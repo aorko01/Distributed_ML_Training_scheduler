@@ -5,9 +5,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
-from app.models.interactive_workspace_model import InteractiveWorkspace as Workspace, InteractiveImageRevision as Revision, new_id
+from app.models.interactive_workspace_model import InteractiveWorkspace as Workspace, InteractiveImageRevision as Revision, WorkspaceSaveOperation as Save, new_id
 from app.models.job_model import Job, JobStatus
 from app.schemas.interactive_workspace_schema import resolve_base_image
+from app.services.scheduling.config import Settings
 from app.utils.file_utils import save_to_object_store
 from app.utils.interactive_archive import validate_archive, empty_archive
 
@@ -39,8 +40,12 @@ def revision(db, workspace_id):
 
 def public(db, item):
     rev = revision(db, item.id)
+    saved = db.get(Revision, item.saved_revision_id) if item.saved_revision_id else None
     base = {'id': item.id, 'name': item.name, 'source_type': item.source_type, 'source_job_id': item.source_job_id,
             'current_revision_id': item.current_revision_id, 'created_at': item.created_at,
+            'training_submission_enabled': Settings.from_env().workspace_training_submission,
+            'saved_revision_id': item.saved_revision_id,
+            'saved_revision': {key: getattr(saved, key) for key in ('id', 'revision_number', 'state', 'image_digest_ref', 'developer_profile', 'ssh_profile')} if saved and saved.state == 'IMAGE_READY' else None,
             'default_resource_requirements': getattr(item, 'default_resource_requirements', None),
             'revision': {key: getattr(rev, key) for key in ('id', 'revision_number', 'origin', 'state', 'image_tag', 'image_digest_ref', 'failure_type', 'failure_reason', 'created_at', 'updated_at')} if rev else None}
     if rev is not None:
@@ -194,6 +199,12 @@ def expire(db, timestamp=None):
             'builder_id': None, 'attempt_id': None, 'started_at': None, 'lease_until': None}, synchronize_session=False)
         count += changed
         if changed:
+            if rev.origin == 'SNAPSHOT':
+                op = db.query(Save).filter_by(id=rev.snapshot_operation_id).with_for_update().first()
+                if op and op.state not in ('SUCCEEDED', 'FAILED'):
+                    op.state = 'FAILED' if terminal else 'PUBLISH_QUEUED'
+                    if terminal:
+                        op.failure_code = 'PUBLICATION_FAILED'
             logger.warning(
                 "interactive_workspace lease_expired revision_id=%s builder_id=%s attempt_id=%s attempt_count=%s next_state=%s",
                 rev.id,
@@ -219,6 +230,10 @@ def claim(db, builder_id):
             'state': 'BUILDING', 'builder_id': builder_id, 'attempt_id': attempt_id, 'started_at': timestamp,
             'lease_until': timestamp + timedelta(seconds=LEASE_SECONDS), 'attempt_count': Revision.attempt_count + 1,
             'failure_type': None, 'failure_reason': None, 'build_logs': []}, synchronize_session=False)
+        if changed and rev.origin == 'SNAPSHOT':
+            op = db.query(Save).filter_by(id=rev.snapshot_operation_id).with_for_update().first()
+            if op and op.state == 'PUBLISH_QUEUED':
+                op.state = 'PUBLISHING'
         db.commit()
         db.expire_all()
         if changed:
@@ -234,11 +249,17 @@ def claim(db, builder_id):
                 rev.origin,
             )
             meta = rev.source_image_metadata or {}
+            source_rev = db.get(Revision, rev.source_runtime_revision_id) if rev.source_runtime_revision_id else None
+            snapshot_op = db.get(Save, rev.snapshot_operation_id) if rev.snapshot_operation_id else None
             return {'kind': 'interactive', 'id': rev.id, 'revision_id': rev.id, 'workspace_id': item.id,
                     'revision_number': rev.revision_number, 'origin': rev.origin, 'source_job_id': item.source_job_id,
                     'source_object_key': rev.source_object_key, 'source_image_tag': rev.source_image_tag,
                     'snapshot_operation_id': rev.snapshot_operation_id,
                     'snapshot_sha256': meta.get('sha256'), 'snapshot_size': meta.get('size'),
+                    'snapshot_image_id': snapshot_op.image_id if snapshot_op else None,
+                    'source_ssh_profile': getattr(source_rev, 'ssh_profile', None),
+                    'source_developer_profile': getattr(source_rev, 'developer_profile', None),
+                    'source_runtime_revision_id': rev.source_runtime_revision_id,
                     'platform': meta.get('platform', 'linux/amd64'), 'user': meta.get('user', '10001:10001'),
                     'workdir': meta.get('workdir', '/workspace'),
                     'base_image': resolve_base_image(rev.requested_base_image), 'builder_id': builder_id, 'attempt_id': attempt_id}
@@ -283,13 +304,13 @@ def mark_ready(db, attempt):
     if rev.state == 'IMAGE_READY':
         if (rev.image_tag, rev.image_digest_ref, rev.resolved_base_digest) != (attempt.image_tag, attempt.image_digest_ref, attempt.resolved_base_digest):
             raise HTTPException(409, 'Immutable revision already published')
-        # Additive profile label may arrive on a re-delivered callback; never
-        # mutate an immutable ready revision beyond recording it when absent.
-        if getattr(rev, 'developer_profile', None) is None and profile == 'v1':
-            rev.developer_profile = 'v1'
-            db.commit()
-        if getattr(rev, 'ssh_profile', None) is None and ssh_profile == 'v1':
-            rev.ssh_profile = 'v1'
+        if (rev.developer_profile, rev.ssh_profile) != (
+            profile if profile == 'v1' else None,
+            ssh_profile if ssh_profile == 'v1' else None,
+        ):
+            raise HTTPException(409, 'Immutable revision profile mismatch')
+        if rev.origin == 'SNAPSHOT':
+            _publish_snapshot_head(db, rev)
             db.commit()
         return {'status': 'ok'}
     rev.state = 'IMAGE_READY'
@@ -302,13 +323,13 @@ def mark_ready(db, attempt):
     if hasattr(rev, 'ssh_profile'):
         rev.ssh_profile = ssh_profile if ssh_profile == 'v1' else None
     rev.lease_until = None
-    values = {'current_revision_id': rev.id}
-    # A ready initial source is startable; later snapshot publications advance
-    # the durable saved head only after their immutable digest is accepted.
-    workspace = db.get(Workspace, rev.workspace_id)
-    if workspace.saved_revision_id is None or rev.origin == 'SNAPSHOT':
-        values['saved_revision_id'] = rev.id
-    db.query(Workspace).filter_by(id=rev.workspace_id).update(values)
+    if rev.origin == 'SNAPSHOT':
+        _publish_snapshot_head(db, rev)
+    else:
+        workspace = db.query(Workspace).filter_by(id=rev.workspace_id).with_for_update().one()
+        workspace.current_revision_id = rev.id
+        if workspace.saved_revision_id is None:
+            workspace.saved_revision_id = rev.id
     db.commit()
     logger.info(
         "interactive_workspace ready workspace_id=%s revision_id=%s builder_id=%s attempt_id=%s",
@@ -320,6 +341,26 @@ def mark_ready(db, attempt):
     return {'status': 'ok'}
 
 
+def _publish_snapshot_head(db, rev):
+    from app.models.interactive_workspace_model import WorkspaceSaveOperation as Save
+    workspace = db.query(Workspace).filter_by(id=rev.workspace_id).with_for_update().one()
+    op = db.query(Save).filter_by(id=rev.snapshot_operation_id,
+                                  target_revision_id=rev.id).with_for_update().one()
+    if op.state == 'SUCCEEDED':
+        return
+    if op.state not in ('PUBLISH_QUEUED', 'PUBLISHING'):
+        raise HTTPException(409, 'Save is not publishing')
+    expected = op.expected_saved_revision_id
+    advanced = workspace.saved_revision_id == expected
+    if advanced:
+        workspace.saved_revision_id = rev.id
+    current = db.get(Revision, workspace.current_revision_id) if workspace.current_revision_id else None
+    if current is None or current.revision_number <= rev.revision_number:
+        workspace.current_revision_id = rev.id
+    op.state = 'SUCCEEDED'
+    op.head_advanced = advanced
+
+
 def failure(db, attempt):
     rev = fence(db, attempt)
     terminal = attempt.failure_type == 'user' or rev.attempt_count >= MAX_ATTEMPTS
@@ -329,6 +370,14 @@ def failure(db, attempt):
     rev.excluded_builder_id = rev.builder_id
     rev.excluded_until = now() + timedelta(seconds=LEASE_SECONDS)
     rev.builder_id = rev.attempt_id = rev.started_at = rev.lease_until = None
+    if terminal and rev.origin == 'SNAPSHOT':
+        op = db.query(Save).filter_by(id=rev.snapshot_operation_id).with_for_update().first()
+        if op and op.state not in ('SUCCEEDED', 'FAILED'):
+            op.state, op.failure_code = 'FAILED', 'PUBLICATION_FAILED'
+    elif rev.origin == 'SNAPSHOT':
+        op = db.query(Save).filter_by(id=rev.snapshot_operation_id).with_for_update().first()
+        if op and op.state == 'PUBLISHING':
+            op.state = 'PUBLISH_QUEUED'
     db.commit()
     logger.warning(
         "interactive_workspace build_failed revision_id=%s builder_id=%s attempt_id=%s failure_type=%s attempt_count=%s next_state=%s",

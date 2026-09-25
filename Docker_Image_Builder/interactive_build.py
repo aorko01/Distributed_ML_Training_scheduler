@@ -1,6 +1,7 @@
 """Workload-only image builds. No access agents, Docker socket or credentials."""
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -229,7 +230,7 @@ def ssh_session_wrapper_bytes():
     return SSH_SESSION_WRAPPER.encode()
 
 
-def run_command(args, cancel):
+def run_command(args, cancel, timeout_seconds=600):
     """Bounded disk spool; polling can cancel silent pull/push registry hangs."""
     with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(['docker', *args], stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
@@ -237,7 +238,7 @@ def run_command(args, cancel):
         try:
             while process.poll() is None:
                 check(cancel)
-                if time.monotonic() - started > 600 or output.tell() > 4 * 1024 * 1024:
+                if time.monotonic() - started > timeout_seconds or output.tell() > 4 * 1024 * 1024:
                     raise BuildFailure('system')
                 time.sleep(0.1)
             output.seek(0)
@@ -273,14 +274,21 @@ def download(item):
     unit-test patching at the module boundary (same style as run_command).
     """
     import requests
-    from urllib.parse import quote
-    from config import OBJECT_STORE_URL, OBJECT_STORE_BUCKET
-    key = item.get('source_object_key')
-    if not key or '..' in key.split('/') or key.startswith('/'):
+    from urllib.parse import urlparse
+    operation = item.get('snapshot_operation_id')
+    if not operation or not re.fullmatch(r'[0-9a-f-]{36}', operation):
+        raise BuildFailure('system')
+    descriptor = api.snapshot_descriptor(operation)
+    if (descriptor.get('target_revision_id') != item.get('id')
+            or descriptor.get('sha256') != item.get('snapshot_sha256')
+            or descriptor.get('size') != item.get('snapshot_size')):
+        raise BuildFailure('system')
+    url = descriptor.get('download_url')
+    if not isinstance(url, str) or urlparse(url).scheme != 'https':
         raise BuildFailure('system')
     with requests.get(
-        f'{OBJECT_STORE_URL}/objects/{OBJECT_STORE_BUCKET}/{quote(key, safe="/")}',
-        stream=True, timeout=(5, 30),
+        url, headers={'Authorization': 'Snapshot ' + descriptor['download_token']},
+        stream=True, timeout=(5, 60),
     ) as response:
         response.raise_for_status()
         for chunk in response.iter_content(65536):
@@ -304,7 +312,7 @@ def validate_training_command(command):
     return list(command)
 
 
-def import_snapshot(item, client, platform, user, workdir, training_command=None):
+def import_snapshot(item, client, platform, user, workdir, training_command=None, cancel=lambda: False):
     """Load a Worker-captured artifact, validate portability, push digest tag.
 
     Never feeds the bytes to the ZIP extractor and never reruns pip install:
@@ -313,30 +321,71 @@ def import_snapshot(item, client, platform, user, workdir, training_command=None
     """
     import hashlib
     import io as _io
+    import tarfile
     if training_command is not None:
         training_command = validate_training_command(training_command)
     expected_platform = platform
-    # Stream artifact with hash/size verification (never whole image in RAM
-    # beyond this bounded buffer; production artifacts are gzip tarballs).
+    # Stream the compressed archive to disk; never hold an 8 GiB snapshot in RAM.
     sha = hashlib.sha256()
     size = 0
-    data = bytearray()
-    for chunk in download(item):
-        sha.update(chunk)
-        size += len(chunk)
-        if size > MAX_SNAPSHOT:
-            raise BuildFailure('system')
-        data.extend(chunk)
-    if item.get('snapshot_sha256') and sha.hexdigest() != item['snapshot_sha256']:
-        raise BuildFailure('system')
-    if item.get('snapshot_size') and size != item['snapshot_size']:
-        raise BuildFailure('system')
-    loaded = client.images.load(bytes(data))
-    if not loaded or len(loaded) != 1:
-        raise BuildFailure('system')
-    loaded_id = getattr(loaded[0], 'id', None) or ''
-    if not loaded_id:
-        raise BuildFailure('system')
+    with tempfile.TemporaryDirectory(prefix='dml-snapshot-import-') as directory:
+        archive = os.path.join(directory, 'snapshot.tar.gz')
+        with open(archive, 'wb') as out:
+            for chunk in download(item):
+                check(cancel)
+                sha.update(chunk)
+                size += len(chunk)
+                if size > MAX_SNAPSHOT:
+                    raise BuildFailure('system')
+                out.write(chunk)
+        if item.get('snapshot_sha256') and sha.hexdigest() != item['snapshot_sha256']:
+            raise BuildFailure('user')
+        if item.get('snapshot_size') and size != item['snapshot_size']:
+            raise BuildFailure('user')
+        expected_tag = f'dml-snapshot-{item["snapshot_operation_id"]}:capture'
+        try:
+            with tarfile.open(archive, 'r:gz') as tar:
+                expanded = 0
+                members = 0
+                for member in tar:
+                    check(cancel)
+                    members += 1
+                    expanded += member.size
+                    if (members > 100000 or expanded > 64 * 1024 * 1024 * 1024
+                            or not (member.isfile() or member.isdir()) or member.name.startswith('/')
+                            or '..' in Path(member.name).parts):
+                        raise BuildFailure('user')
+                manifest = tar.extractfile('manifest.json')
+                if manifest is None:
+                    raise BuildFailure('user')
+                raw = manifest.read(1 << 20)
+                entries = json.loads(raw)
+                config_path = entries[0].get('Config', '') if len(entries) == 1 else ''
+                match = re.fullmatch(r'([0-9a-f]{64})\.json|blobs/sha256/([0-9a-f]{64})', config_path)
+                if (len(entries) != 1 or entries[0].get('RepoTags') != [expected_tag]
+                        or not match):
+                    raise BuildFailure('user')
+                config_digest = match.group(1) or match.group(2)
+                config_file = tar.extractfile(config_path)
+                if config_file is None or hashlib.sha256(config_file.read(1 << 20)).hexdigest() != config_digest:
+                    raise BuildFailure('user')
+                if 'index.json' in tar.getnames():
+                    index_file = tar.extractfile('index.json')
+                    index = json.loads(index_file.read(1 << 20)) if index_file else {}
+                    manifests = index.get('manifests') or []
+                    if len(manifests) != 1 or not DIGEST.fullmatch(manifests[0].get('digest', '')):
+                        raise BuildFailure('user')
+                    expected_id = manifests[0]['digest']
+                    if tar.getmember('blobs/sha256/' + expected_id[7:]).size > (1 << 20):
+                        raise BuildFailure('user')
+                else:
+                    expected_id = 'sha256:' + config_digest
+        except (tarfile.TarError, ValueError, KeyError, TypeError):
+            raise BuildFailure('user') from None
+        run_command(['load', '--input', archive], cancel, timeout_seconds=1800)
+        loaded_id = client.images.get(expected_tag).id
+        if loaded_id != expected_id or loaded_id != item.get('snapshot_image_id'):
+            raise BuildFailure('user')
     image = client.images.get(loaded_id)
     attrs = image.attrs or {}
     if attrs.get('Os', '') + '/' + attrs.get('Architecture', '') != expected_platform:
@@ -346,30 +395,73 @@ def import_snapshot(item, client, platform, user, workdir, training_command=None
         raise BuildFailure('system')
     if config.get('Volumes'):
         raise BuildFailure('system')
+    if config.get('Entrypoint') != ['/bin/sh'] or config.get('Cmd') != ['/bin/true']:
+        raise BuildFailure('user')
+    labels = config.get('Labels') or {}
+    if (labels.get('io.dml.workspace') != item.get('workspace_id')
+            or labels.get('io.dml.revision') != item.get('source_runtime_revision_id')):
+        raise BuildFailure('user')
     profile = developer_profile_of_attrs(attrs)
+    ssh_label = ssh_profile_of_attrs(attrs)
+    if item.get('source_ssh_profile') == 'v1' and ssh_label != 'v1':
+        raise BuildFailure('user')
+    if item.get('source_developer_profile') == 'v1' and profile != 'v1':
+        raise BuildFailure('user')
+    ssh_profile = 'v1' if item.get('source_ssh_profile') == 'v1' and ssh_label == 'v1' else None
+    if ssh_profile:
+        check(cancel)
+        inspection = client.containers.create(
+            loaded_id, command=['/bin/true'], entrypoint=['/bin/true']
+        )
+        try:
+            for path in ('/usr/sbin/sshd', '/usr/lib/openssh/sftp-server',
+                         '/usr/local/bin/dml-ssh-session', '/bin/bash', '/usr/bin/tar'):
+                check(cancel)
+                try:
+                    stream, _ = inspection.get_archive(path)
+                    if hasattr(stream, 'close'):
+                        stream.close()
+                except Exception:
+                    raise BuildFailure('user') from None
+        finally:
+            inspection.remove(force=True)
     # Normalize through the exact staging name so the retag below is exact.
-    client.api.tag(loaded_id, SNAPSHOT_CLEAN_REFERENCE, SNAPSHOT_CLEAN_TAG)
-    staged = client.images.get(SNAPSHOT_CLEAN_REFERENCE + ':' + SNAPSHOT_CLEAN_TAG)
+    clean_reference = f'dml-snapshot-clean-{item["id"]}-{item["attempt_id"]}:ready'
+    clean_repository, clean_tag = clean_reference.rsplit(':', 1)
+    client.api.tag(loaded_id, clean_repository, clean_tag)
+    staged = client.images.get(clean_reference)
     if getattr(staged, 'id', loaded_id) != loaded_id:
         raise BuildFailure('system')
+    pushed_id = loaded_id
     if training_command is not None:
         dockerfile_text = (
-            f'FROM {SNAPSHOT_CLEAN_REFERENCE}:{SNAPSHOT_CLEAN_TAG}\n'
+            f'FROM {clean_reference}\n'
             'ENTRYPOINT []\n'
             f'CMD {json.dumps(training_command, separators=(",", ":"))}\n'
             f'USER {user}\n'
             f'WORKDIR {workdir}\n'
         )
         context = _io.BytesIO(dockerfile_text.encode())
-        client.api.build(fileobj=context, rm=True, forcerm=True, tag=tag_for(item))
+        for result in client.api.build(fileobj=context, rm=True, forcerm=True, tag=tag_for(item), decode=True):
+            if 'error' in result:
+                raise BuildFailure('user')
+        pushed_id = client.images.get(tag_for(item)).id
+        if not pushed_id or pushed_id == loaded_id:
+            raise BuildFailure('system')
     tag = tag_for(item)
     repository, tag_name = tag.rsplit(':', 1)
-    client.api.tag(loaded_id, repository, tag_name)
-    run_command(['push', tag], lambda: False)
+    client.api.tag(pushed_id, repository, tag_name)
+    run_command(['push', tag], cancel)
     digest = client.images.get_registry_data(tag).attrs['Descriptor']['digest']
     if not DIGEST.fullmatch(digest):
         raise BuildFailure('system')
-    result = {'digest_ref': repository + '@' + digest, 'developer_profile': profile}
+    run_command(['pull', repository + '@' + digest], cancel)
+    try:
+        client.images.remove(clean_reference, force=False)
+    except Exception:
+        pass
+    result = {'digest_ref': repository + '@' + digest, 'developer_profile': profile,
+              'ssh_profile': ssh_profile}
     if training_command is not None:
         return result
     return result
@@ -387,16 +479,19 @@ def build(client, item, cancel):
             item.get('user', '10001:10001'),
             item.get('workdir', '/workspace'),
             training_command=item.get('training_command'),
+            cancel=cancel,
         )
         # import_snapshot returns a dict; tolerate a legacy plain digest string.
         if isinstance(imported, dict):
             digest_ref, snapshot_profile = imported['digest_ref'], imported.get('developer_profile')
+            snapshot_ssh_profile = imported.get('ssh_profile')
         else:
             digest_ref, snapshot_profile = imported, None
+            snapshot_ssh_profile = None
         check(cancel)
         tag = tag_for(item)
         return {'image_tag': tag, 'image_digest_ref': digest_ref, 'resolved_base_digest': digest_ref,
-                'developer_profile': snapshot_profile}
+                'developer_profile': snapshot_profile, 'ssh_profile': snapshot_ssh_profile}
     tag = tag_for(item)
     with tempfile.TemporaryDirectory(prefix='interactive-build-') as temporary:
         root = Path(temporary)

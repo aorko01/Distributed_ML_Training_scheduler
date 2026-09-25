@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Save, Wifi, WifiOff } from 'lucide-react';
 import type { ConnPhase } from '../workspaceTypes';
-export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, dirtyCount, saving, onSaveAll, onReconnect, onStop, internetEnabled, packageCapable, developerMode, saveEnabled, submitEnabled, saveState, onSaveForLater, onSubmitTraining }: { workspaceId: string; name: string; runtimeState: string; liveOnly: boolean; phase: ConnPhase; dirtyCount: number; saving: boolean; onSaveAll: () => void; onReconnect: () => void; onStop: () => void; internetEnabled?: boolean; packageCapable?: boolean; developerMode?: boolean; saveEnabled?: boolean; submitEnabled?: boolean; saveState?: string | null; onSaveForLater?: () => void; onSubmitTraining?: () => void }) {
+export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, savedRevisionId, operationActive, phase, dirtyCount, saving, onSaveAll, onReconnect, onStop, internetEnabled, packageCapable, developerMode, saveEnabled, submitEnabled, saveState, onSaveForLater, onSubmitTraining }: { workspaceId: string; name: string; runtimeState: string; liveOnly: boolean; savedRevisionId?: string | null; operationActive?: boolean; phase: ConnPhase; dirtyCount: number; saving: boolean; onSaveAll: () => void; onReconnect: () => void; onStop: () => void; internetEnabled?: boolean; packageCapable?: boolean; developerMode?: boolean; saveEnabled?: boolean; submitEnabled?: boolean; saveState?: string | null; onSaveForLater?: () => void; onSubmitTraining?: () => void }) {
   const connected = phase === 'connected';
   const internetTitle = internetEnabled === true
     ? 'Operator-enabled egress for this runtime: pip install, datasets and curl work in the web terminal'
@@ -25,6 +25,7 @@ export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, 
       <span className="ide-wsname" title={name}>{name}</span>
       <span className={`ide-pill ${connected ? 'ide-pill-ready' : 'ide-pill-bad'}`} role="status" title={connected ? 'Connected to workspace' : 'Workspace connection state'}>{connected ? <Wifi size={13} /> : <WifiOff size={13} />} {connected ? 'READY' : runtimeState || phase}</span>
       {liveOnly && <span className="ide-pill ide-pill-warn" title="Writes go to the running container only and disappear if the runtime stops">live-only</span>}
+      {savedRevisionId && <span className="ide-pill ide-pill-ready" title="A durable revision exists; changes made since that save still live only in this runtime">Saved revision {savedRevisionId.slice(0, 8)} · newer edits may be live-only</span>}
       {dirtyCount > 0 && <span className="ide-pill ide-pill-dirty" role="status" title={`${dirtyCount} file(s) with unsaved changes`}>{dirtyCount} unsaved</span>}
       {internetEnabled !== undefined && (
         <span className={`ide-pill ${internetEnabled ? 'ide-pill-ready' : 'ide-pill-bad'}`} role="status" title={internetTitle}>
@@ -39,10 +40,10 @@ export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, 
       {saveState && <span className="ide-pill" role="status" title={`Durable save state: ${saveState}`}>{saveState}</span>}
       <span className="ide-spacer" />
       {phase !== 'connected' && phase !== 'loading' && phase !== 'connecting' && <button type="button" className="ide-btn ide-btn-primary" onClick={onReconnect}>Reconnect</button>}
-      <button type="button" className="ide-btn" onClick={onSaveAll} disabled={!connected || dirtyCount === 0 || saving} title="Save all dirty files (Ctrl/Cmd+Shift+S)"><Save size={14} /> Save All</button>
-      <button type="button" className="ide-btn" disabled={!connected || saveEnabled !== true || !onSaveForLater} onClick={onSaveForLater} title={saveTitle}>Save for Later</button>
-      <button type="button" className="ide-btn" disabled={!connected || submitEnabled !== true || !onSubmitTraining} onClick={onSubmitTraining} title={submitTitle}>Submit for Training</button>
-      <button type="button" className="ide-btn ide-btn-danger-ghost" onClick={onStop} title="Stop runtime (live container changes may disappear)">Stop</button>
+      <button type="button" className="ide-btn" onClick={onSaveAll} disabled={!connected || dirtyCount === 0 || saving || operationActive} title="Save all dirty files (Ctrl/Cmd+Shift+S)"><Save size={14} /> Save All</button>
+      <button type="button" className="ide-btn" disabled={!connected || saveEnabled !== true || !onSaveForLater || operationActive} onClick={onSaveForLater} title={saveTitle}>Save for Later</button>
+      <button type="button" className="ide-btn" disabled={!connected || submitEnabled !== true || !onSubmitTraining || operationActive} onClick={onSubmitTraining} title={submitTitle}>Submit for Training</button>
+      <button type="button" className="ide-btn ide-btn-danger-ghost" disabled={operationActive} onClick={onStop} title="Save and stop the runtime">Stop</button>
     </header>
   );
 }

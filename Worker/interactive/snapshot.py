@@ -6,23 +6,19 @@ effect is fenced by the Worker lease (``DockerOps.authority``) and journaled
 before it runs.  The module never talks to a registry and never prunes.
 """
 
-import concurrent.futures
 from contextlib import suppress
 import hashlib
 import json
-import logging
 import os
 import tempfile
-import threading
 import time
 from pathlib import Path
 
-logger = logging.getLogger("managed_worker")
-
 CAPTURE_PAUSED_SECONDS = 300
-CAPTURE_UNPAUSE_SECONDS = 10
 UPLOAD_VERIFY_CHUNK = 1 << 20
 HEARTBEAT_GRACE_SECONDS = 20
+MAX_ARTIFACT = 8 * 1024 * 1024 * 1024
+MAX_EXPORT_SECONDS = 1800
 
 
 from .docker_ops import workload_internet_enabled  # single Worker egress gate (plan.md Phase 1)
@@ -81,42 +77,38 @@ def load_snapshot(state_dir, operation_id):
 
 def _check_labels(workload, record):
     labels = getattr(workload, "labels", None) or {}
+    payload = record.get("payload") or {}
     if (
         labels.get("dml.component") != "workload"
         or labels.get("dml.assignment") != record["assignment_id"]
+        or labels.get("dml.worker") != record.get("worker_id", labels.get("dml.worker"))
+        or labels.get("dml.runtime") != payload.get("runtime_id")
+        or labels.get("dml.workspace") != payload.get("workspace_id")
+        or labels.get("dml.revision") != payload.get("revision_id")
+        or labels.get("dml.generation") != str(payload.get("generation"))
     ):
         raise CaptureDenied("CAPTURE_FORBIDDEN", "workload identity mismatch")
 
 
-def _check_config(config):
+def _check_config(config, mounts=(), ssh_required=False, host_config=None):
     if config.get("Volumes"):
         raise CaptureDenied("VOLUME_IMAGE", "volume-backed image is not portable")
+    if config.get("User") != "10001:10001" or config.get("WorkingDir") != "/workspace":
+        raise CaptureDenied("IMAGE_CONFIG", "workspace image identity changed")
+    saved_paths = ("/workspace", "/opt/dml-venv", "/home/dml", "/usr", "/etc", "/var")
+    ssh_mount = "/run/dml-vscode-ssh" in ((host_config or {}).get("Tmpfs") or {})
+    for item in mounts:
+        dest = str(item.get("Destination") or "").rstrip("/")
+        if any(dest == path or path.startswith(dest + "/") or dest.startswith(path + "/") for path in saved_paths):
+            raise CaptureDenied("VOLUME_IMAGE", "saved filesystem path is mounted")
+        if dest == "/run/dml-vscode-ssh" and item.get("Type") == "tmpfs":
+            ssh_mount = True
+    if ssh_required and not ssh_mount:
+        raise CaptureDenied("SSH_STATE_UNSAFE", "runtime SSH state is not ephemeral")
     return config
 
 
-def _pause_with_timeout(workload, seconds):
-    done = threading.Event()
-    outcome = {}
-
-    def run():
-        try:
-            workload.pause(timeout=seconds)
-            outcome["ok"] = True
-        except Exception as exc:  # noqa: BLE001 - surfaced as CAPTURE_TIMEOUT
-            outcome["error"] = exc
-        finally:
-            done.set()
-
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-    if not done.wait(seconds):
-        with suppress(Exception):
-            workload.unpause(timeout=CAPTURE_UNPAUSE_SECONDS)
-        raise CaptureDenied("CAPTURE_TIMEOUT", "workload pause deadline exceeded")
-    if not outcome.get("ok"):
-        raise CaptureDenied("CAPTURE_TIMEOUT", "workload pause failed")
-
-def _upload(client, assignment_id, image_id, destination, deadline):
+def _upload(client, assignment_id, image_id, destination, deadline, authority=lambda: True):
     """Stream ``docker save`` through gzip into the artifact file.
 
     Never buffers the whole image in RAM; aborts on lease loss.
@@ -131,11 +123,13 @@ def _upload(client, assignment_id, image_id, destination, deadline):
         with open(destination, "wb") as raw:
             with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as out:
                 for chunk in stream:
-                    if time.monotonic() > deadline:
-                        raise CaptureDenied("CAPTURE_TIMEOUT", "upload deadline exceeded")
+                    if time.monotonic() > deadline or not authority():
+                        raise CaptureDenied("CAPTURE_TIMEOUT", "export deadline or lease exceeded")
                     if not chunk:
                         continue
                     out.write(chunk)
+                    if raw.tell() > MAX_ARTIFACT:
+                        raise CaptureDenied("ARTIFACT_TOO_LARGE")
         with open(destination, "rb") as check:
             while True:
                 piece = check.read(UPLOAD_VERIFY_CHUNK)
@@ -143,6 +137,10 @@ def _upload(client, assignment_id, image_id, destination, deadline):
                     break
                 sha.update(piece)
                 size += len(piece)
+                if size > MAX_ARTIFACT:
+                    raise CaptureDenied("ARTIFACT_TOO_LARGE")
+                if not authority():
+                    raise CaptureDenied("LEASE_LOST")
     finally:
         with suppress(Exception):
             close = getattr(stream, "close", None)
@@ -151,24 +149,17 @@ def _upload(client, assignment_id, image_id, destination, deadline):
     return {"sha256": sha.hexdigest(), "size": size}
 
 
-def complete(client, operation_id, workspace_id, artifact):
-    """Publish handoff hook; Scheduler confirms receipt via its own API."""
-    logger.info(
-        "Snapshot capture complete operation_id=%s workspace_id=%s sha256=%.12s size=%d",
-        operation_id, workspace_id, artifact.get("sha256", ""), artifact.get("size", 0),
-    )
-    return True
-
-
 def capture(ops, coordinator, workspace_id, operation_id, record, clock,
-            progress=None, upload_chunk=UPLOAD_VERIFY_CHUNK, state_dir=None):
+            progress=None, upload_chunk=UPLOAD_VERIFY_CHUNK, state_dir=None,
+            on_committed=None, authority=None):
     """Commit the exact labelled workload and export it as an artifact file.
 
     Returns ``{"image_id", "config", "artifact"}``.  Raises ``CaptureDenied``
     on every controlled failure; unpauses the workload on the way out.
     """
     assignment_id = record["assignment_id"]
-    if not coordinator.authoritative(assignment_id):
+    authority = authority or (lambda: coordinator.authoritative(assignment_id))
+    if not authority():
         raise CaptureDenied("LEASE_LOST", "worker lease is not authoritative")
     ops.authority(record)
     workload = ops.get_workload(record)
@@ -188,14 +179,19 @@ def capture(ops, coordinator, workspace_id, operation_id, record, clock,
     coordinator.persist({**coordinator.get(assignment_id),
                          "snapshot_operation_id": operation_id,
                          "snapshot_state": "capturing"})
-    paused = False
+    tag = staging_tag(operation_id)
     try:
-        _pause_with_timeout(workload, CAPTURE_PAUSED_SECONDS)
-        paused = True
         attrs = getattr(workload, "attrs", None) or {}
-        config = _check_config(dict(attrs.get("Config") or {}))
-        tag = staging_tag(operation_id)
-        image = workload.commit(tag)
+        spec = (record.get("payload") or {}).get("launch_spec") or {}
+        config = _check_config(dict(attrs.get("Config") or {}), attrs.get("Mounts") or (),
+                               bool(spec.get("ssh_capable")), attrs.get("HostConfig") or {})
+        # Docker pauses only for the commit transaction. Export and transport
+        # run after the workload resumes, preserving live VS Code sessions.
+        repository, tag_name = tag.split(":", 1)
+        try:
+            image = ops.commit_image(record, repository, tag_name)
+        except Exception:
+            raise CaptureDenied("CAPTURE_FAILED", "Docker commit failed") from None
         image_id = getattr(image, "id", None) or ""
         if not image_id:
             raise CaptureDenied("CAPTURE_FAILED", "commit returned no image id")
@@ -204,25 +200,32 @@ def capture(ops, coordinator, workspace_id, operation_id, record, clock,
                              "snapshot_operation_id": operation_id,
                              "snapshot_state": "committed",
                              "snapshot_image_id": image_id})
+        if on_committed:
+            on_committed()
+        if not authority():
+            raise CaptureDenied("LEASE_LOST")
         ops.authority(record)
         destination = str(_snapshot_dir(state_dir) / (operation_id + ".tar.gz"))
-        artifact = _upload(ops.client, assignment_id, image_id, destination,
-                           clock() + CAPTURE_PAUSED_SECONDS)
+        export_client = ops.snapshot_client() if hasattr(type(ops), "snapshot_client") else ops.client
+        try:
+            artifact = _upload(export_client, assignment_id, image_id, destination,
+                               clock() + MAX_EXPORT_SECONDS, authority=authority)
+        finally:
+            if export_client is not ops.client:
+                export_client.close()
         journal_snapshot(state_dir, operation_id, {
             "artifact": artifact, "artifact_path": destination, "state": "uploaded"})
         coordinator.persist({**coordinator.get(assignment_id),
                              "snapshot_operation_id": operation_id,
                              "snapshot_state": "uploaded",
                              "snapshot_artifact": artifact})
-        complete(ops.client, operation_id, workspace_id, artifact)
-        with suppress(Exception):
-            ops.client.images.remove(tag, force=False)
-        ops.remove_exact(record, image_id)
         if progress:
             with suppress(Exception):
                 progress(record, "SNAPSHOT_UPLOADED")
-        return {"image_id": image_id, "config": config, "artifact": artifact}
+        return {"image_id": image_id, "config": config, "artifact": artifact,
+                "artifact_path": destination}
     finally:
-        if paused:
-            with suppress(Exception):
-                workload.unpause(timeout=CAPTURE_UNPAUSE_SECONDS)
+        with suppress(Exception):
+            workload.reload()
+            if workload.status == "paused":
+                workload.unpause()

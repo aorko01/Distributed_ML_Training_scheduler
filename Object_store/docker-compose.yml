@@ -22,6 +22,8 @@ services:
       - minio
     env_file:
       - .env
+    volumes:
+      - ./secrets:/run/dml-secrets:ro
     environment:
       MINIO_ENDPOINT: minio:9000
       MINIO_SECURE: "false"
@@ -32,6 +34,7 @@ services:
       MINIO_PUBLIC_SECURE: ${MINIO_PUBLIC_SECURE:-true}
       OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-uploads}
       OBJECT_OUTPUT_BUCKET: ${OBJECT_OUTPUT_BUCKET:-outputs}
+      SNAPSHOT_SERVICE_SECRET_FILE: /run/dml-secrets/snapshot-service.key
     ports:
       # Localhost-only: public API traffic enters via Caddy
       # (https://object.zulfiker.xyz/objects/* -> 127.0.0.1:8010).

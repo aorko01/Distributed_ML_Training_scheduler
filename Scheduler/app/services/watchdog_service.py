@@ -125,6 +125,8 @@ async def check_stalled_jobs() -> int:
         marked += await _requeue_stalled_image_builds(db, now)
         from app.services.interactive_workspace_service import expire
         marked += expire(db)
+        from app.services.workspace_editor_service import reconcile as reconcile_workspaces
+        marked += reconcile_workspaces(db)
         _warn_unclaimed_interactive_builds(db)
         return marked
     finally:
