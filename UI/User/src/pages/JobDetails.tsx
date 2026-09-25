@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   downloadJobOutput,
@@ -11,7 +11,8 @@ import {
 } from "../services/jobs";
 import LogTerminal from "../components/LogTerminal";
 import CopyButton from "../components/CopyButton";
-import { ArrowLeft, Download, Loader2, Rocket, MonitorPlay } from "lucide-react";
+import { ArrowLeft, Download, Loader2, Rocket, MonitorPlay, X } from "lucide-react";
+import type { DownloadProgress } from "../services/jobDownload";
 
 const JobDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -22,22 +23,61 @@ const JobDetails: React.FC = () => {
   const [liveStatus, setLiveStatus] = useState<JobStatus | undefined>(undefined);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] =
+    useState<DownloadProgress | null>(null);
+  const downloadAbortRef = useRef<AbortController | null>(null);
+
+  const formatBytes = (bytes: number): string => {
+    if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let value = bytes / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
+  };
 
   const handleDownloadOutput = async () => {
     if (!job || downloading) return;
 
+    const controller = new AbortController();
+    downloadAbortRef.current = controller;
     setDownloading(true);
     setDownloadError(null);
+    setDownloadProgress({ phase: "preparing", loadedBytes: 0, totalBytes: null });
     try {
-      await downloadJobOutput(job.id, job.name);
+      await downloadJobOutput(job.id, job.name, {
+        signal: controller.signal,
+        onProgress: (progress) => setDownloadProgress({ ...progress }),
+      });
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // Cancelled by the user; not an error worth surfacing.
+        return;
+      }
+      if (err instanceof Error && err.name === "AbortError") return;
       setDownloadError(
         err instanceof Error ? err.message : "Failed to download output.",
       );
     } finally {
+      downloadAbortRef.current = null;
       setDownloading(false);
+      setDownloadProgress(null);
     }
   };
+
+  const handleCancelDownload = () => {
+    downloadAbortRef.current?.abort();
+  };
+
+  useEffect(() => {
+    return () => {
+      downloadAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -173,23 +213,66 @@ const JobDetails: React.FC = () => {
             gap: "0.25rem",
           }}
         >
-          <button
-            className="btn btn-primary"
+          <div
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: "0.5rem",
             }}
-            onClick={handleDownloadOutput}
-            disabled={downloading}
           >
-            {downloading ? (
-              <Loader2 size={18} className="animate-spin" />
-            ) : (
-              <Download size={18} />
+            <button
+              className="btn btn-primary"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.5rem",
+              }}
+              onClick={handleDownloadOutput}
+              disabled={downloading}
+            >
+              {downloading ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : (
+                <Download size={18} />
+              )}
+              {!downloading
+                ? "Download Output"
+                : downloadProgress?.phase === "downloading"
+                  ? `Downloading… ${formatBytes(downloadProgress.loadedBytes)}${downloadProgress.totalBytes != null ? ` of ${formatBytes(downloadProgress.totalBytes)}` : ""}`
+                  : "Preparing…"}
+            </button>
+            {downloading && (
+              <button
+                className="btn btn-secondary"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.25rem",
+                }}
+                onClick={handleCancelDownload}
+                title="Cancel download"
+              >
+                <X size={16} />
+                Cancel
+              </button>
             )}
-            {downloading ? "Preparing…" : "Download Output"}
-          </button>
+          </div>
+          {downloading && downloadProgress?.totalBytes != null && (
+            <progress
+              value={downloadProgress.loadedBytes}
+              max={downloadProgress.totalBytes}
+              style={{ width: "100%", height: "6px" }}
+              aria-label="Download progress"
+            />
+          )}
+          {downloading &&
+            downloadProgress?.phase === "downloading" &&
+            downloadProgress.totalBytes == null &&
+            downloadProgress.loadedBytes > 0 && (
+              <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                {formatBytes(downloadProgress.loadedBytes)} received…
+              </span>
+            )}
           {downloadError && (
             <span
               role="alert"

@@ -3,7 +3,8 @@ import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
@@ -589,7 +590,7 @@ def get_my_jobs_gpu_hours(
 
 
 @router.get("/{job_id}/output/download")
-def download_job_output(
+async def download_job_output(
     job_id: str,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
@@ -599,6 +600,12 @@ def download_job_output(
     The archive contains ``submitted/<upload-basename>`` (the original zip
     from the uploads bucket) and ``outputs/<rel-path>`` for every object
     stored under ``<job_id>/`` in the outputs bucket.
+
+    The archive is streamed as a stored (uncompressed) ZIP64 file whose first
+    byte is sent right after the fast object listing, so large checkpoints
+    show download progress immediately instead of hanging on "Preparing"
+    while a temp file is assembled. No ``Content-Length`` is advertised
+    because entry sizes are only known as their bytes flow through.
     """
     if not output_service.is_safe_job_id(job_id):
         raise HTTPException(status_code=400, detail=f"Invalid job_id {job_id!r}")
@@ -608,25 +615,30 @@ def download_job_output(
         raise HTTPException(status_code=404, detail="Job not found")
 
     try:
-        archive_path = output_service.build_job_output_zip(
-            job_id, job.get("object_key")
+        entries = await run_in_threadpool(
+            output_service.collect_job_output_entries,
+            job_id,
+            job.get("object_key"),
         )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if not entries:
+        raise HTTPException(
+            status_code=404, detail=f"No output files found for job_id {job_id}"
+        )
 
     raw_name = (job.get("name") or job_id).strip() or job_id
     slug = re.sub(r"\s+", "_", raw_name.strip().lower())
     slug = re.sub(r"[^a-z0-9._-]", "_", slug)[:100] or str(job_id)
     filename = f"{slug}-output.zip"
 
-    return _TemporaryFileResponse(
-        archive_path,
+    return StreamingResponse(
+        output_service.aiter_entries_as_zip(entries),
         media_type="application/zip",
-        filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

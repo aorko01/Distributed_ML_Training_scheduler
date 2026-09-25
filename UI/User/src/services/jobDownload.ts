@@ -13,11 +13,21 @@ export interface DownloadRuntime {
   appendAnchor: (anchor: DownloadAnchor) => void;
 }
 
+export type DownloadPhase = 'preparing' | 'downloading';
+
+export interface DownloadProgress {
+  phase: DownloadPhase;
+  loadedBytes: number;
+  totalBytes: number | null;
+}
+
 interface DownloadOptions {
   apiBaseUrl: string;
   id: string;
   jobName?: string;
   token?: string | null;
+  signal?: AbortSignal;
+  onProgress?: (progress: DownloadProgress) => void;
 }
 
 const sanitizeFilename = (candidate: string, fallback: string): string => {
@@ -95,6 +105,75 @@ const errorMessage = async (response: Response): Promise<string> => {
   return message;
 };
 
+const parseTotalBytes = (response: Response): number | null => {
+  const raw = response.headers.get('content-length');
+  if (!raw) return null;
+  const total = Number.parseInt(raw, 10);
+  return Number.isFinite(total) && total >= 0 ? total : null;
+};
+
+interface SavePickerWritable {
+  write: (chunk: Uint8Array) => Promise<void>;
+  close: () => Promise<void>;
+  abort?: () => Promise<void>;
+}
+
+interface SavePickerHandle {
+  createWritable: () => Promise<SavePickerWritable>;
+}
+
+const pickSaveFile = async (suggestedName: string): Promise<SavePickerHandle | null> => {
+  try {
+    if (typeof window === 'undefined') return null;
+    const w = window as unknown as {
+      showSaveFilePicker?: (options?: {
+        suggestedName?: string;
+        types?: Array<{ description?: string; accept: Record<string, string[]> }>;
+      }) => Promise<SavePickerHandle>;
+    };
+    if (typeof w.showSaveFilePicker !== 'function') return null;
+    return await w.showSaveFilePicker({
+      suggestedName,
+      types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
+    });
+  } catch {
+    // The picker is unavailable or was dismissed before streaming started;
+    // fall back to the in-memory download path below.
+    return null;
+  }
+};
+
+/** Legacy path for mocked responses without a readable stream (tests, old browsers). */
+const downloadAsBlob = async (
+  response: Response,
+  filename: string,
+  runtime: DownloadRuntime,
+): Promise<void> => {
+  const objectUrl = runtime.createObjectURL(await response.blob());
+  let anchor: DownloadAnchor | undefined;
+  try {
+    anchor = runtime.createAnchor();
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    runtime.appendAnchor(anchor);
+    anchor.click();
+  } finally {
+    anchor?.remove();
+    runtime.revokeObjectURL(objectUrl);
+  }
+};
+
+/**
+ * Stream the archive to disk chunk by chunk instead of buffering the whole
+ * response with ``response.blob()``.
+ *
+ * Large checkpoints previously appeared stuck on "Preparing…": the server
+ * assembled the entire ZIP before the first byte, and then the browser held
+ * the whole file in RAM. Streaming flips to the "downloading" phase on the
+ * first byte, reports live byte counts via ``onProgress``, and — where the
+ * File System Access API exists (Chrome/Edge) — writes straight to disk so
+ * multi-gigabyte outputs never blow up tab memory.
+ */
 export const downloadJobOutputFromApi = async (
   options: DownloadOptions,
   runtime: DownloadRuntime = browserRuntime(),
@@ -102,10 +181,19 @@ export const downloadJobOutputFromApi = async (
   const headers: Record<string, string> = {};
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
 
+  const report = (progress: DownloadProgress): void => {
+    try {
+      options.onProgress?.(progress);
+    } catch {
+      // Progress listeners must never break the download itself.
+    }
+  };
+
   const baseUrl = options.apiBaseUrl.replace(/\/$/, '');
+  report({ phase: 'preparing', loadedBytes: 0, totalBytes: null });
   const response = await runtime.request(
     `${baseUrl}/jobs/${encodeURIComponent(options.id)}/output/download`,
-    { headers },
+    { headers, signal: options.signal },
   );
   if (!response.ok) throw new Error(await errorMessage(response));
 
@@ -114,7 +202,83 @@ export const downloadJobOutputFromApi = async (
     response.headers.get('content-disposition'),
     fallback,
   );
-  const objectUrl = runtime.createObjectURL(await response.blob());
+  const totalBytes = parseTotalBytes(response);
+
+  const body = response.body as ReadableStream<Uint8Array> | null | undefined;
+  if (!body || typeof body.getReader !== 'function') {
+    await downloadAsBlob(response, filename, runtime);
+    report({ phase: 'downloading', loadedBytes: totalBytes ?? 0, totalBytes });
+    return;
+  }
+
+  const reader = body.getReader();
+  let loadedBytes = 0;
+  let phase: DownloadPhase = 'preparing';
+  const markDownloading = (): void => {
+    if (phase !== 'downloading') {
+      phase = 'downloading';
+      report({ phase, loadedBytes, totalBytes });
+    }
+  };
+
+  // Preferred path: stream straight to disk, bypassing tab memory entirely.
+  const fileHandle = await pickSaveFile(filename);
+  if (fileHandle) {
+    const writable = await fileHandle.createWritable();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (options.signal?.aborted) throw new DOMException('Download cancelled', 'AbortError');
+        if (done) break;
+        if (value && value.byteLength > 0) {
+          await writable.write(value);
+          loadedBytes += value.byteLength;
+          markDownloading();
+          report({ phase, loadedBytes, totalBytes });
+        }
+      }
+      await writable.close();
+      return;
+    } catch (err) {
+      try {
+        if (typeof writable.abort === 'function') await writable.abort();
+        else await writable.close();
+      } catch {
+        // Ignore secondary cleanup failures; the original error matters.
+      }
+      try {
+        reader.releaseLock();
+      } catch {
+        // Reader may already be closed after a network failure.
+      }
+      throw err;
+    }
+  }
+
+  // Fallback path (Firefox/Safari, picker dismissed): accumulate chunks with
+  // live progress, then trigger the classic anchor download.
+  const chunks: Uint8Array[] = [];
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (options.signal?.aborted) throw new DOMException('Download cancelled', 'AbortError');
+      if (done) break;
+      if (value && value.byteLength > 0) {
+        chunks.push(value);
+        loadedBytes += value.byteLength;
+        markDownloading();
+        report({ phase, loadedBytes, totalBytes });
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Reader may already be closed after a network failure.
+    }
+  }
+
+  const objectUrl = runtime.createObjectURL(new Blob(chunks as BlobPart[], { type: 'application/zip' }));
   let anchor: DownloadAnchor | undefined;
   try {
     anchor = runtime.createAnchor();

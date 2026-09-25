@@ -1,5 +1,5 @@
 import { api, getToken, type ApiError } from './api';
-import { downloadJobOutputFromApi } from './jobDownload';
+import { downloadJobOutputFromApi, type DownloadProgress } from './jobDownload';
 
 export { buildJobOutputFilename } from './jobDownload';
 
@@ -489,14 +489,22 @@ const streamLogChannel = (
   };
 };
 
+export interface DownloadJobOutputOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: DownloadProgress) => void;
+}
+
 export const downloadJobOutput = async (
   id: string,
   jobName?: string,
+  options?: DownloadJobOutputOptions,
 ): Promise<void> => {
   await downloadJobOutputFromApi({
     apiBaseUrl: API_BASE_URL,
     id,
     jobName,
     token: getToken(),
+    signal: options?.signal,
+    onProgress: options?.onProgress,
   });
 };

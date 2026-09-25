@@ -1,5 +1,6 @@
 """Unit tests for app/services/output_service.py."""
 
+import io
 import os
 import zipfile
 from unittest.mock import MagicMock, patch
@@ -374,3 +375,140 @@ class TestBuildJobOutputZip:
             pytest.raises(RuntimeError, match="Duplicate archive entry"),
         ):
             output_service.build_job_output_zip("job1")
+
+
+async def _collect_stream(entries, fetcher) -> bytes:
+    with patch.object(
+        output_service, "_afetch_object_chunks", side_effect=fetcher
+    ):
+        chunks = []
+        async for chunk in output_service.aiter_entries_as_zip(entries):
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+
+class TestCollectJobOutputEntries:
+    def test_collect_matches_builder_entries(self):
+        with patch.object(
+            output_service,
+            "list_bucket_objects",
+            return_value=[
+                {"key": "job1/build.log", "size": 8},
+                {"key": "job1/nested/model.pt", "size": 12},
+                {"key": "job1/../evil"},
+                "not-an-object",
+            ],
+        ):
+            entries = output_service.collect_job_output_entries(
+                "job1", "job1/code.zip"
+            )
+        assert entries == [
+            ("uploads", "job1/code.zip", "submitted/code.zip", None, True),
+            ("outputs", "job1/build.log", "outputs/build.log", 8, False),
+            (
+                "outputs",
+                "job1/nested/model.pt",
+                "outputs/nested/model.pt",
+                12,
+                False,
+            ),
+        ]
+
+    def test_collect_rejects_unsafe_job_id_without_store_access(self):
+        with (
+            patch.object(output_service, "list_bucket_objects") as list_objects,
+            pytest.raises(ValueError, match="Invalid job_id"),
+        ):
+            output_service.collect_job_output_entries("../evil")
+        list_objects.assert_not_called()
+
+
+class TestStreamEntriesAsZip:
+    @pytest.mark.asyncio()
+    async def test_streams_valid_zip_readable_by_stdlib(self):
+        async def fetcher(client, *, bucket, object_key, size, force_presigned):
+            yield b"hello "
+            yield f"from:{object_key}".encode()
+
+        entries = [
+            ("uploads", "j1/code.zip", "submitted/code.zip", None, True),
+            ("outputs", "j1/a/b.pt", "outputs/a/b.pt", 7, False),
+        ]
+        blob = await _collect_stream(entries, fetcher)
+        assert blob[:2] == b"PK"
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            assert set(archive.namelist()) == {
+                "submitted/code.zip",
+                "outputs/a/b.pt",
+            }
+            assert archive.read("submitted/code.zip") == b"hello from:j1/code.zip"
+            assert archive.read("outputs/a/b.pt") == b"hello from:j1/a/b.pt"
+
+    @pytest.mark.asyncio()
+    async def test_first_byte_available_before_objects_finish(self):
+        """The local-file header must stream before slow object bytes arrive."""
+        started = False
+
+        async def slow_fetcher(client, **kwargs):
+            nonlocal started
+            started = True
+            yield b"slow-bytes"
+
+        entries = [("outputs", "j1/big.pt", "outputs/big.pt", 10, False)]
+        with patch.object(
+            output_service, "_afetch_object_chunks", side_effect=slow_fetcher
+        ):
+            stream = output_service.aiter_entries_as_zip(entries)
+            first = await stream.__anext__()
+            assert first[:4] == b"PK\x03\x04"
+            rest = [first]
+            async for chunk in stream:
+                rest.append(chunk)
+        assert started is True
+        with zipfile.ZipFile(io.BytesIO(b"".join(rest))) as archive:
+            assert archive.read("outputs/big.pt") == b"slow-bytes"
+
+    @pytest.mark.asyncio()
+    async def test_empty_object_streams_as_empty_entry(self):
+        async def empty_fetcher(client, **kwargs):
+            if False:
+                yield b"never"
+
+        blob = await _collect_stream(
+            [("outputs", "j1/empty.log", "outputs/empty.log", 0, False)],
+            empty_fetcher,
+        )
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            assert archive.read("outputs/empty.log") == b""
+
+    @pytest.mark.asyncio()
+    async def test_mid_stream_object_failure_aborts(self):
+        async def failing_fetcher(client, **kwargs):
+            yield b"partial"
+            raise RuntimeError("object disappeared")
+
+        with (
+            patch.object(
+                output_service, "_afetch_object_chunks", side_effect=failing_fetcher
+            ),
+            pytest.raises(RuntimeError, match="Failed to download object"),
+        ):
+            async for _ in output_service.aiter_entries_as_zip(
+                [("outputs", "j1/a.log", "outputs/a.log", 7, False)]
+            ):
+                pass
+
+    @pytest.mark.asyncio()
+    async def test_large_multi_chunk_binary_roundtrip(self):
+        payload = os.urandom(3 * (1 << 20) + 13)
+
+        async def chunked_fetcher(client, **kwargs):
+            for offset in range(0, len(payload), 1 << 20):
+                yield payload[offset : offset + (1 << 20)]
+
+        blob = await _collect_stream(
+            [("outputs", "j1/model.pt", "outputs/model.pt", len(payload), False)],
+            chunked_fetcher,
+        )
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            assert archive.read("outputs/model.pt") == payload
