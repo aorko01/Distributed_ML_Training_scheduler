@@ -63,9 +63,24 @@ def cmd_configure(args):
     alias = f"dml-{info['runtime_id']}-g{info.get('ssh_generation', info['generation'])}"
     out = Path(args.output or str(Path.home() / ".ssh" / "dml-config"))
     snippet = _sshconfig.snippet(alias, info, key_path, pub_path, base)
-    _sshconfig.write_snippet(out, alias, snippet)
-    _sshconfig.write_known_host(info, host_key)
+    # Each new runtime replaces the previous one so VS Code Remote-SSH only
+    # ever lists a single dml-* host (no connect-page bloat).
+    keep_previous = getattr(args, "keep_previous", False)
+    removed_configs = _sshconfig.write_snippet(
+        out, alias, snippet, prune_managed=not keep_previous
+    )
+    removed_hosts = _sshconfig.write_known_host(info, host_key, prune_managed=not keep_previous)
+    removed_keys: list = []
+    if not args.identity and not keep_previous:
+        # Default per-runtime key layout (~/.ssh/dml-<id>): drop stale keys.
+        removed_keys = _sshconfig.prune_old_keys(key_path)
     print(f"configured host {alias} -> /workspace")
+    if removed_configs:
+        print(f"removed {removed_configs} stale dml host(s) from {out}")
+    if removed_hosts:
+        print(f"removed {removed_hosts} stale dml known_hosts entr(ies)")
+    for p in removed_keys:
+        print(f"removed stale key {p}")
     print(f"Include file: {out}")
     print(f"Add to ~/.ssh/config if needed:\nInclude {out}")
     print("VS Code: Remote-SSH: Connect to Host -> %s, then open /workspace" % alias)
@@ -125,6 +140,8 @@ def build():
     c.add_argument("runtime")
     c.add_argument("--identity", default="")
     c.add_argument("--output", default="")
+    c.add_argument("--keep-previous", action="store_true",
+                   help="keep stale dml-* hosts instead of erasing them (default: erase)")
     c.add_argument("--scheduler", default=argparse.SUPPRESS)
     c.set_defaults(func=cmd_configure)
     pr = sub.add_parser("proxy")

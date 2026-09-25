@@ -29,8 +29,14 @@ SCHEDULER_URL=https://scheduler.zulfiker.xyz
 OBJECT_STORE_URL=https://object.zulfiker.xyz
 INTERACTIVE_WORKER_ENABLED=1
 INTERACTIVE_REGISTRY_PREFIXES=docker.io/aorko123
-INTERACTIVE_ACCESS_IMAGE=docker.io/aorko123/access@sha256:5be114c0b1564ff18eece843bce01409e66275a6def674b4d1c9f420a455ec4e
+INTERACTIVE_ACCESS_IMAGE=docker.io/aorko123/access@sha256:f7884b44f15d2c29daff40b3f74a7df1d3e2da27348ff3f44c52d328f5d23065
 INTERACTIVE_PREFLIGHT_IMAGE=docker.io/aorko123/quota-fixture@sha256:b0b2526e7fe571f62b3077ff32cf0371182348f400714bcc0c561bda70dd81c3
+# SSH is live (gate passed): new hosts join with it on.
+INTERACTIVE_ALLOW_SSH=1
+INTERACTIVE_SSH_MAX_DURATION_SECONDS=14400
+INTERACTIVE_SSH_CAPACITY=8
+# Registry pull credentials (protected JSON file, server/username/password).
+INTERACTIVE_REGISTRY_CREDENTIAL_FILE=/etc/dml/registry-pull.json
 ```
 
 You do **not** need to set `DOCKER_DATA_ROOT` — the installer detects Docker's
@@ -81,26 +87,33 @@ restarts the worker:
 sudo bash Worker/join_worker.sh --registered
 ```
 
-## 6. VS Code Remote-SSH support (agent runbook for this worker host)
+> **Never restart while a runtime is live.** A restart kills active
+> assignments mid-flight (their containers are cleaned, assignments
+> released, clients 409). Drain/stop runtimes first, or accept the outage.
+> Failed runtimes are kept for debugging by default (stopped/running
+> containers stay until removed); set `INTERACTIVE_CLEANUP_ON_FAILURE=1`
+> only if you want automatic removal. Failure bundles live under
+> `/var/lib/dml-worker/interactive-failures/<assignment_id>/` (root-owned).
 
-Yes — the Access container **must be rebuilt and pushed**: the SSH transport
+## 6. VS Code Remote-SSH support (live — flags are on)
+
+SSH is deployed and passing traffic. The SSH transport
 (`SSH_OPEN`/`SSH_READY` framing, raw byte relay, isolated SSH capacity) lives
-in `Access_Container/interactive_access/`, which ships inside the
-`INTERACTIVE_ACCESS_IMAGE` this worker pulls by digest. A worker running the
-old access digest accepts browser sessions fine but answers every `SSH_OPEN`
-with an error. The control plane on the scheduler host is already live with
-the SSH code and migrations; only the flags are off until the gate passes.
+in `Access_Container/interactive_access/`, which ships inside the pinned
+`INTERACTIVE_ACCESS_IMAGE` (`access:runtime-ssh-v1`, digest in §2). The
+scheduler control plane, gateway CLI flag, and this worker's
+`INTERACTIVE_ALLOW_SSH=1` are all enabled; new SSH-capable revisions
+(`io.dml.vscode-ssh-profile=v1`) serve VS Code sessions, old images stay
+browser-capable with an actionable SSH-unavailable message.
 
-End to end, in order. Run everything below **on this worker host** (Ubuntu,
-NVIDIA GPU, Docker + nvidia runtime). The old tag
-`aorko123/access-sshd:latest` (Aug 2026, pre-SSH) must NOT be used.
+The old tag `aorko123/access-sshd:latest` (Aug 2026, pre-SSH) must NOT be used.
 
 ### 6.1. Update the checkout
 
 ```bash
 cd <checkout>
-git fetch origin && git checkout <ssh-commit-or-main>
-git log --oneline -1   # want 77fb4c6 ("added vs code remote support") or newer
+git fetch origin && git checkout main
+git log --oneline -1   # want d69a5958 or newer
 git status --short     # want clean
 ```
 
@@ -134,15 +147,15 @@ In `<checkout>/Worker/.env` (the installer copies it to `/etc/dml/worker.env`):
 
 ```dotenv
 INTERACTIVE_ACCESS_IMAGE=docker.io/aorko123/access@sha256:<PASTE-DIGEST-FROM-6.2>
-INTERACTIVE_ALLOW_SSH=0
+INTERACTIVE_ALLOW_SSH=1
 INTERACTIVE_SSH_MAX_DURATION_SECONDS=14400
 INTERACTIVE_SSH_CAPACITY=8
 ```
 
 Rules the installer enforces (`--check` fails otherwise): the digest must be
 an immutable `@sha256:…` reference inside `INTERACTIVE_REGISTRY_PREFIXES`,
-with no `REPLACE_WITH…` placeholders. Keep `INTERACTIVE_ALLOW_SSH=0` for now —
-set it to `1` only at enablement (§6.6). Leave
+with no `REPLACE_WITH…` placeholders. `INTERACTIVE_ALLOW_SSH=1` is the
+steady state now that the §6.5 gate has passed. Leave
 `INTERACTIVE_ALLOW_DEVELOPER_MODE` / `INTERACTIVE_ALLOW_INTERNET` as they are;
 the worker re-checks its own gates and fails closed on mismatch. No change to
 `join_worker.sh` is needed: it already validates the digest, pre-pulls the
@@ -179,15 +192,35 @@ drains; do this when no live runtime is on this host, or accept the drain).
 4. Negative checks: stop the runtime and confirm sessions drop, grants revoke,
    and exact runtime containers are removed while unrelated objects remain.
 
-### 6.6. Enablement order and rollback
+### 6.6. Enablement order and rollback (done — kept for record)
 
-Enable only after §6.5 passes: scheduler `INTERACTIVE_SSH_ENABLED=1` (+ API
-restart) → gateway `GW_ALLOW_CLI=1` (+ restart) → this worker
-`INTERACTIVE_ALLOW_SSH=1` + `sudo bash Worker/join_worker.sh --registered`.
-New SSH-capable runtimes only; existing/browser runtimes are unaffected, and
-old images stay browser-capable with an actionable SSH-unavailable message.
+Scheduler `INTERACTIVE_SSH_ENABLED=1`, gateway `GW_ALLOW_CLI=1`, and this
+worker's `INTERACTIVE_ALLOW_SSH=1` are all live. New SSH-capable runtimes
+only; old images stay browser-capable with an actionable SSH-unavailable
+message.
 
 Rollback: set `INTERACTIVE_ALLOW_SSH=0` here and rerun the installer (stops
 new SSH relays; browser access keeps working), drain/stop SSH-capable
 runtimes, then revert the access digest if needed. Never `docker prune`,
 never reset Headscale, never touch another runtime's objects.
+
+## 7. Ops cheat sheet (learned the hard way)
+
+- **Journal speaks assignment IDs, not runtime IDs.** Container names,
+  `dml.assignment` labels, and every worker log line use the assignment UUID.
+  Map runtime → assignment first (`docker inspect … | grep dml.assignment`
+  or the scheduler DB), then grep.
+- **A 409 names its clause** (scheduler `_ssh_blocker()` detail):
+  `state=…`, `health-stale`, `assignment-released`, `lease-or-generation`.
+  `ssh-info` also returns `desired_state`/`state`/`failure_*` — a STOPPED
+  runtime configures a dead host block, so check state before `configure`.
+- **SSH auth checklist** (all seen live): image label
+  `io.dml.vscode-ssh-profile=v1` present → `dml` account unlocked (`*`, never
+  `!`) → `/run/dml-vscode-ssh/authorized_keys` is `600 dml:dml` (sshd opens it
+  as `dml`; root-owned 600 gives `Permission denied`) → `/run/sshd` exists
+  (fresh containers have an empty `/run` tmpfs) → single sshd listener on
+  2222. Local proof without the client: temp keypair + `sshd -E` on port
+  2223/2224, `ssh -BatchMode`, then delete the temp key.
+- **Never restart with live runtimes** (§5). Two separate incidents killed
+  healthy SSH sessions this way; the 409s afterwards are correct behavior,
+  not a bug.
