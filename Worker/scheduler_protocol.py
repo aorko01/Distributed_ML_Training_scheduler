@@ -91,7 +91,7 @@ class ExecutionAPI:
     def heartbeat(self, body):
         return self.call("heartbeat", body)
 
-    def event(self, record, phase, health=None, failure_code=None):
+    def event(self, record, phase, health=None, failure_code=None, ssh=None):
         return self.call(
             "event",
             {
@@ -100,6 +100,7 @@ class ExecutionAPI:
                 "phase": phase,
                 "health": health or {},
                 "failure_code": failure_code,
+                "ssh": ssh or {},
             },
         )
 

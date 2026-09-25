@@ -457,6 +457,22 @@ def heartbeat(db, worker_id, body, settings=None):
                     report.health.model_dump(),
                     timestamp,
                 )
+                try:
+                    ssh = report.ssh
+                    runtime.ssh_capable = bool(ssh.capable)
+                    runtime.ssh_ready = bool(ssh.ready)
+                    runtime.ssh_status = str(ssh.status or "disabled")[:32]
+                    new_key = getattr(ssh, "host_key", None)
+                    if new_key and runtime.ssh_host_key and new_key != runtime.ssh_host_key:
+                        # Changed key within one generation is a hard failure.
+                        stop_runtime(runtime, "HEALTH_FAILED")
+                        valid = False
+                    elif new_key and not runtime.ssh_host_key:
+                        runtime.ssh_host_key = new_key
+                        runtime.ssh_key_fingerprint = getattr(ssh, "fingerprint", None)
+                        runtime.ssh_generation = runtime.generation
+                except Exception:
+                    pass
                 if runtime.state == "READY" and not all(runtime.health.values()):
                     stop_runtime(runtime, "HEALTH_FAILED")
                     valid = False
@@ -516,6 +532,20 @@ def event(db, worker_id, body):
             raise HTTPException(409, "Illegal runtime transition")
         runtime.state = body.phase
         runtime.health, runtime.health_at = body.health.model_dump(), now()
+        try:
+            ssh = body.ssh
+            runtime.ssh_capable = bool(ssh.capable)
+            runtime.ssh_ready = bool(ssh.ready)
+            runtime.ssh_status = str(ssh.status or "disabled")[:32]
+            new_key = getattr(ssh, "host_key", None)
+            if new_key and runtime.ssh_host_key and new_key != runtime.ssh_host_key:
+                stop_runtime(runtime, "HEALTH_FAILED")
+            elif new_key and not runtime.ssh_host_key:
+                runtime.ssh_host_key = new_key
+                runtime.ssh_key_fingerprint = getattr(ssh, "fingerprint", None)
+                runtime.ssh_generation = runtime.generation
+        except Exception:
+            pass
         assignment.state = "ACTIVE"
     assignment.event_sequence, assignment.event_hash = body.sequence, hashed
     db.commit()

@@ -244,6 +244,13 @@ class Broker:
         self.busy = False
         self.stopping = False
         self.connections = set()
+        # SSH state (plan.md §3/§5): bounded concurrent relays isolated
+        # from the single browser PTY/workspace slot (self.busy untouched).
+        self.ssh_active = 0
+        self.ssh_max = 8
+        self.ssh_capable = False
+        self.ssh_generation = None
+        self.ssh_host_key = None
 
     def healthy(self):
         if self.stopping or not self.authority():
@@ -272,6 +279,105 @@ class Broker:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.path.unlink(missing_ok=True)
+
+    async def relay_ssh(self, reader, writer, opening):
+        """Fixed SSH bridge: validate SSH_OPEN, install key, raw relay.
+
+        Server-side generation check only; client value never selects a
+        container. Byte-clean, non-PTY, bounded, independently cancellable.
+        Isolated from self.busy (browser PTY/workspace slot untouched).
+        """
+        from Access_Container.interactive_access.protocol import parse_json as _parse
+        from . import ssh as _ssh
+        relay = None
+        self.ssh_active += 1
+        sent = received = 0
+        try:
+            if self.ssh_active > self.ssh_max:
+                await write_record(writer, Type.ERROR, json_bytes({"code": "BUSY"}))
+                return
+            value = _parse(opening)
+            if set(value) != {"version", "public_key", "generation"} or value["version"] != 1:
+                raise ProtocolError()
+            if type(value["generation"]) is not int:
+                raise ProtocolError()
+            if value["generation"] != self.ssh_generation:
+                await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
+                return
+            if not self.ssh_capable or not self.ssh_host_key:
+                await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
+                return
+            try:
+                clean = _ssh.parse_ed25519_public_key(value["public_key"])
+            except ValueError:
+                raise ProtocolError()
+            if not self.authority():
+                await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
+                return
+            try:
+                container = self.client.containers.get(self.container_id)
+                await asyncio.to_thread(_ssh.install_authorized_key, container, clean)
+            except ProtocolError:
+                raise
+            except ValueError:
+                await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
+                return
+            except Exception:
+                log.error("ssh key install failed container=%.12s", self.container_id)
+                await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
+                return
+            relay = _ssh.SshRelay(self.client.api, self.container_id)
+            try:
+                await asyncio.to_thread(relay.connect)
+            except Exception:
+                log.error("ssh relay connect failed container=%.12s", self.container_id)
+                await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
+                return
+            await write_record(writer, Type.SSH_READY, json_bytes({"host_key": self.ssh_host_key}), timeout=5)
+
+            async def net_to_client():
+                nonlocal received
+                while self.authority() and not self.stopping:
+                    chunk = await asyncio.to_thread(relay.recv, 32768)
+                    if not chunk:
+                        return
+                    received += len(chunk)
+                    writer.write(chunk)
+                    await writer.drain()
+                    await asyncio.sleep(0)
+
+            async def client_to_net():
+                nonlocal sent
+                while self.authority() and not self.stopping:
+                    chunk = await reader.read(65536)
+                    if chunk == b"":
+                        await asyncio.to_thread(relay.shutdown_write)
+                        return
+                    sent += len(chunk)
+                    await asyncio.to_thread(relay.sendall, chunk)
+
+            tasks = [asyncio.create_task(net_to_client()), asyncio.create_task(client_to_net())]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            log.info("ssh relay closed container=%.12s sent=%d received=%d", self.container_id, sent, received)
+        except (ProtocolError, TimeoutError):
+            with suppress(Exception):
+                await write_record(writer, Type.ERROR, json_bytes({"code": "PROTOCOL_ERROR"}))
+        except (EOFError, ConnectionError, asyncio.CancelledError):
+            pass
+        except Exception:
+            log.error("ssh relay failed container=%.12s", self.container_id, exc_info=True)
+            with suppress(Exception):
+                await write_record(writer, Type.ERROR, json_bytes({"code": "UNAVAILABLE"}))
+        finally:
+            self.ssh_active -= 1
+            if relay is not None:
+                with suppress(Exception):
+                    await asyncio.to_thread(relay.close)
 
     async def handle(self, reader, writer):
         task = asyncio.current_task()
@@ -302,6 +408,9 @@ class Broker:
                     return
                 if kind == Type.PROBE and not payload:
                     await write_record(writer, Type.READY)
+                    return
+                if kind == Type.SSH_OPEN:
+                    await self.relay_ssh(reader, writer, payload)
                     return
             if kind == Type.HELLO:
                 # Workspace clients have their own state machine.  Do not

@@ -1,171 +1,108 @@
-# Active plan: usable interactive development workspaces
+# Active plan: VS Code Remote-SSH into the interactive workload
 
-Status: implementation handoff only. This plan does not claim the feature is implemented.
+Status: implementation handoff. This document describes work to do; it does not claim Remote-SSH works today. Prepared against `main` on 2026-09-25. Reinspect the checkout, deployed configuration, and dirty worktree before implementation. The previous developer-package plan is already reflected in the current Builder, Worker, and operations documentation; its earlier text remains in Git history.
 
-Prepared against the repository on 2026-09-24. Reinspect the checkout and preserve unrelated work before editing. This plan replaces the earlier capacity-flow handoff for the package-installation feature.
+## 1. Outcome and definition of done
 
-## 1. Scope and acceptance contract
+An authenticated owner of a READY, SSH-capable interactive runtime can run a local CLI setup command, select the generated host in VS Code's **Remote-SSH: Connect to Host**, and open `/workspace` in the **workload container itself**. A plain `ssh` session starts in `/workspace`; `ssh host pwd` also prints `/workspace`. VS Code installs its server and extensions in that container, runs terminals/debuggers there as `dml` (UID 10001), and sees the same live files, Python environment, GPU assignment, and package changes as the browser editor. The user never SSHes into the Worker host, Access container, Tailscale sidecar, or Gateway.
 
-The user must be able to open a ready interactive workspace, edit code in the browser, install ordinary Python and Ubuntu/Debian packages from its terminal, and run that code on the assigned GPU. The commands below must work in a newly built, operator-enabled development workspace without special pip flags or a manual virtual-environment activation step:
+Acceptance requires all of the following on a real deployment:
 
-```sh
-id
-pwd                              # /workspace
-python -c 'import torch; print(torch.cuda.is_available())'
-pip install six
-python -c 'import six; print(six.__version__)'
-sudo -n apt-get update
-sudo -n apt-get install -y ffmpeg
-ffmpeg -version
-python train.py
-```
+1. `ssh dml-<runtime-id> 'pwd; id -u; python -c "import torch; print(torch.cuda.is_available())"'` reports `/workspace`, `10001`, and the expected GPU availability. `scp`/SFTP can transfer a file under `/workspace` without changing Worker-host files.
+2. VS Code Remote-SSH opens `/workspace`, edits a file, runs a terminal command, installs an extension, reconnects, and sees the same live container state. Browser editor saves and SSH edits are mutually visible. Concurrent VS Code installation and tunnel connections route to the **same runtime ID and generation**.
+3. VS Code's local port forwarding reaches a service bound to workload loopback, such as `127.0.0.1:8888`, without publishing a Docker or Worker-host port. Other destinations are denied by policy.
+4. A non-owner, stopped runtime, stale generation, expired/replayed ticket, revoked account, lost Worker lease, and mismatched SSH host key cannot connect. Stop closes active sessions promptly, revokes grants, removes exact runtime resources, and leaves unrelated Docker objects alone.
+5. Existing browser workspace and terminal flows continue working. SSH is off by default; unsupported/older images remain usable through their current paths and receive an actionable SSH-unavailable message.
+6. The public entry remains HTTPS/WSS. No public SSH listener, user tailnet membership, Docker API exposure, host bind mount into the workload, or privileged workload launch is introduced.
 
-An editor change saved to the **live** container must be visible to `python train.py` immediately. Packages and code must still be there after closing and reopening the browser terminal while the same runtime is alive. Installation must use the workload container, never the Access container or Worker host.
+This is native **VS Code Remote-SSH**, not the Dev Containers extension and not a reimplementation of VS Code's proprietary remote protocol. VS Code requires an SSH server, executes commands, installs VS Code Server, and uses additional SSH connections/forwarding. Consult the current [Remote-SSH requirements](https://code.visualstudio.com/docs/remote/ssh), [Linux prerequisites](https://code.visualstudio.com/docs/remote/linux), and [multiple-connection/forwarding guidance](https://code.visualstudio.com/docs/remote/troubleshooting) while implementing and testing.
 
-This phase stops at a functioning *live* development runtime. Do not implement Docker commit, snapshots, Save for Later, image publication, or training submission here. The current UI must continue to call live edits **live-only** and must not imply that Stop preserves them. Section 10 lists only the layout and image contracts that make a later persistence project straightforward.
+## 2. Current system and integration boundaries
 
-“Install packages” means normal `pip` packages, `apt` packages, and their build dependencies within the container. Kernel modules, a full init system, host-level Docker, host mounts, and arbitrary GPU driver changes are outside the container contract. A user may install a package that breaks their own runtime; the platform must still fence and clean up that runtime correctly.
-
-## 2. Current code and why it fails
-
-- `Docker_Image_Builder/interactive_build.py::dockerfile()` installs uploaded requirements with whichever system `pip` the base image supplies, then forces `USER 10001:10001`. It creates neither a usable virtual environment nor `sudo`.
-- `Worker/interactive/docker_ops.py::workload()` launches that user with `cap_drop=["ALL"]` and `no-new-privileges:true`. Merely adding `sudo` to the image, or setting `INTERACTIVE_ALLOW_ROOT=1`, cannot make `sudo apt` work under these launch settings.
-- `Worker/interactive/broker.py::DockerSession` launches `/bin/sh` as the inspected image user but overrides `HOME=/tmp`. This sends user installs and caches to a surprising location and hides the prepared account's home.
-- `Worker/interactive/file_service.py::FileService` runs its fixed editor helper with `python3` from the image `PATH`. A user-writable Python environment could therefore accidentally become an editor dependency; pin the helper to a verified, image-owned interpreter.
-- Workload egress is off by default. `INTERACTIVE_INTERNET_ENABLED=1` on the Scheduler **and** `INTERACTIVE_ALLOW_INTERNET=1` on the selected Worker are required for a new runtime to use Docker's bridge network. The browser cannot enable either policy.
-- `Scheduler/.env.runtime.example` has `WORKSPACE_EDITOR_ENABLED=1`, `INTERACTIVE_INTERNET_ENABLED=0`, and `WORKSPACE_SAVE_ENABLED=0`. The current editor's “online” badge reflects the Scheduler launch hint, so check its claim against the Worker’s actual network mode before treating it as proof of connectivity.
-
-The old `INTERACTIVE_ACCESS_FLOW.md` describes a different SSH/root design. Use the live Docker-exec broker, image builder, and Worker launch code named above as the implementation source of truth.
-
-## 3. Chosen model and trust boundary
-
-Keep the workload's normal image user as `10001:10001` (`dml`) and make `/workspace` and the Python environment writable by that user. Install `sudo` in the image with one root-owned, mode `0440` sudoers entry granting `dml` passwordless commands. The browser terminal remains an ordinary user's shell; `sudo apt-get ...` provides the familiar machine-like workflow.
-
-Give *only the workload* Docker's normal restricted capability set and permit setuid escalation inside that container when development mode is enabled. Do this by omitting `cap_drop=["ALL"]` and `no-new-privileges:true` for that workload mode. Do **not** use `privileged=True`, `cap_add=["ALL"]`, `userns_mode="host"`, host networking, host directory/Docker-socket mounts, or extra GPU devices. Keep Docker's default seccomp/AppArmor profile, the selected GPU UUID, quotas, PID/memory/CPU limits, labels, leases, and exact-ID cleanup. Keep Access and Tailscale sidecars' existing non-root, read-only, capability-dropped settings unchanged.
-
-This mode gives users root **inside a shared-kernel container** through `sudo`. It is appropriate only when the operator accepts that trust model. Make it an explicit operator opt-in, default off, enforced independently at Scheduler and Worker; never accept a browser-supplied privilege flag. The existing strict runtime path must keep its current controls when the opt-in is off.
-
-Use these configuration names consistently, or choose equivalent names once and document the mapping:
-
-```text
-Scheduler: INTERACTIVE_DEVELOPER_MODE_ENABLED=0
-Worker:    INTERACTIVE_ALLOW_DEVELOPER_MODE=0
-
-Existing, separate network gates:
-Scheduler: INTERACTIVE_INTERNET_ENABLED=0
-Worker:    INTERACTIVE_ALLOW_INTERNET=0
-```
-
-For a runtime advertised as fully package-capable, require all four gates to be enabled. If the Worker cannot honor the pinned developer/network policy, return a stable policy/capability failure before starting the workload; do not silently present an offline or sudo-disabled runtime as ready. The Scheduler should avoid scheduling a developer-mode runtime onto a Worker that has not advertised that capability, while the Worker's local check remains authoritative.
-
-## 4. Immutable image and runtime contract
-
-Add a server-owned `developer_mode` boolean to the immutable interactive launch spec. Pin it when the runtime is created and never derive it from a request body. Retrying an existing idempotency key must return the same pinned runtime even if operator policy has changed meanwhile; keep the hash based on the canonical client request. Keep the existing `allow_root` meaning separate: developer mode uses image user `10001`, with controlled `sudo` inside the workload.
-
-The builder must identify which revisions have the prepared developer image profile. Add a versioned image label such as `io.dml.developer-profile=v1`, inspect the resulting image, and report that profile in the trusted Builder ready callback. Persist the result in existing revision metadata or an additive field; the Scheduler must only pin `developer_mode=true` for a revision reported as prepared. At pull time, the Worker independently verifies the image's digest, configured user/workdir, and developer-profile label before applying the relaxed workload launch settings. Do not infer readiness from a mutable tag or merely from the Scheduler flag.
-
-Older revisions without this profile remain eligible for the existing strict runtime mode. Do not mutate their immutable image or silently switch their runtime to developer mode. Show an actionable “create a new workspace image to enable package installation” message where relevant. A new workspace derived from an existing job should also be rebuilt into the prepared profile; qualify the source image as described in section 5.
-
-The image configuration, rather than a one-off shell command, must contain:
-
-```text
-User:       10001:10001
-WorkingDir: /workspace
-HOME:       /home/dml
-VIRTUAL_ENV:/opt/dml-venv
-PATH:       /opt/dml-venv/bin:<existing base-image PATH>
-```
-
-The image must not declare `/workspace`, `/opt/dml-venv`, or `/home/dml` as Docker volumes or mount them at runtime. They are ordinary paths in the workload's writable filesystem. This is a forward-compatibility requirement, not a request to implement persistence in this phase.
-
-## 5. Prepare the development image in the Builder
-
-Update `Docker_Image_Builder/interactive_build.py::dockerfile()` and focused builder tests. Preserve digest-pinned `FROM`, archive validation, immutable tags, and build cancellation. Build in this order:
-
-1. Switch to `USER root` for image preparation. Establish `/workspace`, the `dml` account with UID/GID 10001 and a usable shell, and `/home/dml` with correct ownership.
-2. Qualify the base for this profile: it needs `/bin/sh`, a usable Python interpreter, a Debian/Ubuntu `apt` installation for OS-package management, and an image-owned Python interpreter for the editor helper. A source image that cannot support these requirements must fail at build time with a stable, user-facing reason, rather than producing a READY image with broken tools. Do not run untrusted `Dockerfile` content from the upload.
-3. Install the minimal bootstrap packages as root during the image build: `sudo`, the matching `python3-venv`/`ensurepip` support where necessary, `ca-certificates`, and ordinary build tools needed by common pip packages (`build-essential`, `pkg-config`, `git`, `curl`). Use noninteractive apt, `--no-install-recommends`, and remove apt index files from the built layer after installation. Resolve the venv package against the Python actually selected for the workspace; fail clearly if that interpreter cannot create a working venv.
-4. Create `/opt/dml-venv` using that Python with `--system-site-packages`, so the selected PyTorch/CUDA stack remains importable. Make the environment owned by UID/GID 10001. Set `VIRTUAL_ENV` and prepend its `bin` directory to image `PATH` with Dockerfile `ENV`, not an activation script. Run smoke checks for `python`, `python3`, `pip`, `torch`, and the expected CUDA bindings before publishing the image.
-5. For an uploaded workspace, copy the project and install `requirements.txt` with `/opt/dml-venv/bin/python -m pip install -r /workspace/requirements.txt`. Do not run bare system `pip`; PEP 668 base images may reject it. If the user did not upload files, the placeholder empty requirements file must still allow creation of an empty development workspace.
-6. Configure a root-owned `/etc/sudoers.d/dml` granting `dml` `NOPASSWD:ALL`; set mode `0440` and validate with `visudo -cf` during build. Do not expose registry, object-store, Worker, or management credentials in the workload image or environment.
-7. Chown `/workspace`, `/opt/dml-venv`, and `/home/dml` to 10001. Switch the final image back to `USER 10001:10001`, retain `WORKDIR /workspace`, and apply the versioned developer-profile label.
-
-Choose one Python executable as the workspace default and test it across representative official PyTorch tags and from-job sources. In particular, `python -c 'import torch'` must succeed *inside the venv*, and an imported package installed later must be visible to the same `python` used by `python train.py`. Do not patch PEP 668 away globally or set `PIP_BREAK_SYSTEM_PACKAGES=1` as the product solution.
-
-For package commands, document `pip install <name>` and `sudo apt-get install <name>`. Discourage `sudo pip install`: it bypasses the user-owned environment and can damage the Python stack. The shell may allow it because the user has sudo, but product guidance should point to the consistent interpreter.
-
-## 6. Workload launch and policy enforcement
-
-Update `Scheduler/app/services/scheduling/config.py` and the runtime admission path to pin `developer_mode` from operator policy plus the ready revision's reported profile. Include this server-owned field in the immutable launch spec and runtime public capability response. Ensure the browser's resource-requirements object still cannot set it.
-
-Update Worker readiness/inventory and `Worker/interactive/docker_ops.py` so the Scheduler can place developer-mode work on capable Workers and the Worker rechecks its local `INTERACTIVE_ALLOW_DEVELOPER_MODE` and `INTERACTIVE_ALLOW_INTERNET` gates. Reject a mismatch with a stable error before creating any workload. The Worker's image pull validation must reject a `developer_mode=true` spec unless the inspected digest has the expected profile label, UID 10001, and `/workspace` workdir.
-
-After creating the workload but before publishing READY, extend `Worker/interactive/manager.py`'s existing broker smoke check to execute `id -u`, `sudo -n id -u`, `python -m pip --version`, a PyTorch import, and the fixed editor helper interpreter. Expect the shell user to be 10001 and sudo's target user to be 0. Fail and clean up through the existing fenced startup path if these checks fail; do not leave a superficially READY runtime whose package tools are broken. Keep the checks local to the workload; external package downloads belong in the end-to-end acceptance test, not on every startup.
-
-Construct workload Docker options explicitly for both modes:
-
-| Option | Existing strict mode | Operator-enabled developer mode |
+| Component | Existing behavior | Required change |
 | --- | --- | --- |
-| Configured user | Image user | Image user `10001:10001` |
-| Capabilities | Drop all | Docker default restricted set |
-| `no-new-privileges` | Enabled | Omitted so `sudo` setuid can work |
-| Network | Existing pinned policy | Default bridge, only after both internet gates |
-| Privileged/host mounts/host net | Never | Never |
-| GPU, CPU, RAM, PID, disk, labels, leases | Existing limits | Same limits |
+| Scheduler | Owner-checked Start/status/Stop and single-use WSS grants in `Scheduler/app/services/interactive_runtime_service.py`; one immutable `workspace` or `terminal` service per runtime | Add SSH capability/status, owner-checked SSH info and grant APIs, CLI authentication, and bounded SSH lifetime policy |
+| Management | `Headscale_Management` binds one named service to TCP 9000; admission ticket is single-use, renewable lease is short, session max is currently 1800 seconds | Keep the same resource/port and revocation model; add an explicit SSH grant purpose and an operator-bounded longer deadline without lengthening browser grants |
+| Gateway | `Gateway/interactive_gateway/main.py` authenticates WSS, claims the grant, and blindly relays binary frames to tailnet TCP 9000 | Reuse the relay. Permit explicitly configured CLI clients with no browser Origin; preserve ticket and destination checks. Tune connection limits after measuring VS Code |
+| Access | `Access_Container/interactive_access/session.py` accepts framed `terminal-stream-v1` and `workspace-stream-v1` over loopback TCP 9000; default capacity is one | Add an explicit SSH-opening record followed by a byte-clean raw stream to the bound Worker broker; isolate SSH capacity from the browser editor/PTY |
+| Worker | `Worker/interactive/manager.py` owns exact containers and a Unix broker; `broker.py` launches only fixed Docker-exec shells; workload has no published port | Start and supervise a workload-local SSH daemon, supply ephemeral runtime keys, bridge each authorized SSH stream to that exact container, and fence all tasks on Stop/lease loss |
+| Builder | `Docker_Image_Builder/interactive_build.py` prepares `dml`, `/workspace`, `/home/dml`, the venv, sudo and curl | Add a versioned SSH-capable image profile with OpenSSH, SFTP, tar and VS Code prerequisites; do not modify old immutable revisions |
+| User client | Browser uses its own WSS protocol | Add a small cross-platform local CLI and SSH `ProxyCommand` configuration; VS Code continues to use the installed OpenSSH client |
 
-Do not mutate the Access or sidecar containers. Preserve preflight, exact label checks, cancellation fences, terminal close behavior, and cleanup. Because apt and pip can consume substantial writable storage, confirm the user-selected disk quota applies to `/var/lib/dpkg`, `/var/cache/apt`, `/opt/dml-venv`, `/home/dml`, and `/workspace`. Report disk exhaustion as a package/runtime error without allowing host disk exhaustion.
+The old `INTERACTIVE_ACCESS_FLOW.md` sketches a different SSH/root/namespace-sharing architecture. Do not copy its `sshd` in Access, `nsenter` launcher, one-time password, or direct public SSH listener. The live Worker Docker-exec broker, current Scheduler grant path, and this plan are the implementation sources of truth.
 
-## 7. Terminal, editor, and shell behavior
+## 3. Selected architecture and protocol
 
-Update `Worker/interactive/broker.py` so Docker exec inherits the prepared image's `PATH` and `VIRTUAL_ENV`, uses `HOME=/home/dml` (or the validated account home), remains in `/workspace`, and continues to run as the inspected image user. Keep PTY dimensions, cgroup identity checks, process termination, and the one-shell-per-connection behavior. Do not insert a shell wrapper that changes the process identity or defeats terminal cleanup.
+```text
+VS Code Remote-SSH -> local OpenSSH -> dml-ssh ProxyCommand
+    -> Scheduler owner-checked SSH grant -> Gateway WSS/ticket/lease
+    -> tailnet TCP 9000 -> Access SSH_OPEN -> Worker Unix broker
+    -> fixed Docker-exec byte bridge -> workload loopback sshd -> dml /workspace
+```
 
-Pin `Worker/interactive/file_service.py` to an image-owned interpreter outside `/opt/dml-venv`, so ordinary user `pip` changes cannot remove its dependencies. Validate that this interpreter exists before a runtime becomes READY. Keep the file helper running as the workspace user and rooted at the Worker-selected `/workspace`; terminal sudo must not grant the browser file API arbitrary host paths or Docker commands.
+Use the existing registered `workspace` service/resource and port 9000 for SSH-capable editor runtimes. Management currently supports one endpoint service per resource; creating a second resource or exposing port 22 would unnecessarily duplicate enrollment and cleanup. The new Scheduler `/ssh-connection` API issues a grant for that same immutable service with an explicit `purpose=ssh`. After Gateway authentication, the local proxy sends one bounded `SSH_OPEN` control record containing its public key and expected runtime generation. Access authenticates to the existing runtime-bound Unix broker, sends a fixed SSH operation, receives `SSH_READY`, then switches that one connection to opaque binary SSH bytes. The broker compares the claimed generation with its server-side assignment; a client value never selects a container. No user-supplied command, container ID, host path, network address, or Docker argument crosses the broker API.
 
-Check the editor UI in `UI/User/src/features/workspace/` and the runtime public response. Show an accurate package-capability hint only for a ready, verified developer runtime. Distinguish “network configured for this runtime” from a proven internet connection if no external connectivity probe is performed. Provide a short terminal help example for `pip install`, `sudo apt-get install`, and `python train.py`. Preserve clear **live-only** messaging. Keep Save for Later and Submit for Training disabled according to their actual backend feature flags; `editor_capable` alone must not enable those buttons. Do not implement either feature in this phase.
+Use normal OpenSSH **inside the workload**. The Worker starts `sshd` through fixed Docker exec as root in the exact verified container. It binds only workload `127.0.0.1` on an internal fixed port, with no Docker `ports`, `network_mode=host`, shared Access/workload namespace, or Worker-host listener. Keep the workload's existing `none`/operator-enabled bridge network policy. A second fixed Docker-exec relay connects to that workload-loopback daemon for each approved WSS stream; its stdin/stdout attach must be byte-clean, non-PTY, bounded, and independently cancellable. Handle Docker's non-TTY stdout/stderr multiplexing explicitly; do not mistake its framing for SSH data or send stderr into the SSH stream.
 
-Verify both the terminal-only compatibility path and the browser workspace editor path. An install in either PTY must affect the *same workload* that runs the user's code and serves `/workspace` in the editor. A reconnect must create a new shell without resetting packages, the venv, the user home, or saved live files.
+Before implementing the full stack, build a focused real-Docker spike that proves byte-exact bidirectional transfer, EOF/half-close, backpressure, two simultaneous connections, OpenSSH handshake, `ssh -T ... pwd`, SFTP, and local TCP forwarding for both `network_mode=none` and bridge. A fixed image-owned relay program may be used inside the workload; invoke it with a fixed argument vector and a pinned interpreter. If Docker attach cannot satisfy these tests, document the failing evidence before selecting a Worker-owned, PID/cgroup-verified connection into workload loopback. Do not fall back to a published port, host Docker socket, or shared tailnet namespace.
 
-### File-by-file implementation map
+Version the Access-to-Worker SSH operation and Access opening record. Only `SSH_OPEN` may transition from framed records to raw bytes, and only after both sides acknowledge readiness. Bound handshake size/time, reject trailing control bytes, treat WebSocket frames as arbitrary chunks, and apply awaited writes rather than unbounded queues. Preserve the existing framed browser protocols without reinterpretation. Map errors to stable public codes and never log SSH payloads, user commands, tickets, keys, or VS Code install output.
 
-| Area | Inspect and change |
-| --- | --- |
-| Builder image recipe and publication | `Docker_Image_Builder/interactive_build.py`, `Docker_Image_Builder/interactive_api.py`, `Docker_Image_Builder/test/unit/test_interactive_build.py` |
-| Trusted image capability callback | `Scheduler/app/schemas/interactive_workspace_schema.py`, `Scheduler/app/api/interactive_workspace_route.py`, `Scheduler/app/services/interactive_workspace_service.py` |
-| Runtime policy and placement | `Scheduler/app/services/scheduling/config.py`, `Scheduler/app/services/interactive_runtime_service.py`, `Scheduler/app/services/scheduling/policy.py`, `Scheduler/app/services/interactive_capacity_service.py` |
-| Worker advertisement and launch | `Worker/hardware.py`, `Worker/managed_worker.py`, `Worker/interactive/docker_ops.py`, `Worker/interactive/manager.py` |
-| Shell and editor execution | `Worker/interactive/broker.py`, `Worker/interactive/file_service.py`, `Worker/interactive/workspace_broker.py` |
-| User feedback | `UI/User/src/features/workspace/WorkspaceIDE.tsx`, `UI/User/src/features/workspace/components/IDETitleBar.tsx`, `UI/User/src/services/interactive.ts` |
-| Deployment examples and focused tests | `Scheduler/.env.runtime.example`, `Worker/.env.example`, `docs/interactive-runtime-operations.md`, relevant `Scheduler/test`, `Worker/test`, `Docker_Image_Builder/test`, and `test/interactive_e2e` cases |
+## 4. Workload image and SSH policy
 
-## 8. Tests to add or update
+Introduce a new Builder label such as `io.dml.vscode-ssh-profile=v1`. Only new, validated Debian/Ubuntu developer images receive it. Install `openssh-server`, the matching SFTP server, `tar`, `curl` or `wget`, `bash`, `ca-certificates`, and any current VS Code Server glibc/libstdc++ prerequisites. Validate the exact supported base-image family, executable paths, `dml` UID/GID 10001, `/workspace`, writable `/home/dml`, `/opt/dml-venv`, and enough writable quota for `.vscode-server`. Older revisions and unsupported bases must remain browser-capable but `ssh_capable=false`; never relabel an existing image digest.
 
-### Builder unit and image tests
+The Worker independently verifies the pinned image digest/profile/user/workdir before enabling SSH. Add a small Docker-managed tmpfs such as `/run/dml-vscode-ssh` to the workload for the per-runtime host private key, authorized public keys, sshd config, PID/socket state, and nothing else. It must not be a Worker-host bind mount or an image volume. Generate keys after container start, check permissions and symlinks, and delete them when the exact runtime ends. Snapshot/Save must never capture SSH keys or client authorization; test this against the existing snapshot path.
 
-- Assert the generated Dockerfile uses the selected base interpreter, installs bootstrap packages, creates the venv, installs uploaded requirements into it, validates sudoers, and ends with `USER 10001:10001` plus the versioned profile label. Cover both upload and existing-job origins and an empty upload.
-- Assert no bare `RUN pip install` against the system interpreter, no global `PIP_BREAK_SYSTEM_PACKAGES`, and no credentials, Access agent, host mount, or Docker socket in the generated workload image.
-- Build at least one real official PyTorch/CUDA image in an integration gate. Run `python -c 'import torch; print(torch.__version__)'`, `pip --version`, `sudo -n true`, and `python -m pip install six`; verify the same `python` imports `six`. Exercise a Debian/Ubuntu Python 3.12/PEP 668 case to catch the reported failure. Validate an unsupported base fails before READY.
+Use a minimal, root-owned sshd configuration. It must allow only user `dml` with public-key authentication; deny root login, passwords, keyboard-interactive auth, agent/X11 forwarding, remote port forwarding, Unix/SSH tunnels, and user-controlled environment or startup hooks. Allow PTY, exec, SFTP, and only the local TCP/stream-local forwarding needed by VS Code, with loopback destination restrictions. Verify actual `sshd -T` output and VS Code behavior rather than assuming a directive provides the desired restriction. Keep host keys runtime-specific. Cap unauthenticated handshakes, authenticated connections, processes, and logs within existing workload quotas.
 
-### Scheduler and Worker tests
+To land directly in `/workspace`, add a fixed image-owned session entry wrapper invoked by sshd. It must `cd /workspace`, preserve the expected `HOME=/home/dml`, venv `PATH`/`VIRTUAL_ENV`, and execute shell, noninteractive commands, and the configured SFTP subsystem correctly. Test `ssh host`, `ssh host pwd`, `ssh -T host 'bash -s'`, `scp`, SFTP, and VS Code's server installer. Do not implement the wrapper on the Worker host or use client command strings in host-shell commands. The Worker's SSH readiness smoke test must cover the actual user, cwd, host-key fingerprint, executable prerequisites, and an SSH connection before publishing SSH-ready status.
 
-- Scheduler: developer mode defaults off; browser-supplied `developer_mode`, internet, root, or Worker identity fields are rejected; the profile is pinned into a new runtime, and idempotent retries retain the original profile after policy changes; old revisions retain strict mode; an unprepared revision is never advertised as package-capable.
-- Scheduler placement: a developer runtime chooses only a Worker advertising the required capability; a mismatched Worker remains ineligible; no privilege policy is supplied by the user-selected CPU/RAM/disk form.
-- Worker: strict mode still has `cap_drop=["ALL"]` and `no-new-privileges`; developer mode omits those two options but still has no privileged flag, host mounts, Docker socket, host networking, published ports, or extra GPU devices. A missing local gate, missing internet gate, mismatched image label, wrong UID, or wrong workdir fails before workload start.
-- Broker and file helper: shell is non-root with `/workspace`, `/home/dml`, venv `PATH`; `sudo -n` works only in the configured developer image; file operations still execute as the image user through the image-owned helper interpreter. Terminal close/reopen keeps workload filesystem state.
+The owner controls code and, in developer mode, may have sudo inside their own workload. Treat that container as untrusted. Never put Scheduler/Worker/registry/Headscale credentials or the Docker socket in it. An owner breaking their own sshd must not gain access to another runtime; report SSH unavailable while preserving browser access where the existing workload is healthy.
 
-### End-to-end acceptance on a provisioned GPU Worker
+## 5. Identity, client authorization, and host-key verification
 
-Start a fresh developer workspace through the browser. Save `train.py` in the editor, run it in the terminal, edit it again, and confirm output changes immediately. Run `pip install six`, import it, run `sudo -n apt-get update`, install a small OS package, and invoke its binary. Close/reopen the terminal and repeat both checks. Verify PyTorch still imports and `torch.cuda.is_available()` reflects the assigned GPU. Verify the command cannot see a Docker socket or Worker host mounts. Stop the runtime and confirm exact-ID cleanup and lease release work normally; do not claim that this phase preserves stopped-runtime changes.
+Build an installable `dml-ssh` local CLI for Linux, macOS, and Windows OpenSSH. It manages only its own protected configuration and uses HTTPS/WSS certificate validation. Its `login` command uses a new scoped CLI authentication flow: username/password over Scheduler HTTPS once, short access token, rotating opaque refresh token with server-side hash/revocation and finite expiry. Prefer the OS credential store for the refresh secret. On systems without one, permit an explicitly selected user-only credential file after checking ownership and permissions; never silently write a bearer token to an ordinary file. A CLI token must have only `interactive:ssh` scope. Update `Scheduler/app/api/deps.py` so this token cannot be used for general user routes; SSH info accepts either a normal browser owner token or the scoped CLI token, while SSH connection grants accept the scoped CLI token. Include logout/revoke, account disablement, refresh rotation/replay handling, and rate limits. Do not ask users to copy the browser's local-storage JWT into an SSH config or command line.
 
-Repeat the negative path with developer mode disabled: no `sudo` escalation, strict Docker options, no misleading “package-capable” UI, and no regression in ordinary editor/terminal access. Test a Worker with internet disabled to ensure it never reports a fully package-capable runtime as READY. Run focused Builder, Scheduler, Worker, Access, and UI tests plus the existing interactive end-to-end suite; record exact commands and results in the implementation report.
+`dml-ssh configure <workspace-or-runtime-id>` resolves the owner's current READY runtime, confirms `ssh_capable` and generation, creates a local Ed25519 identity if needed, obtains the workload's public SSH host key through an authenticated Scheduler endpoint, and writes an SSH host entry and pinned `known_hosts` entry under user-only permissions. The alias contains runtime ID and generation. Use `StrictHostKeyChecking yes`, `IdentitiesOnly yes`, the local identity file, `User dml`, and `ProxyCommand dml-ssh proxy --runtime <id> --generation <n> --public-key <path>`. Never use `AutoAddPolicy` or `StrictHostKeyChecking no`. On Stop/restart/reassignment the old alias must fail closed; reconfigure to trust the new generation's key. Preserve unrelated `~/.ssh/config` and `known_hosts` entries. Provide a separate generated config file and print the `Include` or `-F` instruction; modify an existing user config only with explicit local CLI consent and an atomic backup.
 
-## 9. Delivery order and rollout
+Each `ProxyCommand` invocation obtains a **fresh** single-use SSH-purpose grant after checking owner, READY, desired RUNNING, matching generation, and SSH health. It opens WSS, authenticates within five seconds, sends `SSH_OPEN` with a single validated SSH public key, waits for `SSH_READY`, and copies stdin/stdout as binary bytes. Send errors only to stderr, never stdout. Do not put tickets in URLs, argv, environment, disk, analytics, or logs. Support simultaneous invocations because VS Code may use separate SSH connections for server setup and its tunnel. On expired CLI credentials, refresh silently once; on invalid refresh, exit with a clear `dml-ssh login` instruction and no insecure fallback.
 
-1. Add tests for the failing current behavior, then implement and qualify the Builder's prepared image profile. Do not roll out the Worker's relaxed launch policy before the image profile can be independently verified.
-2. Add revision capability reporting and Scheduler/Worker policy gates. Keep both new flags default `0`; update `Scheduler/.env.runtime.example`, `Worker/.env.example`, and `docs/interactive-runtime-operations.md` with the new settings and the user command examples.
-3. Fix broker home/environment and pin the file helper's interpreter. Run strict-mode regressions before enabling the new path.
-4. Add accurate UI capability text, then perform real-image and real-GPU browser acceptance. Build and publish new workspace revisions for this profile; old immutable revisions keep their old behavior.
-5. Enable both developer-mode flags and both internet flags only on a deployment that has passed these checks. Restart Scheduler and Workers, then create a **new** runtime. Roll back by disabling admission of new developer runtimes and letting current assignments stop through the normal fenced path; do not rewrite or delete existing images.
+The Access/Worker path trusts the SSH public key **only after** Gateway has consumed a valid owner grant. The Worker validates one Ed25519 public key with strict length/format bounds, installs it idempotently in runtime tmpfs through a fixed in-container helper, and caps distinct keys. SSH's key proof remains required, but the WSS grant is the authorization boundary. A public key on its own cannot dial workload sshd. Do not persist authorized keys in `/workspace`, `/home/dml`, the base image, or a saved image. The Worker reports the generated SSH host public key/fingerprint through a fenced authenticated event; Scheduler stores it with runtime ID and generation and exposes it only for that owned READY runtime. A changed key within one generation is a hard failure, not an automatic trust update.
 
-## 10. Forward-compatibility contracts only
+## 6. Scheduler, Management, Gateway, and runtime lifecycle
 
-Keep the user's edited `/workspace` files, `/opt/dml-venv`, `/home/dml`, and OS package changes inside the workload filesystem, with no Docker volumes at those paths. Keep the image's `PATH`, `VIRTUAL_ENV`, user, and workdir consistent so a later process launched from that image uses the same Python environment. Preserve immutable image digests, labels, and revision provenance. These are design constraints for later work; **do not implement capture, publication, durable Save, or training in this task**.
+Add default-off `INTERACTIVE_SSH_ENABLED` on Scheduler and `INTERACTIVE_ALLOW_SSH` on Worker. Pin `ssh_capable` in the server-owned immutable launch spec only when the feature is enabled and the ready revision has the new image profile; the browser resource form cannot set it. Worker capability advertisement and its local gate must independently reject mismatch before SSH startup. Add a separate `ssh_ready`/failure status to runtime health without exposing Docker IDs, tailnet addresses, secret paths, keys, or another user's runtime. Use an additive PostgreSQL migration for persisted host public key, SSH status/generation and any CLI refresh-token table; keep existing rows valid. Update schema/check constraints only if needed. The current `workspace` service and editor protocol remain pinned as before.
+
+Add `GET /interactive/runtimes/{id}/ssh-info` and `POST /interactive/runtimes/{id}/ssh-connection` (names may be adjusted consistently) with the same owner and assignment fencing as `workspace-connection`. The info response contains only runtime/generation, SSH user, `/workspace`, public host key/fingerprint, and capability/status. The connection response contains WSS URL, single-use ticket, admission expiry, runtime/generation and purpose; use `Cache-Control: no-store`. A second check after remote grant creation must revoke a grant if Stop, generation change, or SSH-health loss raced the call. Rate-limit independently from browser connection requests so VS Code's initial parallel connections work without removing abuse controls. Reject unknown request fields and client-selected Worker/port/container/command values.
+
+Extend Management grants with explicit purpose `browser` or `ssh` (default `browser` for old callers) and a bounded SSH session maximum configured by the operator, for example four hours. Keep the existing 60-second admission expiry, 15-second renewable authorization lease, one-time claim, and exact resource/generation/service checks. The purpose is signed in the ticket and stored with the grant. Since both protocols use the same `workspace` endpoint, purpose controls session duration; owner authorization and the Worker's pinned SSH capability control access. Do not describe purpose as an Access-side security boundary unless the implementation adds and tests a way for Access to verify the Gateway's claimed purpose. Old browser grants retain their current 30-minute maximum. A long SSH session is still cut immediately on Stop/revocation/lease loss. Update the Gateway only as needed to validate/record purpose, permit configured CLI clients with absent Origin (`GW_ALLOW_CLI`), and apply bounded per-user/global connection limits. Do not rely on a User-Agent as authentication or allow arbitrary destination ports; the Gateway remains restricted to tailnet TCP 9000.
+
+Interactive runtimes currently default to **10 minutes** in both `Scheduler/.env.runtime.example` and `Worker/.env.example`; Manager has an independent local cap. Define a finite operator-owned SSH runtime lifetime (for example four hours) and align Scheduler deadline, Worker local cap, Management SSH session cap, UI countdown, and documentation. Make the SSH lifetime explicit in the immutable launch spec so a mixed Worker pool cannot silently use different limits. Do not turn off the lease guard or make runtimes immortal. The CLI must handle expected expiry with an actionable message; reconnecting after a normal SSH transport drop must obtain a new grant to the same generation.
+
+Start ordering: verify image -> create workload -> create tmpfs keys/config -> start/smoke sshd -> start/smoke broker -> start Access/sidecar -> enroll/probe -> report SSH host key and health -> READY. Keep existing browser readiness working for non-SSH runtimes. On later sshd death, deny new SSH grants and close affected SSH relays; report SSH unavailable while preserving healthy browser access. On Worker restart, lost assignment, lease expiry, Stop, or normal time limit, withdraw the endpoint, cancel relays and execs, stop exact containers, revoke grants, and clean tmpfs through the existing journal/label fences. Avoid changing `broker.busy` into a global lock: preserve browser PTY/editor limits while allowing bounded concurrent SSH connections.
+
+## 7. Implementation map and delivery order
+
+1. **Protocol/Docker feasibility gate.** Add a disposable SSH-capable test image and a real-Docker test of the fixed Docker-exec stream bridge, without Gateway or Scheduler. Prove the byte, concurrency, SFTP, forwarding, EOF, cancellation, and network-mode properties in section 3. Record exact Docker version/API assumptions. Resolve this gate before changing production admission.
+2. **Builder and Worker.** Update `Docker_Image_Builder/interactive_build.py` and its image tests; add Worker's image-profile validation, tmpfs, sshd startup/smoke, host-key report, fixed SSH bridge, health/capacity counters, and exact cleanup in `Worker/interactive/docker_ops.py`, `manager.py`, `broker.py` and focused tests. Keep the current default shell/file broker unchanged for old runtimes.
+3. **Access protocol.** Extend `Access_Container/interactive_access/protocol.py`, `session.py`, and `broker_client.py` with the versioned SSH opening and raw relay. Add framing-to-raw transition, malformed input, backpressure, half-close, and cancellation tests. Raise/tune capacity only with per-mode bounds and tests.
+4. **Control plane.** Add migration, capability and host-key state, CLI-scope auth/refresh, owner-only SSH info/grant endpoints, Management grant purpose/deadline, and Gateway CLI admission/capacity changes. Touch `Scheduler/app/services/interactive_runtime_service.py`, `interactive_controller.py`, `Scheduler/app/api/interactive_runtime_route.py`, `Headscale_Management/headscale_management/grant_service.py`, schemas/models, and related tests. Keep deployment order backward compatible: upgraded services must handle old Workers/runtimes, and new SSH admission remains off until all layers are deployed.
+5. **Local CLI and UX.** Add a packaged client under a dedicated directory with `login`, `logout`, `configure`, `proxy`, and `doctor` commands; test Linux/macOS/Windows path quoting, SSH config generation, credential-store failure, TLS validation, HTTP errors, WSS binary transport, and stdout cleanliness. Add a small “Connect with VS Code” section to the owned runtime page only when SSH-ready. Show the exact configure command, current generation, `/workspace` destination, and live-only Stop behavior; never display a reusable secret or copy a ticket.
+6. **Real deployment gate and rollout.** Run the end-to-end matrix below through public HTTPS/WSS on a separate GPU Worker and actual VS Code Remote-SSH. Update `Scheduler/.env.runtime.example`, `Worker/.env.example`, `Gateway/.env.example`, `deploy/interactive/`, `docs/interactive-runtime-operations.md`, and the new CLI README with install, enable, revoke, observe, and rollback steps. Publish pinned image digests. Enable Scheduler/Worker SSH flags only after the gate passes.
+
+## 8. Required tests and failure matrix
+
+**Unit/component tests:** strict API fields and ownership; runtime/generation/host-key pinning; CLI token scope, rotation and revocation; old grant defaults and SSH-only extended deadline; no grant after Stop; late remote grant revocation; Access framed/raw parser boundary and frame fragmentation; byte-for-byte binary/large transfer; backpressure and no unbounded buffer; parallel SSH + browser sessions; no global broker `busy` conflict; key parser rejection; idempotent key install; exact-label Docker targeting; no host mount/port/privileged flag; sshd configuration; all exit/timeout cleanup paths. Keep existing Access, Gateway, Headscale Management, Scheduler, Worker, Builder, and browser tests green.
+
+**Real-Docker tests:** start a supported new image in both offline and internet-enabled modes; connect through the Worker broker to workload-local sshd; verify `pwd`, UID, environment, SFTP, `scp`, upload/download of binary and >2 MiB files, VS Code Server install prerequisites, loopback forwarding, simultaneous connections, host-key pinning, and process cleanup. Show Docker `inspect` evidence of zero published ports, no host bind mounts, expected GPU UUID and resource limits. Confirm snapshot output contains no SSH private key or authorized key. Test an old image and a deliberately broken SSH daemon without damaging browser access.
+
+**Public end-to-end tests:** use the actual Scheduler login/CLI refresh, owner-checked SSH grant, Gateway WSS, management lease, tailnet endpoint, Access and Worker on separate hosts. Open VS Code `/workspace`, create/edit a file, run `python train.py`, install/import a package, and verify a browser edit appears in SSH and vice versa. Forward workload `127.0.0.1:8888` locally. Keep VS Code connected beyond the old 10-minute runtime and 30-minute grant limits, then test reconnect to the same generation. Test Stop, owner disablement, stolen/replayed ticket, stale generation, wrong host key, Worker crash, management outage, and runtime time limit; check that access ends within the established lease/cleanup bounds. Record actual commands, versions, results, and any skipped environmental gates. A mocked protocol test does not count as VS Code acceptance.
+
+**Operational checks:** logs contain IDs, outcomes, byte counts and durations only; never passwords, refresh tokens, tickets, public-key payload bodies, SSH commands, or forwarded bytes. Metrics distinguish SSH grant denial, gateway dial failure, broker/sshd failure, VS Code client disconnect, and ordinary runtime expiry. Test that disabling the feature stops new SSH grants while existing assignments are drained or stopped through normal fences. Do not broaden Docker cleanup or reset Headscale.
+
+## 9. Rollout, rollback, and handoff evidence
+
+Deploy additively in this order: database migration and Management/Gateway compatibility -> Scheduler APIs behind disabled flag -> Worker/Access images and host service update -> new SSH-capable Builder image/revisions -> local CLI -> real end-to-end test -> enable flags for an explicitly chosen Worker pool. Pin all service images by digest. Existing active runtimes are never mutated into SSH runtimes; users start a new generation from an SSH-capable revision. Rollback disables new SSH grants, drains/stops SSH-capable runtimes with exact-ID cleanup, and then rolls back application processes. Keep additive database columns/records until a separately reviewed migration removes them; do not deploy an older Worker against a live new-format assignment.
+
+The implementing agent must hand off: changed-file and migration list; wire/API version contracts; CLI install and sample SSH config; security review of the public-to-container path; exact automated test results; real VS Code Remote-SSH test record including `/workspace` and GPU evidence; duration/capacity settings; and known image/platform limits. If a byte-clean Docker exec stream or real VS Code handshake cannot be proven, report the failing gate and do not claim completion from a browser terminal or plain shell test alone.

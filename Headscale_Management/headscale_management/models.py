@@ -61,6 +61,7 @@ class Grant(Base):
     deadline: Mapped[float] = mapped_column(Float)
     state: Mapped[str] = mapped_column(String)
     ticket: Mapped[str] = mapped_column(Text)
+    purpose: Mapped[str] = mapped_column(String, default="browser")
 
 
 class Session(Base):

@@ -8,7 +8,7 @@ from .auth import require
 from .enrollment_service import get, identifier, utc
 from .models import Endpoint, Grant, Session
 
-REQUIRED = ["iss", "aud", "sub", "jti", "iat", "nbf", "exp", "resource_id", "generation", "service", "protocol"]
+REQUIRED = ["iss", "aud", "sub", "jti", "iat", "nbf", "exp", "resource_id", "generation", "service", "protocol", "purpose"]
 
 
 class GrantService:
@@ -19,6 +19,9 @@ class GrantService:
 
     def issue(self, request, actor):
         require(actor, "controller")
+        purpose = getattr(request, "purpose", "browser") or "browser"
+        if purpose not in ("browser", "ssh"):
+            raise HTTPException(422, "invalid purpose")
         with self.database.transaction() as db:
             endpoint = get(db, Endpoint, request.resource_id)
             if request.user != endpoint.owner or request.gateway_id != self.settings.gateway_id:
@@ -29,13 +32,15 @@ class GrantService:
             self.endpoints.available(db, endpoint)
             now, jti = int(self.clock()), identifier()
             expires = now + self.settings.admission_ttl
+            session_cap = self.settings.ssh_session_max if purpose == "ssh" else self.settings.session_max
             ticket = jwt.encode({"iss": self.settings.issuer, "aud": request.gateway_id, "sub": request.user,
                 "jti": jti, "iat": now, "nbf": now, "exp": expires, "resource_id": endpoint.id,
-                "generation": endpoint.generation, "service": endpoint.service, "protocol": "tcp-stream-v1"},
+                "generation": endpoint.generation, "service": endpoint.service, "protocol": "tcp-stream-v1",
+                "purpose": purpose},
                 self.private, algorithm="EdDSA", headers={"kid": self.settings.signing_kid})
             db.add(Grant(id=jti, user=request.user, resource_id=endpoint.id, generation=endpoint.generation,
                 service=endpoint.service, gateway=request.gateway_id, expires=expires,
-                deadline=now + self.settings.session_max, state="ISSUED", ticket=ticket))
+                deadline=now + session_cap, state="ISSUED", ticket=ticket, purpose=purpose))
             return {"grant_id": jti, "ticket": ticket, "expires_at": utc(expires)}
 
     def decode(self, ticket, admission=True):
@@ -52,9 +57,15 @@ class GrantService:
                 public = record["pem"]
             claims = jwt.decode(ticket, public, algorithms=["EdDSA"],
                 issuer=self.settings.issuer, audience=self.settings.gateway_id,
-                options={"require": REQUIRED, "verify_exp": False, "verify_nbf": False, "verify_iat": False})
+                options={"require": [k for k in REQUIRED if k != "purpose"], "verify_exp": False, "verify_nbf": False, "verify_iat": False})
             if claims["protocol"] != "tcp-stream-v1" or claims["iat"] > self.clock() or claims["nbf"] > self.clock():
                 raise ValueError()
+            if claims.get("purpose", "browser") not in ("browser", "ssh"):
+                raise ValueError()
+            # Backward compatibility: tickets minted before purpose existed
+            # carry no purpose; treat them as browser grants.
+            if "purpose" not in claims:
+                claims["purpose"] = "browser"
             if admission and claims["exp"] <= self.clock():
                 raise ValueError()
             return claims

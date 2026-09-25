@@ -298,10 +298,12 @@ def execution_inventory(coordinator,interactive_ready=False,quota_supported=Fals
     estimation_active = any(r.get('kind') == 'vram_estimation' for r in records)
     try:
         from interactive.docker_ops import developer_mode_enabled, workload_internet_enabled
+        from interactive.ssh import ssh_enabled as _ssh_on
         developer_capable = bool(developer_mode_enabled())
         egress_capable = bool(workload_internet_enabled())
+        ssh_capable = bool(_ssh_on())
     except Exception:
-        developer_capable, egress_capable = False, False
+        developer_capable, egress_capable, ssh_capable = False, False, False
     return {'complete':complete,'observed_at':time.time(),'mode':coordinator.mode,
             'available_slots':0 if estimation_active else (max(0,available_slots-len(records)) if coordinator.mode in ('AVAILABLE','BATCH_ACTIVE') else 0),
             'local_assignments':[r['assignment_id'] for r in records],'free_vram_gb':float(free_vram),
@@ -309,5 +311,6 @@ def execution_inventory(coordinator,interactive_ready=False,quota_supported=Fals
             'cpu_cores':os.cpu_count() or 0,'platform':'linux/arm64' if platform.machine() == 'aarch64' else 'linux/amd64',
             'nvidia_runtime':interactive_ready,'quota_supported':quota_supported,'interactive_ready':interactive_ready,
             'developer_mode_capable': developer_capable, 'internet_egress_capable': egress_capable,
+            'ssh_capable': ssh_capable,
             'gpus':gpus, 'gpu_load': gpu_load,
             'gpus_in_use': count_gpus_in_use(), **node_info}

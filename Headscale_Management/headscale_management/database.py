@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .models import Base
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Database:
@@ -30,10 +30,16 @@ class Database:
             Path(filename + ".pre-migration").chmod(0o600)
         with self.engine.begin() as connection:
             version = connection.exec_driver_sql("PRAGMA user_version").scalar()
-            if version not in (0, SCHEMA_VERSION):
+            if version not in (0, 1, SCHEMA_VERSION):
                 raise RuntimeError("unsupported database schema; no automatic reset")
             if version == 0:
                 Base.metadata.create_all(connection)
+                connection.exec_driver_sql(f"PRAGMA user_version={SCHEMA_VERSION}")
+            elif version == 1:
+                # Additive v2: explicit grant purpose (default browser).
+                cols = [r[1] for r in connection.exec_driver_sql("PRAGMA table_info(grants)").all()]
+                if "purpose" not in cols:
+                    connection.exec_driver_sql("ALTER TABLE grants ADD COLUMN purpose VARCHAR NOT NULL DEFAULT 'browser'")
                 connection.exec_driver_sql(f"PRAGMA user_version={SCHEMA_VERSION}")
         Path(filename).chmod(0o600)
 

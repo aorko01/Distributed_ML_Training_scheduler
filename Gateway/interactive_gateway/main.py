@@ -129,6 +129,10 @@ def create_app(settings=None, management=None, dialer=None, local=None, backgrou
                     or record["generation"] != claims["generation"] or record["protocol"] != "tcp-stream-v1"):
                 raise InvalidTicket()
             ip, port = destination(record)
+            # SSH and browser share the same workspace endpoint/port 9000;
+            # purpose controls session duration server-side, not routing.
+            if port != 9000:
+                raise InvalidTicket()
             await capacity.reserve(record["session_id"], claims["sub"], asyncio.current_task())
             reserved = True
             await capacity.end_auth()

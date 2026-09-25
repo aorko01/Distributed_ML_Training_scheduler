@@ -58,6 +58,7 @@ class Inventory(Strict):
     # or offline runtime as ready.
     developer_mode_capable: bool = False
     internet_egress_capable: bool = False
+    ssh_capable: bool = False
     gpus: Annotated[list[GPU], Field(max_length=64)]
 
 
@@ -87,8 +88,18 @@ class Health(Strict):
     endpoint: bool = False
 
 
+class SshReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    capable: bool = False
+    ready: bool = False
+    status: Annotated[str, Field(max_length=32)] = "disabled"
+    host_key: Annotated[str, Field(max_length=2048)] | None = None
+    fingerprint: Annotated[str, Field(max_length=128)] | None = None
+
+
 class Active(Fence):
     health: Health = Field(default_factory=Health)
+    ssh: SshReport = Field(default_factory=SshReport)
 
 
 class Heartbeat(Strict):
@@ -119,6 +130,7 @@ class Event(Fence):
     phase: Literal["PULLING", "STARTING", "CONNECTING", "STOPPING"]
     health: Health = Field(default_factory=Health)
     failure_code: FailureCode | None = None
+    ssh: SshReport = Field(default_factory=SshReport)
 
 
 class Cleanup(Fence):

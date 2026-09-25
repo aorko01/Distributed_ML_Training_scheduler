@@ -1,12 +1,23 @@
 from fastapi import APIRouter, Depends, Response, Request, HTTPException
-from app.api.deps import get_db, get_current_active_user
+from pydantic import BaseModel
+from app.api.deps import get_db, get_current_active_user, get_cli_user, get_ssh_user
 from app.api.interactive_workspace_route import key
 from app.schemas.worker_execution_schema import Start
 from app.models.interactive_workspace_model import WorkspaceTrainingSubmission
 from app.services import interactive_runtime_service as service
 from app.services import workspace_editor_service as workspace_service
+from app.services import cli_auth_service as cli_auth
 from app.schemas.workspace_editor_schema import SaveRequest, TrainingRequest
 from app.services.interactive_management_client import ManagementClient
+
+
+class CliLogin(BaseModel):
+    username: str
+    password: str
+
+
+class CliRefresh(BaseModel):
+    refresh_token: str
 
 
 async def bounded(request: Request):
@@ -85,6 +96,47 @@ def workspace_connection(
         return service.connection(db, user.user_id, runtime_id, client, workspace=True)
     finally:
         client.close()
+
+
+@router.get("/runtimes/{runtime_id}/ssh-info")
+def ssh_info(runtime_id: str, user=Depends(get_ssh_user), db=Depends(get_db)):
+    return service.ssh_info(db, user.user_id, runtime_id)
+
+
+@router.post("/runtimes/{runtime_id}/ssh-connection")
+def ssh_connection(
+    runtime_id: str,
+    response: Response,
+    user=Depends(get_cli_user),
+    db=Depends(get_db),
+):
+    """Fresh single-use SSH-purpose grant (scoped CLI token only)."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        client = ManagementClient()
+    except (KeyError, OSError, ValueError):
+        raise HTTPException(503, "Connection service unavailable") from None
+    try:
+        return service.ssh_connection(db, user.user_id, runtime_id, client)
+    finally:
+        client.close()
+
+
+@router.post("/cli/login")
+def cli_login(body: CliLogin, db=Depends(get_db)):
+    if len(body.username) > 128 or len(body.password) > 256:
+        raise HTTPException(422, "Invalid credentials")
+    return cli_auth.login(db, body.username, body.password)
+
+
+@router.post("/cli/refresh")
+def cli_refresh(body: CliRefresh, db=Depends(get_db)):
+    return cli_auth.refresh(db, body.refresh_token)
+
+
+@router.post("/cli/logout")
+def cli_logout(body: CliRefresh, db=Depends(get_db)):
+    return cli_auth.logout(db, body.refresh_token)
 
 
 @router.post("/runtimes/{runtime_id}/saves", status_code=202)

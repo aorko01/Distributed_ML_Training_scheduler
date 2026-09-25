@@ -43,6 +43,12 @@ def verify(ticket, settings, resource_id, service, clock=time.time):
                 or claims["exp"] - claims["iat"] > 60 or claims["protocol"] != "tcp-stream-v1"
                 or claims["resource_id"] != resource_id or claims["service"] != service):
             raise ValueError()
+        # purpose is signed in new tickets (browser|ssh); old browser tickets
+        # omit it. Default closed, never used as an Access-side boundary.
+        purpose = claims.get("purpose", "browser")
+        if purpose not in ("browser", "ssh"):
+            raise ValueError()
+        claims["purpose"] = purpose
         for key in ("sub", "jti", "resource_id", "generation", "service"):
             if not isinstance(claims[key], str) or not 1 <= len(claims[key]) <= 128:
                 raise ValueError()

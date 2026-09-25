@@ -62,6 +62,28 @@ DEVELOPER_PROFILE_LABEL = "io.dml.developer-profile"
 DEVELOPER_PROFILE_VERSION = "v1"
 DEVELOPER_USER = "10001:10001"
 DEVELOPER_WORKDIR = "/workspace"
+SSH_PROFILE_LABEL = "io.dml.vscode-ssh-profile"
+SSH_PROFILE_VERSION = "v1"
+
+
+def ssh_spec_enabled(spec) -> bool:
+    """Server-owned SSH flag from the immutable launch spec."""
+    try:
+        return bool(spec.get("ssh_capable"))
+    except Exception:
+        return False
+
+
+def ssh_allowed_locally() -> bool:
+    return os.getenv("INTERACTIVE_ALLOW_SSH", "").strip().lower() in ("1", "true", "yes")
+
+
+def ssh_image_capable(config) -> bool:
+    try:
+        labels = config.get("Labels") or {}
+        return labels.get(SSH_PROFILE_LABEL) == SSH_PROFILE_VERSION
+    except Exception:
+        return False
 
 
 def workload_developer_mode(spec) -> bool:
@@ -275,6 +297,13 @@ class DockerOps:
                 raise RuntimeFailure("UNSUPPORTED_IMAGE")
         return image.id, user, workdir
 
+    def image_labels(self, image_id):
+        try:
+            image = self.client.images.get(image_id)
+            return ((image.attrs.get("Config") or {}).get("Labels") or {})
+        except Exception:
+            return {}
+
     def create(self, record, component, image, **kwargs):
         self.authority(record)
         # Pull trusted service images by pinned digest explicitly; container
@@ -424,6 +453,7 @@ class DockerOps:
                 "ACCESS_RUNTIME_ID": record["assignment_id"],
                 "ACCESS_BROKER_SOCKET": str(runtime_dir / "broker.sock"),
                 "ACCESS_BROKER_TOKEN_FILE": str(runtime_dir / "broker.token"),
+                "ACCESS_SSH_CAPACITY": os.getenv("INTERACTIVE_SSH_CAPACITY", "8"),
             },
             volumes={str(runtime_dir): {"bind": str(runtime_dir), "mode": "ro"}},
             read_only=True,

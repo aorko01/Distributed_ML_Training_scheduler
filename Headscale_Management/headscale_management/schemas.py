@@ -39,6 +39,7 @@ class Issue(Generation):
     service: Identifier
     gateway_id: Identifier
     authorized: Literal[True]
+    purpose: Literal["browser", "ssh"] = "browser"
 
 
 class Claim(Strict):

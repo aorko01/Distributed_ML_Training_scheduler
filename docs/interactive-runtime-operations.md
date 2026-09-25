@@ -356,3 +356,42 @@ Training executability is a derived image (`FROM <saved-digest>` with exec-form
 Rollback: set both internet flags `0`; new runtimes go `none` while existing
 bridge runtimes keep running until Stop. Disable save/submission flags to hide
 the buttons without breaking the live editor. Migrations are additive only.
+
+## VS Code Remote-SSH (plan.md end-to-end)
+
+Native Remote-SSH into the workload container itself (`dml`, `/workspace`),
+not the Worker host/Access/Gateway. Off by default; old images stay
+browser-capable with an actionable SSH-unavailable message.
+
+Enable (after the real deployment gate passes):
+
+```sh
+# Scheduler (restart): INTERACTIVE_SSH_ENABLED=1, INTERACTIVE_SSH_LIFETIME_SECONDS=14400
+# Worker pool (restart): INTERACTIVE_ALLOW_SSH=1, INTERACTIVE_SSH_MAX_DURATION_SECONDS=14400
+# Management: HM_SSH_SESSION_MAX=14400 (browser HM_SESSION_MAX stays 1800)
+# Gateway: GW_ALLOW_CLI=1 (explicit CLI clients, absent Origin; tailnet TCP 9000 only)
+# Builder: publish new SSH-capable revisions (io.dml.vscode-ssh-profile=v1, pinned digest)
+```
+
+User flow (owned READY runtime only):
+
+```sh
+pip install ./dml-ssh
+dml-ssh login --scheduler https://scheduler.example.internal
+dml-ssh configure <workspace-or-runtime-id> --scheduler https://scheduler.example.internal
+# VS Code -> Remote-SSH: Connect to Host -> dml-<runtime>-g<generation> -> open /workspace
+```
+
+Security properties: public entry stays HTTPS/WSS (no public SSH listener);
+scoped `interactive:ssh` CLI tokens (rotation/revocation, cannot hit general
+routes); fresh single-use SSH-purpose grants on the pinned `workspace`
+service/port 9000; server-side generation checks; pinned host keys (changed
+key within a generation = hard failure); sshd bound to workload 127.0.0.1:2222
+with no published ports/host mounts/privileged flags; per-runtime tmpfs keys
+never snapshotted; Stop closes sessions, revokes grants, removes exact runtime
+resources. Logs carry IDs/outcomes/byte counts only.
+
+Rollback: set INTERACTIVE_SSH_ENABLED=0 / INTERACTIVE_ALLOW_SSH=0 to stop new
+SSH grants; drain/stop SSH-capable runtimes with exact-ID cleanup; then roll
+back processes. Keep additive DB columns (009_interactive_ssh.sql, management
+schema v2) until a separately reviewed migration removes them.

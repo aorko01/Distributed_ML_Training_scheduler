@@ -73,6 +73,7 @@ class Ready(Attempt):
     image_digest_ref: str
     resolved_base_digest: str
     developer_profile: str | None = None
+    ssh_profile: str | None = None
 
     @field_validator('developer_profile')
     @classmethod
@@ -81,6 +82,15 @@ class Ready(Attempt):
             return None
         if value != 'v1':
             raise ValueError('unsupported developer profile')
+        return value
+
+    @field_validator('ssh_profile')
+    @classmethod
+    def ssh(cls, value):
+        if value is None:
+            return None
+        if value != 'v1':
+            raise ValueError('unsupported SSH profile')
         return value
 
     @field_validator('image_digest_ref', 'resolved_base_digest')

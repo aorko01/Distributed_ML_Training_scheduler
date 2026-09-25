@@ -92,6 +92,14 @@ DEVELOPER_PROFILE_LABEL = 'io.dml.developer-profile'
 DEVELOPER_USER = '10001:10001'
 DEVELOPER_HOME = '/home/dml'
 DEVELOPER_VENV = '/opt/dml-venv'
+# VS Code Remote-SSH profile (plan.md §4). New validated Debian/Ubuntu
+# developer images receive this label; old digests are never relabelled.
+SSH_PROFILE = 'v1'
+SSH_PROFILE_LABEL = 'io.dml.vscode-ssh-profile'
+# Workload-loopback sshd port (fixed, never published via Docker ports).
+SSH_PORT = 2222
+SSH_USER = 'dml'
+SSH_UID = 10001
 
 
 def dockerfile(item, base, upload):
@@ -116,9 +124,18 @@ def dockerfile(item, base, upload):
         'RUN mkdir -p /workspace /home/dml /opt/dml-venv && chown 10001:10001 /workspace /home/dml',
         # Bootstrap OS tooling as root. Noninteractive, no recommends, and the
         # apt index is removed from the layer afterwards.
+        # SSH-capable profile (§4): openssh-server + SFTP server, tar,
+        # bash, and VS Code Server glibc/libstdc++ prerequisites. Old
+        # revisions keep their immutable layers; only new builds get this.
         'RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends '
-        'sudo ca-certificates curl git pkg-config build-essential python3-venv && '
+        'sudo ca-certificates curl wget bash tar git pkg-config build-essential python3-venv '
+        'openssh-server libc6 libstdc++6 && '
         'rm -rf /var/lib/apt/lists/*',
+        # Image-owned SSH session entry wrapper: lands in /workspace with the
+        # expected HOME/venv env; sshd invokes it via ForceCommand-equivalent
+        # per-key command= prefix installed by the Worker helper.
+        'COPY --chown=0:0 dml-ssh-session /usr/local/bin/dml-ssh-session',
+        'RUN chmod 0755 /usr/local/bin/dml-ssh-session',
         # Workspace venv with access to the base CUDA stack. ENV (not an
         # activation script) makes it the default for every later RUN, exec,
         # and `python train.py`.
@@ -148,6 +165,7 @@ def dockerfile(item, base, upload):
     for key, value in {'workspace': item['workspace_id'], 'revision': item['id'], 'origin': item['origin'], 'source-job': item.get('source_job_id') or ''}.items():
         lines.append(f'LABEL io.dml.{key}={json.dumps(value)}')
     lines.append(f'LABEL {DEVELOPER_PROFILE_LABEL}={json.dumps(DEVELOPER_PROFILE)}')
+    lines.append(f'LABEL {SSH_PROFILE_LABEL}={json.dumps(SSH_PROFILE)}')
     lines.append(f'USER {DEVELOPER_USER}')
     return '\n'.join(lines) + '\n'
 
@@ -161,6 +179,50 @@ def developer_profile_of_attrs(attrs):
     except Exception:
         pass
     return None
+
+
+def ssh_profile_of_attrs(attrs):
+    """Report the VS Code SSH profile; old/unsupported images return None."""
+    try:
+        labels = ((attrs or {}).get('Config') or {}).get('Labels') or {}
+        if labels.get(SSH_PROFILE_LABEL) == SSH_PROFILE:
+            return SSH_PROFILE
+    except Exception:
+        pass
+    return None
+
+
+# Fixed image-owned session entry wrapper executed by workload sshd.
+# Installed via COPY in dockerfile(); kept here so tests and the Worker
+# smoke test pin the exact bytes. cd /workspace, preserve HOME/venv,
+# exec shell / non-interactive command / SFTP subsystem correctly.
+SSH_SESSION_WRAPPER = """#!/bin/bash
+# dml-ssh-session: fixed entry for workload sshd (plan.md §4).
+# Invoked as: dml-ssh-session [command...]. SFTP subsystem calls arrive
+# via SSH_ORIGINAL_COMMAND=sftp-server path; honour it without a shell.
+set -u
+cd /workspace || exit 127
+export HOME=/home/dml
+export VIRTUAL_ENV=/opt/dml-venv
+case ":${PATH:-}:" in
+  *:/opt/dml-venv/bin:*) ;;
+  *) export PATH=/opt/dml-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ;;
+esac
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  case "$SSH_ORIGINAL_COMMAND" in
+    *sftp-server*|*sftp*) exec $SSH_ORIGINAL_COMMAND ;;
+  esac
+  exec bash -c "$SSH_ORIGINAL_COMMAND"
+fi
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
+exec bash -l
+"""
+
+
+def ssh_session_wrapper_bytes():
+    return SSH_SESSION_WRAPPER.encode()
 
 
 def run_command(args, cancel):
@@ -366,6 +428,7 @@ def build(client, item, cancel):
         api.log(item, 'Resolving base image')
         base = resolve(client, source, cancel)
         (root / 'Dockerfile').write_text(dockerfile(item, base, upload))
+        (root / 'dml-ssh-session').write_bytes(ssh_session_wrapper_bytes())
         lock = _get_build_lock(base)
         while not lock.acquire(timeout=0.25):
             check(cancel)
@@ -391,7 +454,7 @@ def build(client, item, cancel):
         if not DIGEST.fullmatch(digest):
             raise BuildFailure('system')
         return {'image_tag': tag, 'image_digest_ref': tag.rsplit(':', 1)[0] + '@' + digest, 'resolved_base_digest': base,
-                'developer_profile': DEVELOPER_PROFILE}
+                'developer_profile': DEVELOPER_PROFILE, 'ssh_profile': SSH_PROFILE}
 
 
 def process(client, item, registry):

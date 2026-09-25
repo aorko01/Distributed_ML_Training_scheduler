@@ -40,6 +40,11 @@ class Type(IntEnum):
     PTY_EXIT = 44
     WORKSPACE_STATE = 45
     CANCEL = 46
+    # VS Code Remote-SSH (plan.md §3): versioned opening record. Only this
+    # type may transition a connection from framed records to raw SSH bytes,
+    # and only after both sides acknowledge readiness.
+    SSH_OPEN = 48
+    SSH_READY = 49
 
 
 class ProtocolError(Exception):
@@ -78,6 +83,21 @@ def parse_json(payload):
     if not isinstance(result, dict):
         raise ProtocolError()
     return result
+
+
+def ssh_open(payload):
+    """Validate versioned SSH_OPEN: {version, public_key, generation}."""
+    value = parse_json(payload)
+    if set(value) != {"version", "public_key", "generation"}:
+        raise ProtocolError()
+    if value["version"] != 1:
+        raise ProtocolError()
+    key = value["public_key"]
+    if not isinstance(key, str) or not key.startswith("ssh-ed25519 ") or len(key) > 1024:
+        raise ProtocolError()
+    if type(value["generation"]) is not int or not 1 <= value["generation"] <= 1 << 31:
+        raise ProtocolError()
+    return value
 
 
 def dimensions(payload, opening=False):

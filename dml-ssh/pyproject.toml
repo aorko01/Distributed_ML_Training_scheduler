@@ -1,0 +1,16 @@
+[project]
+name = "dml-ssh"
+version = "1.0.0"
+description = "Local CLI for VS Code Remote-SSH into DML interactive runtimes"
+requires-python = ">=3.9"
+dependencies = ["requests>=2.28", "websocket-client>=1.5"]
+
+[project.scripts]
+dml-ssh = "dml_ssh.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

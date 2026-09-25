@@ -4,10 +4,136 @@ import uuid
 from contextlib import suppress as _suppress
 from .clock import Clock
 from .broker_client import connect, close_writer
-from .protocol import Type, ProtocolError, dimensions, read_record, write_record, json_bytes, parse_json
+from .protocol import Type, ProtocolError, dimensions, read_record, write_record, json_bytes, parse_json, ssh_open
 from .workspace_protocol import metadata as workspace_metadata, unpack_chunk
 
 log = logging.getLogger('interactive_access')
+
+
+# Separate SSH slot accounting so VS Code's parallel connections never take
+# the single browser editor/PTY slot and vice versa (plan.md §3).
+_ssh_slots: dict = {}
+
+
+def _ssh_capacity(config):
+    return getattr(config, 'ssh_capacity', 8)
+
+
+def _ssh_acquire(config):
+    key = id(config)
+    state = _ssh_slots.setdefault(key, {'active': 0})
+    limit = _ssh_capacity(config)
+    if state['active'] >= limit:
+        return False
+    state['active'] += 1
+    return True
+
+
+def _ssh_release(config):
+    state = _ssh_slots.get(id(config))
+    if state:
+        state['active'] = max(0, state['active'] - 1)
+
+
+async def run_ssh_session(reader, writer, config, clock, opening, session_id=None):
+    """Versioned SSH_OPEN -> SSH_READY -> raw byte relay (plan.md §3).
+
+    Only SSH_OPEN may transition from framed records to raw bytes, and only
+    after both sides acknowledge readiness. Handshake size/time bounded;
+    trailing control bytes rejected; no payload logging.
+    """
+    session_id = session_id or str(uuid.uuid4())
+    started = clock.now()
+    broker = None
+    broker_reader = None
+    outcome, detail = 'SSH_EXIT', 'closed'
+    sent = received = 0
+    acquired = _ssh_acquire(config)
+    try:
+        writer.transport.set_write_buffer_limits(high=65536, low=16384)
+        if not acquired:
+            outcome = 'SSH_BUSY'
+            await write_record(writer, Type.ERROR, json_bytes({'code': outcome}))
+            return outcome, detail, {'input': 0, 'output': 0}
+        value = ssh_open(opening)
+        try:
+            broker_reader, broker = await connect(config, clock)
+        except (OSError, TimeoutError) as exc:
+            outcome, detail = 'SSH_UNAVAILABLE', f'broker connect failed: {type(exc).__name__}'
+            raise
+        await write_record(broker, Type.SSH_OPEN, opening, config.write_timeout)
+        try:
+            kind, payload = await clock.wait(read_record(broker_reader), config.ssh_handshake_timeout)
+        except TimeoutError:
+            outcome, detail = 'SSH_TIMEOUT', 'waiting for SSH_READY'
+            raise
+        if kind != Type.SSH_READY:
+            outcome, detail = 'SSH_UNAVAILABLE', f'expected SSH_READY got kind={int(kind)}'
+            raise OSError()
+        parse_json(payload)
+        await write_record(writer, Type.SSH_READY, payload, config.write_timeout)
+        # Framing-to-raw transition: from here both legs are opaque SSH
+        # bytes. Tailnet TCP may split/coalesce arbitrarily; treat WSS
+        # frames as chunks, apply awaited writes, no unbounded queues.
+        # Half-close propagates; cancellation is independent per direction.
+
+        async def client_to_broker():
+            nonlocal sent
+            while True:
+                chunk = await reader.read(65536)
+                if chunk == b'':
+                    try:
+                        broker.write_eof()
+                    except (AttributeError, OSError):
+                        pass
+                    return 'client-eof'
+                sent += len(chunk)
+                broker.write(chunk)
+                await broker.drain()
+                await asyncio.sleep(0)
+
+        async def broker_to_client():
+            nonlocal received
+            while True:
+                chunk = await broker_reader.read(65536)
+                if chunk == b'':
+                    return 'broker-eof'
+                received += len(chunk)
+                writer.write(chunk)
+                await writer.drain()
+                await asyncio.sleep(0)
+
+        tasks = [asyncio.create_task(client_to_broker()), asyncio.create_task(broker_to_client())]
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = []
+    except asyncio.CancelledError:
+        outcome, detail = 'SSH_SHUTDOWN', 'cancelled'
+        raise
+    except EOFError:
+        outcome, detail = 'SSH_DISCONNECTED', 'peer EOF'
+    except Exception as exc:
+        if outcome == 'SSH_EXIT':
+            outcome = 'SSH_PROTOCOL_ERROR' if isinstance(exc, ProtocolError) else 'SSH_TIMEOUT' if isinstance(exc, TimeoutError) else 'SSH_UNAVAILABLE'
+            detail = f'{type(exc).__name__}'
+        try:
+            await write_record(writer, Type.ERROR, json_bytes({'code': outcome}), config.write_timeout)
+        except (OSError, TimeoutError):
+            pass
+    finally:
+        # After SSH_READY both legs are raw bytes; no framed CLOSE here.
+        await close_writer(broker)
+        await close_writer(writer)
+        if acquired:
+            _ssh_release(config)
+        (log.warning if outcome != 'SSH_EXIT' else log.info)(
+            'runtime=%s session=%s outcome=%s detail=%s duration=%.3f sent=%d received=%d',
+            config.runtime_id, session_id, outcome, detail, clock.now() - started, sent, received)
+    return outcome, detail, {'input': sent, 'output': received}
 
 
 class Capacity:
@@ -214,6 +340,13 @@ async def run_session(reader, writer, config, capacity, clock=None):
             await write_record(writer, Type.ERROR, json_bytes({'code': outcome}))
             return
         kind, payload = await clock.wait(read_record(reader), config.open_timeout)
+        if kind == Type.SSH_OPEN:
+            # SSH has isolated capacity; release the browser slot first.
+            capacity.release()
+            acquired = False
+            outcome, detail, counts = await run_ssh_session(reader, writer, config, clock, payload, session_id)
+            workspace_logged = True
+            return
         if kind == Type.HELLO:
             # The workspace relay logs its own disconnect-traceable summary
             # (byte counts, last record kinds, close side); skip the generic

@@ -54,6 +54,9 @@ def public(db, item):
         base['revision']['developer_profile'] = getattr(rev, 'developer_profile', None)
         if getattr(rev, 'developer_profile', None) != 'v1' and rev.state == 'IMAGE_READY':
             base['revision']['package_hint'] = 'create a new workspace image to enable package installation'
+        base['revision']['ssh_profile'] = getattr(rev, 'ssh_profile', None)
+        if getattr(rev, 'ssh_profile', None) != 'v1' and rev.state == 'IMAGE_READY':
+            base['revision']['ssh_hint'] = 'rebuild the image to enable VS Code Remote-SSH'
     return base
 
 
@@ -276,6 +279,7 @@ def mark_ready(db, attempt):
     if not repository.endswith('/interactive-' + rev.workspace_id) or not attempt.image_tag.endswith(expected_suffix) or attempt.image_digest_ref.split('@')[0] != repository:
         raise HTTPException(422, 'Image reference does not match build attempt')
     profile = getattr(attempt, 'developer_profile', None)
+    ssh_profile = getattr(attempt, 'ssh_profile', None)
     if rev.state == 'IMAGE_READY':
         if (rev.image_tag, rev.image_digest_ref, rev.resolved_base_digest) != (attempt.image_tag, attempt.image_digest_ref, attempt.resolved_base_digest):
             raise HTTPException(409, 'Immutable revision already published')
@@ -283,6 +287,9 @@ def mark_ready(db, attempt):
         # mutate an immutable ready revision beyond recording it when absent.
         if getattr(rev, 'developer_profile', None) is None and profile == 'v1':
             rev.developer_profile = 'v1'
+            db.commit()
+        if getattr(rev, 'ssh_profile', None) is None and ssh_profile == 'v1':
+            rev.ssh_profile = 'v1'
             db.commit()
         return {'status': 'ok'}
     rev.state = 'IMAGE_READY'
@@ -292,6 +299,8 @@ def mark_ready(db, attempt):
     rev.resolved_base_digest = attempt.resolved_base_digest
     if hasattr(rev, 'developer_profile'):
         rev.developer_profile = profile if profile == 'v1' else None
+    if hasattr(rev, 'ssh_profile'):
+        rev.ssh_profile = ssh_profile if ssh_profile == 'v1' else None
     rev.lease_until = None
     values = {'current_revision_id': rev.id}
     # A ready initial source is startable; later snapshot publications advance

@@ -91,10 +91,24 @@ def assigned_machine_summary(db, runtime):
         return None
 
 
+def _ssh_fields(runtime):
+    try:
+        return {
+            "ssh_capable": bool(getattr(runtime, "ssh_capable", False)),
+            "ssh_ready": bool(getattr(runtime, "ssh_ready", False)),
+            "ssh_status": getattr(runtime, "ssh_status", None) or "disabled",
+            "ssh_generation": getattr(runtime, "ssh_generation", None),
+        }
+    except Exception:
+        return {"ssh_capable": False, "ssh_ready": False, "ssh_status": "disabled", "ssh_generation": None}
+
+
 def public(runtime, db=None):
     item = (
         {field: getattr(runtime, field) for field in PUBLIC_FIELDS} if runtime else None
     )
+    if item is not None:
+        item.update(_ssh_fields(runtime))
     if item is not None:
         # Operator egress capability for the web terminal (plan.md Phase 1).
         # Derived from the pinned launch_spec; the browser can never set it.
@@ -217,6 +231,13 @@ def start(db, owner, workspace_id, key, body):
     prepared = getattr(revision, 'developer_profile', None) == 'v1'
     if spec.get("developer_mode") and not prepared:
         spec = {**spec, "developer_mode": False}
+    # SSH capability is server-owned and pinned at creation (plan.md §6).
+    # Only when INTERACTIVE_SSH_ENABLED and the ready revision carries the
+    # new SSH image profile; the browser form cannot set it. Old revisions
+    # stay browser-capable with ssh_capable=false.
+    from .scheduling.config import ssh_enabled as _ssh_flag
+    ssh_ok = bool(_ssh_flag()) and getattr(revision, 'ssh_profile', None) == 'v1'
+    spec = {**spec, "ssh_capable": bool(ssh_ok)}
     if (
         spec["cpu"] <= 0
         or spec["memory_gb"] <= 0
@@ -231,6 +252,10 @@ def start(db, owner, workspace_id, key, body):
         or 0
     ) + 1
     editor = Settings.from_env().workspace_editor
+    try:
+        ssh_cap = bool(spec.get("ssh_capable"))
+    except Exception:
+        ssh_cap = False
     runtime = Runtime(
         id=new_id(),
         workspace_id=workspace_id,
@@ -248,6 +273,10 @@ def start(db, owner, workspace_id, key, body):
         access_service="workspace" if editor else "terminal",
         application_protocol="workspace-stream-v1" if editor else "terminal-stream-v1",
         editor_capable=editor,
+        ssh_capable=ssh_cap,
+        ssh_ready=False,
+        ssh_status="provisioning" if ssh_cap else "disabled",
+        ssh_generation=generation if ssh_cap else None,
     )
     db.add(runtime)
     db.commit()
@@ -308,6 +337,16 @@ def stop(db, owner, runtime_id):
         )
     db.commit()
     return public(runtime, db)
+
+
+def ssh_grant_ready(db, runtime):
+    """SSH readiness: READY + pinned ssh_capable + reported ssh_ready."""
+    if not ready(db, runtime):
+        return False
+    try:
+        return bool(getattr(runtime, "ssh_capable", False)) and bool(getattr(runtime, "ssh_ready", False))
+    except Exception:
+        return False
 
 
 def ready(db, runtime):
@@ -376,6 +415,7 @@ def connection(db, owner, runtime_id, management, workspace=False):
             "service": runtime.access_service,
             "gateway_id": os.environ["INTERACTIVE_GATEWAY_ID"],
             "authorized": True,
+            "purpose": "browser",
         },
     )
     db.expire_all()
@@ -403,5 +443,106 @@ def connection(db, owner, runtime_id, management, workspace=False):
         "protocol": "tcp-stream-v1",
         "terminal_protocol": "terminal-stream-v1" if not workspace else None,
         "workspace_protocol": "workspace-stream-v1" if workspace else None,
+        "service": runtime.access_service,
+    }
+
+
+def ssh_info(db, owner, runtime_id):
+    """Owner-checked SSH capability/status + pinned host key (no secrets)."""
+    runtime = owned_runtime(db, owner, runtime_id)
+    info = public(runtime, db) or {}
+    if not info.get("ssh_capable"):
+        raise HTTPException(404, "SSH unavailable for this runtime (rebuild from an SSH-capable revision)")
+    return {
+        "runtime_id": runtime.id,
+        "generation": runtime.generation,
+        "ssh_user": "dml",
+        "workspace": "/workspace",
+        "ssh_capable": bool(getattr(runtime, "ssh_capable", False)),
+        "ssh_ready": bool(getattr(runtime, "ssh_ready", False)),
+        "ssh_status": getattr(runtime, "ssh_status", None) or "disabled",
+        "host_key": getattr(runtime, "ssh_host_key", None),
+        "host_key_fingerprint": getattr(runtime, "ssh_key_fingerprint", None),
+        "ssh_generation": getattr(runtime, "ssh_generation", None) or runtime.generation,
+    }
+
+
+def ssh_connection(db, owner, runtime_id, management):
+    """Owner-checked single-use SSH-purpose grant on the pinned service."""
+    from .scheduling.config import ssh_enabled as _ssh_on
+    if not _ssh_on():
+        raise HTTPException(404, "SSH unavailable (feature disabled)")
+    runtime = owned_runtime(db, owner, runtime_id)
+    if runtime.assignment_id:
+        lock_worker(db, db.get(Assignment, runtime.assignment_id).worker_id)
+    runtime = (
+        db.query(Runtime)
+        .filter_by(id=runtime_id)
+        .populate_existing()
+        .with_for_update()
+        .one()
+    )
+    if not ssh_grant_ready(db, runtime):
+        status = getattr(runtime, "ssh_status", None) or "unavailable"
+        raise HTTPException(409, f"SSH unavailable ({status})")
+    # Independent rate limit from browser grants so VS Code's parallel
+    # connections work without removing abuse controls.
+    requested_at = getattr(runtime, "ssh_connection_requested_at", None)
+    if requested_at and utc(requested_at) > now() - timedelta(seconds=1):
+        raise HTTPException(429, "Wait before requesting another SSH connection")
+    for field in ("ssh_host_key",):
+        if not getattr(runtime, field, None):
+            raise HTTPException(409, "SSH host key not reported")
+    origin = os.getenv("INTERACTIVE_GATEWAY_WSS_ORIGIN", "")
+    parsed = urlparse(origin)
+    if (
+        parsed.scheme != "wss"
+        or not parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.path not in ("", "/")
+    ):
+        raise HTTPException(503, "Public Gateway unavailable")
+    runtime.ssh_connection_requested_at = now()
+    resource_id, generation = runtime.resource_id, runtime.generation
+    db.commit()
+    grant = management.call(
+        "POST",
+        "access-grants",
+        {
+            "user": owner,
+            "resource_id": resource_id,
+            "generation": str(generation),
+            "service": runtime.access_service,
+            "gateway_id": os.environ["INTERACTIVE_GATEWAY_ID"],
+            "authorized": True,
+            "purpose": "ssh",
+        },
+    )
+    db.expire_all()
+    runtime = owned_runtime(db, owner, runtime_id)
+    lock_worker(db, db.get(Assignment, runtime.assignment_id).worker_id)
+    db.refresh(runtime)
+    if (
+        not ssh_grant_ready(db, runtime)
+        or runtime.resource_id != resource_id
+        or runtime.generation != generation
+    ):
+        db.rollback()
+        management.call("DELETE", "access-grants/" + grant["grant_id"])
+        raise HTTPException(409, "Runtime changed during SSH connection request")
+    db.commit()
+    return {
+        "wss_url": origin.rstrip("/")
+        + "/v1/connect/"
+        + quote(resource_id, safe="")
+        + "/" + runtime.access_service,
+        "ticket": grant["ticket"],
+        "expires_at": grant["expires_at"],
+        "runtime_id": runtime.id,
+        "generation": generation,
+        "purpose": "ssh",
+        "protocol": "tcp-stream-v1",
         "service": runtime.access_service,
     }

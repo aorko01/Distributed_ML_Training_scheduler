@@ -63,6 +63,9 @@ class InteractiveImageRevision(Base):
     # produced the sudo/venv/home profile; NULL for older revisions which stay
     # eligible only for the existing strict runtime mode.
     developer_profile = Column(String, nullable=True)
+    # VS Code SSH image profile (plan.md §4). 'v1' for new validated images;
+    # NULL for older revisions which remain browser-capable but ssh_capable=false.
+    ssh_profile = Column(String, nullable=True)
     build_logs = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

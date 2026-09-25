@@ -31,9 +31,11 @@ class Config:
     port: int = 9000
     health_port: int = 9002
     capacity: int = 1
+    ssh_capacity: int = 8
     open_timeout: float = 5
     broker_timeout: float = 3
     write_timeout: float = 5
+    ssh_handshake_timeout: float = 10
 
     def validate(self):
         import re
@@ -49,9 +51,9 @@ class Config:
             # A mount may replace the file, but parents cannot redirect the path.
             if any(parent.is_symlink() for parent in path.parents) or path.is_symlink():
                 raise ValueError('symlink path')
-        if not 1 <= self.capacity <= 16 or not 1 <= self.port <= 65535 or not 1 <= self.health_port <= 65535 or self.port == self.health_port:
+        if not 1 <= self.capacity <= 16 or not 1 <= self.ssh_capacity <= 32 or not 1 <= self.port <= 65535 or not 1 <= self.health_port <= 65535 or self.port == self.health_port:
             raise ValueError('invalid limits')
-        if any(not 0 < v <= 60 for v in (self.open_timeout, self.broker_timeout, self.write_timeout)):
+        if any(not 0 < v <= 60 for v in (self.open_timeout, self.broker_timeout, self.write_timeout, self.ssh_handshake_timeout)):
             raise ValueError('invalid deadline')
 
     def credentials(self):
@@ -66,6 +68,7 @@ class Config:
         result = cls(socket_path=os.environ['ACCESS_BROKER_SOCKET'], token_file=os.environ['ACCESS_BROKER_TOKEN_FILE'],
                      runtime_id=os.environ['ACCESS_RUNTIME_ID'], host=os.getenv('ACCESS_HOST', '127.0.0.1'),
                      port=int(os.getenv('ACCESS_PORT', '9000')), health_port=int(os.getenv('ACCESS_HEALTH_PORT', '9002')),
-                     capacity=int(os.getenv('ACCESS_CAPACITY', '1')))
+                     capacity=int(os.getenv('ACCESS_CAPACITY', '1')),
+                     ssh_capacity=int(os.getenv('ACCESS_SSH_CAPACITY', '8')))
         result.validate()
         return result

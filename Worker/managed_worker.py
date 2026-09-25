@@ -209,6 +209,11 @@ class ManagedWorker:
                             if r["assignment_id"] in self.managers
                             else {}
                         ),
+                        "ssh": (
+                            self.managers[r["assignment_id"]].ssh_report
+                            if r["assignment_id"] in self.managers
+                            else {}
+                        ),
                     }
                     for r in records
                 ],

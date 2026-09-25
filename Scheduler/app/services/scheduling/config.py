@@ -15,6 +15,8 @@ class Settings:
     workspace_editor: bool = False
     workspace_save: bool = False
     workspace_training_submission: bool = False
+    ssh_enabled: bool = False
+    ssh_lifetime_seconds: int = 14400
 
     @classmethod
     def from_env(cls):
@@ -28,14 +30,30 @@ class Settings:
             os.getenv("WORKSPACE_EDITOR_ENABLED", "0") == "1",
             os.getenv("WORKSPACE_SAVE_ENABLED", "0") == "1",
             os.getenv("WORKSPACE_TRAINING_SUBMISSION_ENABLED", "0") == "1",
+            os.getenv("INTERACTIVE_SSH_ENABLED", "0") == "1",
+            int(os.getenv("INTERACTIVE_SSH_LIFETIME_SECONDS", "14400")),
         )
         if (
             value.lease_seconds < 20
             or value.startup_seconds < 10
             or value.lifetime_seconds < 0
+            or value.ssh_lifetime_seconds < 60
+            or value.ssh_lifetime_seconds > 86400
         ):
             raise ValueError("Invalid execution deadlines")
         return value
+
+
+def ssh_enabled() -> bool:
+    return os.getenv("INTERACTIVE_SSH_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+
+
+def ssh_lifetime_seconds() -> int:
+    try:
+        value = int(os.getenv("INTERACTIVE_SSH_LIFETIME_SECONDS", "14400"))
+    except (TypeError, ValueError):
+        return 14400
+    return min(max(value, 60), 86400)
 
 
 def developer_mode_enabled() -> bool:
@@ -80,6 +98,7 @@ def operator_defaults():
         "allow_root": os.getenv("INTERACTIVE_ALLOW_ROOT", "0") == "1",
         "allow_internet": internet_enabled(),
         "developer_mode": developer_mode_enabled(),
+        "ssh_capable": False,
     }
 
 
@@ -134,6 +153,7 @@ def _validate_profile_shape(profile):
         or not isinstance(profile["allow_internet"], bool)
         or not isinstance(profile["allow_root"], bool)
         or not isinstance(profile.get("developer_mode", False), bool)
+        or not isinstance(profile.get("ssh_capable", False), bool)
         or not 1 <= profile["disk_gb"] <= 1000000
         or profile["pull_headroom_gb"] < 1
         or not 16 <= profile["pids"] <= 4096

@@ -35,6 +35,7 @@ export interface Runtime {
   state: 'QUEUED' | 'ASSIGNED' | 'PULLING' | 'STARTING' | 'CONNECTING' | 'READY' | 'STOPPING' | 'LOST' | 'STOPPED' | 'FAILED';
   desired_state: 'RUNNING' | 'STOPPED'; failure_detail: string | null; lifetime_deadline: string | null;
   access_service?: 'terminal' | 'workspace'; application_protocol?: 'terminal-stream-v1' | 'workspace-stream-v1'; editor_capable?: boolean;
+  ssh_capable?: boolean; ssh_ready?: boolean; ssh_status?: string; ssh_generation?: number | null;
   allow_internet?: boolean;
   developer_mode?: boolean;
   package_capable?: boolean;

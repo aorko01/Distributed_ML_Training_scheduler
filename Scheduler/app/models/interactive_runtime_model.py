@@ -65,6 +65,18 @@ class InteractiveRuntime(Base):
     application_protocol = Column(String, nullable=False, default="terminal-stream-v1")
     editor_capable = Column(Boolean, nullable=False, default=False)
     workspace_root = Column(String)
+    # VS Code Remote-SSH (plan.md §4-§6). Additive; old rows stay valid.
+    # ssh_capable is pinned in the server-owned immutable launch spec only
+    # when INTERACTIVE_SSH_ENABLED and the ready revision carries the new
+    # image profile. ssh_host_key/fingerprint are stored with runtime ID +
+    # generation and exposed only for the owned READY runtime.
+    ssh_capable = Column(Boolean, nullable=False, default=False)
+    ssh_ready = Column(Boolean, nullable=False, default=False)
+    ssh_status = Column(String, nullable=False, default="disabled")
+    ssh_host_key = Column(String)
+    ssh_key_fingerprint = Column(String)
+    ssh_generation = Column(Integer)
+    ssh_connection_requested_at = Column(DateTime(timezone=True))
     source_image_metadata = Column(JSON)
     __table_args__ = (
         ForeignKeyConstraint(

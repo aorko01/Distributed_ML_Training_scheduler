@@ -42,6 +42,7 @@ import app.models.resource_request_model  # noqa: E402,F401
 import app.models.interactive_workspace_model  # noqa: E402,F401
 
 import app.models.interactive_runtime_model
+import app.models.cli_token_model  # noqa: F401  (SSH scoped refresh tokens)
 
 TEST_ENGINE = create_engine(
     "sqlite://",

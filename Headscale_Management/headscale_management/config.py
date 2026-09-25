@@ -39,6 +39,7 @@ class Settings:
     admission_ttl: int = 60
     session_max: int = 1800
     session_lease: int = 15
+    ssh_session_max: int = 14400
     reconcile_interval: float = 5
     observation_ttl: int = 15
     ports: tuple[int, ...] = (9000,)
@@ -74,6 +75,7 @@ class Settings:
                 raise ValueError("retiring-key overlap must be bounded")
         if not (1 <= self.enrollment_ttl <= 300 and 1 <= self.admission_ttl <= 60
                 and 1 <= self.session_lease <= self.session_max <= 1800
+                and 1 <= self.ssh_session_max <= 86400
                 and 0 < self.reconcile_interval < self.observation_ttl <= 15
                 and 1 <= self.resource_lease <= 300):
             raise ValueError("invalid bounded lifecycle TTLs")
@@ -98,5 +100,5 @@ class Settings:
             required_policy_file=os.environ["HM_REQUIRED_POLICY_FILE"],
             verification_keys=json.loads(Path(os.environ["HM_VERIFICATION_KEYS_FILE"]).read_text()) if os.getenv("HM_VERIFICATION_KEYS_FILE") else {},
             **{name: float(os.environ["HM_" + name.upper()]) if name == "reconcile_interval" else int(os.environ["HM_" + name.upper()])
-               for name in ("enrollment_ttl", "resource_lease", "admission_ttl", "session_max", "session_lease", "reconcile_interval", "observation_ttl")
-               if "HM_" + name.upper() in os.environ})
+                for name in ("enrollment_ttl", "resource_lease", "admission_ttl", "session_max", "session_lease", "ssh_session_max", "reconcile_interval", "observation_ttl")
+                if "HM_" + name.upper() in os.environ})

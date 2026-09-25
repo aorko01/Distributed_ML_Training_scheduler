@@ -83,7 +83,13 @@ def smoke_workload(workload, user, developer_mode):
 DEFAULT_MAX_DURATION_SECONDS = 600
 
 
-def max_duration_seconds() -> int:
+def max_duration_seconds(ssh_active: bool = False) -> int:
+    if ssh_active:
+        try:
+            value = int(os.getenv("INTERACTIVE_SSH_MAX_DURATION_SECONDS", "14400"))
+        except (TypeError, ValueError):
+            return 14400
+        return value if value > 0 else 0
     try:
         value = int(os.getenv("INTERACTIVE_MAX_DURATION_SECONDS", str(DEFAULT_MAX_DURATION_SECONDS)))
     except (TypeError, ValueError):
@@ -124,6 +130,7 @@ class Manager:
     def __init__(self, coordinator, api, ops):
         self.coordinator, self.api, self.ops = coordinator, api, ops
         self.health = {}
+        self.ssh_report = {}
         self.cancel = threading.Event()
         self.broker = None
         self.endpoint = None
@@ -139,11 +146,11 @@ class Manager:
             and self.coordinator.authoritative(assignment_id)
         )
 
-    def progress(self, record, phase, health=None, code=None):
+    def progress(self, record, phase, health=None, code=None, ssh=None):
         record = self.coordinator.update(
             record["assignment_id"], event_sequence=record.get("event_sequence", 0) + 1
         )
-        self.api.event(record, phase, health, code)
+        self.api.event(record, phase, health, code, ssh if ssh is not None else self.ssh_report)
         return record
 
     def run(self, record):
@@ -183,6 +190,35 @@ class Manager:
             stage = "workload-smoke"
             developer = bool((record.get("payload") or {}).get("launch_spec", {}).get("developer_mode"))
             await asyncio.to_thread(smoke_workload, workload, user, developer)
+            # SSH start ordering (plan.md §6): verify image -> workload ->
+            # tmpfs keys/config -> start/smoke sshd -> broker -> Access.
+            # SSH is off by default; unsupported/older images stay
+            # browser-capable with an actionable SSH-unavailable status.
+            from . import ssh as _ssh
+            from .docker_ops import ssh_spec_enabled, ssh_allowed_locally, ssh_image_capable
+            spec = (record.get("payload") or {}).get("launch_spec", {}) or {}
+            want_ssh = ssh_spec_enabled(spec)
+            image_ok = ssh_image_capable(self.ops.image_labels(image))
+            ssh_info = {"capable": False, "ready": False, "status": "disabled",
+                        "host_key": None, "fingerprint": None}
+            if want_ssh:
+                if not ssh_allowed_locally():
+                    ssh_info["status"] = "disabled-worker-flag"
+                elif not image_ok:
+                    ssh_info["status"] = "unsupported-image"
+                else:
+                    stage = "ssh-start"
+                    try:
+                        created = await asyncio.to_thread(_ssh.setup_workload_sshd, workload)
+                        await asyncio.to_thread(_ssh.ssh_smoke, workload, created["host_public_key"])
+                        ssh_info = {"capable": True, "ready": True, "status": "ready",
+                                    "host_key": created["host_public_key"],
+                                    "fingerprint": created["fingerprint"]}
+                    except Exception:
+                        logger.error("workload sshd failed assignment_id=%s", assignment_id, exc_info=True)
+                        ssh_info = {"capable": True, "ready": False, "status": "sshd-failed",
+                                    "host_key": None, "fingerprint": None}
+            self.ssh_report = ssh_info
             authority = lambda: self.authority(assignment_id)
             self.broker = Broker(
                 root / "broker.sock",
@@ -194,6 +230,14 @@ class Manager:
                 authority,
                 on_failure=lambda: setattr(self, "failed", True),
             )
+            # Pin server-side generation + host key on the broker; a client
+            # value never selects a container (plan.md §3).
+            self.broker.ssh_capable = bool(ssh_info.get("capable") and ssh_info.get("ready"))
+            self.broker.ssh_host_key = ssh_info.get("host_key")
+            try:
+                self.broker.ssh_generation = int((record.get("payload") or {}).get("generation") or 0) or None
+            except Exception:
+                self.broker.ssh_generation = None
             await self.broker.start()
             # Smoke a real default-shell session before Access or Serve starts.
             stage = "broker-smoke"
@@ -306,7 +350,7 @@ class Manager:
             stage = "healthy"
             session_start = time.monotonic()
             while authority():
-                limit = max_duration_seconds()
+                limit = max_duration_seconds(ssh_active=bool(self.ssh_report.get("ready")))
                 if limit and time.monotonic() - session_start >= limit:
                     logger.warning(
                         "Interactive runtime time up assignment_id=%s limit=%ds",
@@ -328,6 +372,16 @@ class Manager:
                 )
                 if not healthy:
                     raise RuntimeFailure("HEALTH_FAILED")
+                # Late sshd death denies new SSH grants but preserves healthy
+                # browser access (plan.md §6). Probe loopback cheaply.
+                if self.ssh_report.get("ready"):
+                    try:
+                        from . import ssh as _ssh2
+                        await asyncio.to_thread(_ssh2.ssh_smoke, workload, self.ssh_report["host_key"])
+                    except Exception:
+                        self.ssh_report = {**self.ssh_report, "ready": False, "status": "sshd-failed"}
+                        if self.broker:
+                            self.broker.ssh_capable = False
                 self.health[assignment_id] = {
                     "workload": True,
                     "broker": True,
@@ -403,6 +457,16 @@ class Manager:
                 "endpoint": False,
             }
             self.coordinator.mode = "CLEANING"
+            self.ssh_report = {"capable": False, "ready": False, "status": "stopped",
+                               "host_key": None, "fingerprint": None}
+            if self.broker:
+                self.broker.ssh_capable = False
+            if workload is not None:
+                # Wipe tmpfs keys/config inside the exact workload before
+                # container removal; snapshot path must never capture them.
+                with suppress(Exception):
+                    from . import ssh as _ssh3
+                    await asyncio.to_thread(_ssh3.stop_workload_sshd, workload)
             if self.endpoint:
                 with suppress(Exception):
                     await asyncio.to_thread(self.endpoint.serve, False)
