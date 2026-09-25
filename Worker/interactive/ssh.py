@@ -76,6 +76,7 @@ def sshd_config_text() -> str:
         "PubkeyAuthentication yes",
         "PermitRootLogin no",
         "AllowUsers dml",
+        "ForceCommand /usr/local/bin/dml-ssh-session",
         "PermitEmptyPasswords no",
         "X11Forwarding no",
         "AllowAgentForwarding no",
@@ -142,7 +143,8 @@ def setup_workload_sshd(container) -> dict:
         raise RuntimeError("sshd -T rejected config")
     text = out.decode(errors="replace").lower()
     for needle in ("permitrootlogin no", "passwordauthentication no", "port 2222",
-                   "allowusers dml", "x11forwarding no"):
+                   "allowusers dml", "x11forwarding no",
+                   "forcecommand /usr/local/bin/dml-ssh-session"):
         if needle not in text:
             raise RuntimeError("sshd -T missing " + needle)
     code, _ = _exec(container, ["/usr/sbin/sshd", "-f", SSH_CONFIG])
@@ -200,7 +202,8 @@ def ssh_smoke(container, host_public_key: str) -> None:
     code, out = _exec(container, ["cat", SSH_HOST_PUB])
     if code != 0 or out.decode().strip().splitlines()[0] != host_public_key.strip():
         raise RuntimeError("host key changed within generation")
-    code, _ = _exec(container, ["sh", "-c", "exec 3<>/dev/tcp/127.0.0.1/2222 && exec 3>&-"])
+    code, _ = _exec(container, ["python3", "-c",
+        "import socket; s = socket.create_connection(('127.0.0.1', 2222), 2); s.close()"])
     if code != 0:
         raise RuntimeError("sshd loopback unreachable")
 
@@ -215,10 +218,9 @@ def stop_workload_sshd(container) -> None:
 class SshRelay:
     """Fixed Docker-exec byte bridge to workload-loopback sshd.
 
-    Non-TTY exec of `socat`-equivalent: we open `sh -c 'exec socat ...'`
-    is FORBIDDEN (client data in shell). Instead exec opens a TCP socket
-    via python3 one-liner with fixed argv, or `nc`. Pinned interpreter,
-    fixed vector, byte-clean stdin/stdout (demux stderr separately).
+    Non-TTY exec of a fixed Python TCP bridge. The Docker API multiplexes
+    non-TTY stdout into framed messages, which recv() decodes before passing
+    the SSH bytes to the client.
     """
 
     def __init__(self, docker_api, container_id):
@@ -226,26 +228,35 @@ class SshRelay:
         self.container_id = container_id
         self.exec_id = None
         self.sock = None
+        self._pending = bytearray()
 
     def connect(self):
         # Fixed vector, no user input: python3 bridges stdio to 127.0.0.1:2222.
-        bridge = ("import socket,sys,threading;"
-                  "s=socket.create_connection(('127.0.0.1',2222),timeout=5);"
-                  "s.settimeout(None);"
-                  "def f():"
-                  " try:"
-                  "  while True:"
-                  "   d=s.recv(32768);"
-                  "   sys.stdout.buffer.write(d);sys.stdout.buffer.flush();"
-                  "   if not d: break"
-                  " except Exception: pass;"
-                  "t=threading.Thread(target=f,daemon=True);t.start();"
-                  "try:"
-                  " while True:"
-                  "  d=sys.stdin.buffer.read(32768);"
-                  "  if not d: s.shutdown(socket.SHUT_WR);break;"
-                  "  s.sendall(d);"
-                  " except Exception: pass")
+        bridge = """import os
+import select
+import socket
+
+s = socket.create_connection(('127.0.0.1', 2222), timeout=5)
+s.settimeout(None)
+readers = [0, s]
+while True:
+    ready, _, _ = select.select(readers, [], [])
+    if s in ready:
+        data = s.recv(32768)
+        if not data:
+            break
+        view = memoryview(data)
+        while view:
+            view = view[os.write(1, view):]
+    if 0 in ready:
+        data = os.read(0, 32768)
+        if data:
+            s.sendall(data)
+        else:
+            readers.remove(0)
+            s.shutdown(socket.SHUT_WR)
+s.close()
+"""
         self.exec_id = self.api.exec_create(
             self.container_id, cmd=["python3", "-c", bridge],
             stdin=True, stdout=True, stderr=False, tty=False,
@@ -253,18 +264,41 @@ class SshRelay:
             workdir="/",
             environment={})["Id"]
         stream = self.api.exec_start(self.exec_id, tty=False, socket=True, demux=False)
-        # docker-py returns socket with multiplexed framing when tty=False and
-        # stderr enabled; with stderr=False bytes are clean. Keep demux=False.
+        # Non-TTY Docker exec output is framed even with stderr disabled.
         self.sock = stream._sock
-        self.sock.settimeout(5)
+        self.sock.settimeout(None)
         self._stream = stream
 
+    def _read_exact(self, size):
+        data = bytearray()
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                if data:
+                    raise RuntimeError("truncated Docker exec frame")
+                raise EOFError("docker exec stream closed mid-frame")
+            data.extend(chunk)
+        return bytes(data)
+
     def recv(self, n=32768):
-        try:
-            data = self.sock.recv(n)
-            return data
-        except Exception:
-            return b""
+        if n <= 0:
+            raise ValueError("recv size must be positive")
+        while not self._pending:
+            try:
+                header = self._read_exact(8)
+            except EOFError:
+                return b""
+            stream_type = header[0]
+            size = int.from_bytes(header[4:], "big")
+            if header[1:4] != b"\x00\x00\x00" or size > 1048576 or stream_type not in (1, 2):
+                raise RuntimeError("invalid Docker exec frame")
+            payload = self._read_exact(size)
+            if stream_type == 1:
+                self._pending.extend(payload)
+            # stderr is not SSH data; never forward it to the client.
+        result = bytes(self._pending[:n])
+        del self._pending[:n]
+        return result
 
     def sendall(self, data: bytes):
         self.sock.sendall(data)
@@ -278,7 +312,10 @@ class SshRelay:
 
     def close(self):
         try:
-            self.sock.close()
+            if self.sock is not None:
+                import socket as _s
+                self.sock.shutdown(_s.SHUT_RDWR)
+                self.sock.close()
         except Exception:
             pass
         try:

@@ -1,7 +1,7 @@
 """Grant purpose: browser default, SSH bounded deadline, old tickets valid."""
 import jwt
 from headscale_management.schemas import Issue
-from .conftest import headers, ready
+from conftest import headers, ready
 
 
 def test_issue_defaults_browser():

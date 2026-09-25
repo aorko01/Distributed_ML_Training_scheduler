@@ -32,9 +32,11 @@ def test_dockerfiles_and_tags():
     assert 'COPY project/' in output and 'pip install' in output
     assert 'USER 10001:10001' in output
     assert 'CMD ' not in output
-    # Developer profile v1: sudo/venv/home are required; unrelated agents,
-    # sockets, and credentials stay out of the workload image.
-    assert all(word not in output.lower() for word in ('tailscale', 'openssh', 'docker.sock', 'password', 'token'))
+    # SSH tooling and its fixed session wrapper now belong in the workload;
+    # tailnet/Docker agents and credentials still do not.
+    assert all(word not in output.lower() for word in ('tailscale', 'docker.sock', 'password', 'token'))
+    assert 'openssh-server' in output
+    assert 'COPY --chown=0:0 dml-ssh-session /usr/local/bin/dml-ssh-session' in output
     assert 'sudo' in output.lower()
     assert '/opt/dml-venv/bin/python -m pip install' in output
     assert 'PIP_BREAK_SYSTEM_PACKAGES' not in output
@@ -44,7 +46,10 @@ def test_dockerfiles_and_tags():
     assert 'VOLUME' not in output
     derived = build.dockerfile(item('EXISTING_JOB'), base, False)
     assert derived.startswith('FROM ' + base)
-    assert 'COPY' not in derived and 'CMD' not in derived
+    assert 'CMD' not in derived
+    assert [line for line in derived.splitlines() if line.startswith('COPY ')] == [
+        'COPY --chown=0:0 dml-ssh-session /usr/local/bin/dml-ssh-session'
+    ]
     assert 'WORKDIR /workspace' in derived
     assert 'USER 10001:10001' in derived
     assert 'io.dml.developer-profile' in derived
@@ -93,7 +98,10 @@ def test_existing_job_resolves_digest_and_pushes():
     def cli(directory, tag, cancel, on_line):
         content = (Path(directory) / 'Dockerfile').read_text()
         assert content.startswith('FROM user/source@sha256:')
-        assert 'COPY ' not in content
+        assert [line for line in content.splitlines() if line.startswith('COPY ')] == [
+            'COPY --chown=0:0 dml-ssh-session /usr/local/bin/dml-ssh-session'
+        ]
+        assert (Path(directory) / 'dml-ssh-session').read_bytes() == build.ssh_session_wrapper_bytes()
         assert 'USER 10001:10001' in content
         return 0, [], False
     with patch.object(build, 'run_command') as command, patch.object(api, 'log'), patch.object(build, '_run_cancellable_docker_build', side_effect=cli):

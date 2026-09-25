@@ -1,5 +1,8 @@
 import base64
+from unittest.mock import MagicMock, patch
+
 import pytest
+from interactive import ssh
 from interactive.ssh import parse_ed25519_public_key, sshd_config_text, fingerprint_sha256, ssh_enabled
 
 
@@ -24,7 +27,8 @@ def test_sshd_config_restrictions():
                    "X11Forwarding no", "AllowAgentForwarding no",
                    "AllowTcpForwarding local", "PermitTunnel no",
                    "PermitUserEnvironment no", "Port 2222",
-                   "ListenAddress 127.0.0.1", "Subsystem sftp"):
+                   "ListenAddress 127.0.0.1", "Subsystem sftp",
+                   "ForceCommand /usr/local/bin/dml-ssh-session"):
         assert needle in text
     assert "PermitRootLogin yes" not in text
     assert "GatewayPorts" not in text
@@ -41,3 +45,65 @@ def test_disabled_by_default(monkeypatch):
     assert ssh_enabled() is False
     monkeypatch.setenv("INTERACTIVE_ALLOW_SSH", "1")
     assert ssh_enabled() is True
+
+
+def test_ssh_smoke_uses_portable_loopback_probe():
+    calls = []
+
+    def execute(_container, args, user="root"):
+        calls.append((args, user))
+        if args[:3] == ["stat", "-c", "%u"] or args[:3] == ["id", "-u", "dml"]:
+            return 0, b"10001\n"
+        if args == ["cat", ssh.SSH_HOST_PUB]:
+            return 0, b"ssh-ed25519 host-key\n"
+        return 0, b""
+
+    with patch.object(ssh, "_exec", side_effect=execute):
+        ssh.ssh_smoke(object(), "ssh-ed25519 host-key")
+    probe = calls[-1][0]
+    assert probe[:2] == ["python3", "-c"]
+    assert "127.0.0.1" in probe[2] and "2222" in probe[2]
+    assert all("/dev/tcp" not in " ".join(args) for args, _ in calls)
+
+
+class _FragmentedSocket:
+    def __init__(self, data):
+        self.data = bytearray(data)
+        self.timeout = "unset"
+
+    def settimeout(self, value):
+        self.timeout = value
+
+    def recv(self, size):
+        count = min(size, 3, len(self.data))
+        result = bytes(self.data[:count])
+        del self.data[:count]
+        return result
+
+
+def _frame(stream, payload):
+    return bytes([stream, 0, 0, 0]) + len(payload).to_bytes(4, "big") + payload
+
+
+def test_relay_command_compiles_and_demultiplexes_docker_frames():
+    api = MagicMock()
+    api.exec_create.return_value = {"Id": "exec-id"}
+    raw = _FragmentedSocket(_frame(2, b"internal error") + _frame(1, b"SSH-2.0-test\r\n"))
+    api.exec_start.return_value._sock = raw
+    relay = ssh.SshRelay(api, "container-id")
+    relay.connect()
+    command = api.exec_create.call_args.kwargs["cmd"]
+    assert command[:2] == ["python3", "-c"]
+    compile(command[2], "docker-ssh-bridge", "exec")
+    assert "127.0.0.1" in command[2]
+    assert raw.timeout is None  # Idle SSH connections must remain open.
+    assert relay.recv(4) == b"SSH-"
+    assert relay.recv() == b"2.0-test\r\n"
+    assert relay.recv() == b""
+
+
+def test_relay_rejects_truncated_frame():
+    relay = ssh.SshRelay(None, "container-id")
+    relay.sock = _FragmentedSocket(_frame(1, b"hello")[:-2])
+    with pytest.raises(RuntimeError, match="truncated"):
+        relay.recv()

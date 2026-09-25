@@ -2,6 +2,8 @@ fastapi==0.115.12
 uvicorn[standard]
 sqlalchemy
 psycopg2-binary
+# SQLAlchemy 2.1 uses psycopg for bare postgresql:// URLs; older installs use psycopg2.
+psycopg[binary]
 pydantic
 python-multipart
 GPUtil
