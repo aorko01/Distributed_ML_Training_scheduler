@@ -150,12 +150,90 @@ def test_fenced_batch_logs_fit_request_limit_even_with_unicode():
     assert delivered == lines
 
 
+def test_startup_closes_assignment_the_scheduler_no_longer_holds(
+    tmp_path, reset_telemetry
+):
+    """Regression: an orphaned journal row must not brick every Worker start.
+
+    A locally persisted, fenced assignment that the control plane no longer
+    serves makes ``api.cleanup`` answer 409 "Stale assignment". Startup used to
+    propagate that as fatal, so systemd restarted the Worker forever and the
+    Scheduler never received a heartbeat.
+    """
+    from scheduler_protocol import SchedulerRejected
+    import time
+
+    c = Coordinator(tmp_path)
+    c.available()
+    orphan = assignment("batch_training")
+    orphan["instance_id"] = c.instance_id
+    orphan["payload"] = {"id": "job"}
+    c.begin_claim()
+    c.accept({"assignment": orphan}, time.monotonic())
+    c.mark_clean(orphan["assignment_id"])
+
+    api = MagicMock()
+    api.register.return_value = {"reconcile_assignments": []}
+    api.cleanup.side_effect = SchedulerRejected(409)
+    api.heartbeat.return_value = {"sequence": 1, "decisions": []}
+    ops = MagicMock()
+    ops.preflight.return_value = False
+
+    with patch("managed_worker.JobExecutor"), patch(
+        "job_state.load_running_jobs", return_value=[]
+    ):
+        worker = ManagedWorker(
+            "worker", c, api, ops, lambda *args, **kwargs: {"mode": c.mode}
+        )
+        worker.startup()
+
+    assert c.get(orphan["assignment_id"])["released"] is True
+    assert c.mode == "AVAILABLE"
+    api.heartbeat.assert_called_once()
+    c.close()
+
+
+def test_startup_does_not_swallow_unexpected_scheduler_rejections(
+    tmp_path, reset_telemetry
+):
+    """Only 409 (assignment gone) is tolerated during cleanup replay."""
+    from scheduler_protocol import SchedulerRejected
+    import pytest
+    import time
+
+    c = Coordinator(tmp_path)
+    c.available()
+    orphan = assignment("batch_training")
+    orphan["instance_id"] = c.instance_id
+    orphan["payload"] = {"id": "job"}
+    c.begin_claim()
+    c.accept({"assignment": orphan}, time.monotonic())
+    c.mark_clean(orphan["assignment_id"])
+
+    api = MagicMock()
+    api.register.return_value = {"reconcile_assignments": []}
+    api.cleanup.side_effect = SchedulerRejected(401)
+
+    with patch("managed_worker.JobExecutor"), patch(
+        "job_state.load_running_jobs", return_value=[]
+    ):
+        worker = ManagedWorker(
+            "worker", c, api, MagicMock(), lambda *args, **kwargs: {"mode": c.mode}
+        )
+        with pytest.raises(SchedulerRejected):
+            worker.startup()
+    assert not c.get(orphan["assignment_id"])["released"]
+    c.close()
+
+
 def test_scheduler_startup_authentication_errors_are_actionable_and_secret_free():
     from scheduler_protocol import SchedulerRejected
 
     worker_id = "worker-identity"
     unavailable = scheduler_startup_error(worker_id, SchedulerRejected(503))
     rejected = scheduler_startup_error(worker_id, SchedulerRejected(401))
+    conflicted = scheduler_startup_error(worker_id, SchedulerRejected(409))
     assert worker_id in unavailable and "WORKER_CREDENTIALS_FILE" in unavailable
     assert worker_id in rejected and "trailing newline" in rejected
+    assert "409" in conflicted and "WORKER_STATE_DIR" in conflicted
     assert "secret" not in unavailable.lower() and "Bearer " not in unavailable

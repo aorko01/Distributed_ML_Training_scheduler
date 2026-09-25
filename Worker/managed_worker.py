@@ -164,7 +164,22 @@ class ManagedWorker:
 
                     shutil.rmtree(directory)
             self.coordinator.mark_clean(record["assignment_id"])
-            if self.api.cleanup(record)["released"]:
+            try:
+                released = self.api.cleanup(record)["released"]
+            except SchedulerRejected as exc:
+                if exc.status != 409:
+                    raise
+                # The Scheduler no longer holds this fenced attempt: it expired
+                # and was reclaimed, or the control-plane database was rebuilt.
+                # Local cleanup already succeeded, so close the journal row
+                # here. Replaying the same fence on every start would otherwise
+                # block the Worker forever (409 "Stale assignment" crash loop).
+                logger.warning(
+                    "Scheduler no longer holds assignment %s; closing it locally",
+                    record["assignment_id"],
+                )
+                released = True
+            if released:
                 self.coordinator.released(record["assignment_id"])
         # Batch markers are compatibility records, not reservations. Coordinated
         # drain must handle any unmatched legacy marker before admission.
@@ -399,6 +414,15 @@ def scheduler_startup_error(worker_id, error):
             "Check that the Scheduler entry for Worker ID "
             + worker_id
             + " contains the same credential, without a trailing newline."
+        )
+    if error.status == 409:
+        return (
+            "Scheduler rejected Worker startup (409). The Scheduler does not "
+            "agree with this Worker's persisted assignment journal in "
+            "WORKER_STATE_DIR; a fenced attempt was replayed against a state "
+            "the Scheduler is no longer serving. Restart after the Scheduler "
+            "is healthy, and if it persists an operator must reconcile the "
+            "orphaned journal record logged just above."
         )
     return "Scheduler rejected Worker startup (HTTP " + str(error.status) + ")."
 
