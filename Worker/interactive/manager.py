@@ -392,7 +392,11 @@ class Manager:
         except Exception as exc:
             code = exc.code if isinstance(exc, RuntimeFailure) else "START_FAILED"
             if code == "TIME_UP":
-                limit = max_duration_seconds() or DEFAULT_MAX_DURATION_SECONDS
+                # SSH runtimes use the SSH lifetime (setup_worker.md §6.3);
+                # browser runtimes use the browser cap. Match the loop above.
+                limit = max_duration_seconds(
+                    ssh_active=bool(self.ssh_report.get("ready"))
+                ) or DEFAULT_MAX_DURATION_SECONDS
                 detail = time_up_detail(limit)
                 diagnostics = {"dump_dir": None}
                 record = self.coordinator.update(

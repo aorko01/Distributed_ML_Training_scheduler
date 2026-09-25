@@ -246,8 +246,14 @@ class Broker:
         self.connections = set()
         # SSH state (plan.md §3/§5): bounded concurrent relays isolated
         # from the single browser PTY/workspace slot (self.busy untouched).
+        # Cap comes from INTERACTIVE_SSH_CAPACITY (setup_worker.md §6.3),
+        # same value passed as ACCESS_SSH_CAPACITY to the Access container.
         self.ssh_active = 0
-        self.ssh_max = 8
+        try:
+            ssh_max = int(os.getenv("INTERACTIVE_SSH_CAPACITY", "8"))
+        except (TypeError, ValueError):
+            ssh_max = 8
+        self.ssh_max = ssh_max if 1 <= ssh_max <= 32 else 8
         self.ssh_capable = False
         self.ssh_generation = None
         self.ssh_host_key = None

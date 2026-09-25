@@ -117,10 +117,25 @@ validate_env_file() {
     [[ "$scheduler" == https://* ]] || die "SCHEDULER_URL must be a routable https:// URL in $file."
     [[ "$interactive" == "1" ]] || die "INTERACTIVE_WORKER_ENABLED=1 is required for an interactive Worker."
     [[ -n "$prefixes" ]] || die "INTERACTIVE_REGISTRY_PREFIXES is required in $file."
-    local require_idle_gpu
+    local require_idle_gpu allow_ssh allow_internet allow_developer ssh_max ssh_capacity
     require_idle_gpu="$($get_cmd INTERACTIVE_REQUIRE_IDLE_GPU)"
     [[ -z "$require_idle_gpu" || "$require_idle_gpu" == "0" || "$require_idle_gpu" == "1" ]] ||
         die "INTERACTIVE_REQUIRE_IDLE_GPU must be 0 or 1 in $file."
+    for key in INTERACTIVE_ALLOW_SSH INTERACTIVE_ALLOW_INTERNET INTERACTIVE_ALLOW_DEVELOPER_MODE; do
+        value="$($get_cmd "$key")"
+        [[ -z "$value" || "$value" == "0" || "$value" == "1" ]] ||
+            die "$key must be 0 or 1 in $file."
+    done
+    ssh_max="$($get_cmd INTERACTIVE_SSH_MAX_DURATION_SECONDS)"
+    if [[ -n "$ssh_max" ]]; then
+        [[ "$ssh_max" =~ ^(0|[1-9][0-9]*)$ ]] && ((ssh_max >= 0 && ssh_max <= 86400)) ||
+            die "INTERACTIVE_SSH_MAX_DURATION_SECONDS must be 0..86400 in $file."
+    fi
+    ssh_capacity="$($get_cmd INTERACTIVE_SSH_CAPACITY)"
+    if [[ -n "$ssh_capacity" ]]; then
+        [[ "$ssh_capacity" =~ ^[0-9]+$ ]] && ((ssh_capacity >= 1 && ssh_capacity <= 32)) ||
+            die "INTERACTIVE_SSH_CAPACITY must be 1..32 in $file."
+    fi
     [[ "$access_image" =~ ^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]] ||
         die "INTERACTIVE_ACCESS_IMAGE must be an immutable @sha256 digest in $file."
     [[ "$preflight_image" =~ ^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]] ||
@@ -354,6 +369,13 @@ stage_live_environment() {
     [[ -n "$(env_get WORKER_ASSIGNMENT_LEASE_SECONDS)" ]] ||
         env_set "$LIVE_ENV" WORKER_ASSIGNMENT_LEASE_SECONDS 45
     [[ -n "$(env_get MAX_CONCURRENT_JOBS)" ]] || env_set "$LIVE_ENV" MAX_CONCURRENT_JOBS 2
+    # VS Code Remote-SSH defaults (setup_worker.md §6.3). Explicit in the live
+    # config so /etc/dml/worker.env always carries the gate state; kept
+    # disabled (0) until the §6.5 deployment gate passes.
+    [[ -n "$(env_get INTERACTIVE_ALLOW_SSH)" ]] || env_set "$LIVE_ENV" INTERACTIVE_ALLOW_SSH 0
+    [[ -n "$(env_get INTERACTIVE_SSH_MAX_DURATION_SECONDS)" ]] ||
+        env_set "$LIVE_ENV" INTERACTIVE_SSH_MAX_DURATION_SECONDS 14400
+    [[ -n "$(env_get INTERACTIVE_SSH_CAPACITY)" ]] || env_set "$LIVE_ENV" INTERACTIVE_SSH_CAPACITY 8
 
     local docker_root
     docker_root="$(docker info --format '{{.DockerRootDir}}')"
@@ -679,7 +701,9 @@ show_runtime_env() {
     printf 'Configured in %s:\n' "$LIVE_ENV"
     for key in INTERACTIVE_WORKER_ENABLED INTERACTIVE_REGISTRY_PREFIXES \
         INTERACTIVE_REGISTRY_CREDENTIAL_FILE INTERACTIVE_ACCESS_IMAGE \
-        INTERACTIVE_PREFLIGHT_IMAGE; do
+        INTERACTIVE_PREFLIGHT_IMAGE INTERACTIVE_ALLOW_SSH \
+        INTERACTIVE_SSH_MAX_DURATION_SECONDS INTERACTIVE_SSH_CAPACITY \
+        INTERACTIVE_ALLOW_INTERNET INTERACTIVE_ALLOW_DEVELOPER_MODE; do
         configured="$(env_get "$key")"
         printf '  %s=%s\n' "$key" "${configured:-<unset>}"
     done
@@ -691,14 +715,19 @@ show_runtime_env() {
     pid="$(systemctl show --value --property=MainPID "$SERVICE_NAME")"
     [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/environ" ]] ||
         die "Could not read the active systemd Worker process environment."
-    actual="$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^INTERACTIVE_REGISTRY_PREFIXES=//p' | tail -n 1)"
-    configured="$(env_get INTERACTIVE_REGISTRY_PREFIXES)"
+    proc_env_get() {
+        tr '\0' '\n' < "/proc/$pid/environ" | sed -n "s/^$1=//p" | tail -n 1
+    }
     printf '\nRunning %s (PID %s):\n' "$SERVICE_NAME" "$pid"
-    printf '  INTERACTIVE_REGISTRY_PREFIXES=%s\n' "${actual:-<unset>}"
-    [[ -n "$actual" ]] || die "The active service did not receive INTERACTIVE_REGISTRY_PREFIXES. Rerun the installer and restart the service."
-    [[ "$actual" == "$configured" ]] ||
-        die "The active service has a stale INTERACTIVE_REGISTRY_PREFIXES value. Run: sudo systemctl restart $SERVICE_NAME"
-    log "The active systemd Worker received the configured interactive registry allowlist."
+    for key in INTERACTIVE_REGISTRY_PREFIXES INTERACTIVE_ACCESS_IMAGE INTERACTIVE_ALLOW_SSH; do
+        actual="$(proc_env_get "$key")"
+        configured="$(env_get "$key")"
+        printf '  %s=%s\n' "$key" "${actual:-<unset>}"
+        [[ -n "$actual" ]] || die "The active service did not receive $key. Rerun the installer and restart the service."
+        [[ "$actual" == "$configured" ]] ||
+            die "The active service has a stale $key value. Run: sudo systemctl restart $SERVICE_NAME"
+    done
+    log "The active systemd Worker received the configured interactive registry allowlist, access digest, and SSH gate."
 }
 
 wait_for_worker() {

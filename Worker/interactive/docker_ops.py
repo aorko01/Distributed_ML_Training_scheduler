@@ -79,8 +79,21 @@ def ssh_allowed_locally() -> bool:
 
 
 def ssh_image_capable(config) -> bool:
+    """True when the image carries the SSH-capable profile label.
+
+    Accepts either the image ``Config`` mapping (``{"Labels": {...}}``) or a
+    plain labels mapping (``{"io.dml.vscode-ssh-profile": "v1"}``) as
+    returned by :meth:`DockerOps.image_labels`. The manager passes the
+    latter; accepting both keeps the single caller correct if the shape
+    changes again.
+    """
     try:
-        labels = config.get("Labels") or {}
+        if not isinstance(config, dict):
+            return False
+        labels = config.get("Labels")
+        if not isinstance(labels, dict):
+            # Already a labels mapping (image_labels unwraps Config).
+            labels = config
         return labels.get(SSH_PROFILE_LABEL) == SSH_PROFILE_VERSION
     except Exception:
         return False

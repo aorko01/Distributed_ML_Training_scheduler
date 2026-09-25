@@ -66,6 +66,24 @@ def test_ssh_smoke_uses_portable_loopback_probe():
     assert all("/dev/tcp" not in " ".join(args) for args, _ in calls)
 
 
+def test_ssh_image_capable_accepts_config_and_labels_shapes():
+    from interactive.docker_ops import DockerOps, ssh_image_capable, SSH_PROFILE_LABEL
+    from unittest.mock import MagicMock
+    labels = {SSH_PROFILE_LABEL: "v1"}
+    # Manager passes image_labels(image) which is the unwrapped labels dict.
+    assert ssh_image_capable(labels) is True
+    # Direct Config shape also accepted.
+    assert ssh_image_capable({"Labels": labels}) is True
+    assert ssh_image_capable({"Labels": {}}) is False
+    assert ssh_image_capable(labels | {SSH_PROFILE_LABEL: "v0"}) is False
+    assert ssh_image_capable({}) is False
+    assert ssh_image_capable(None) is False
+    # End-to-end: image_labels output must be recognised as capable.
+    ops = DockerOps(MagicMock(), "worker", MagicMock())
+    ops.client.images.get.return_value.attrs = {"Config": {"Labels": labels}}
+    assert ssh_image_capable(ops.image_labels("sha256:abc")) is True
+
+
 class _FragmentedSocket:
     def __init__(self, data):
         self.data = bytearray(data)
