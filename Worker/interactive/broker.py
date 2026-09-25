@@ -415,9 +415,10 @@ class Broker:
                 if kind == Type.PROBE and not payload:
                     await write_record(writer, Type.READY)
                     return
-                if kind == Type.SSH_OPEN:
-                    await self.relay_ssh(reader, writer, payload)
-                    return
+            # The opening deadline must not cancel a long-lived SSH relay.
+            if kind == Type.SSH_OPEN:
+                await self.relay_ssh(reader, writer, payload)
+                return
             if kind == Type.HELLO:
                 # Workspace clients have their own state machine.  Do not
                 # reinterpret a terminal OPEN/CLOSE as file operations.

@@ -118,6 +118,58 @@ async def test_fresh_challenge_blocks_replay(tmp_path, monkeypatch):
         await b.stop()
 
 
+@pytest.mark.asyncio()
+async def test_ssh_relay_survives_handshake_deadline(tmp_path, monkeypatch):
+    monkeypatch.setattr("interactive.broker.os.chown", lambda *args: None)
+    # Accelerate the five-second opening deadline while preserving the real
+    # authenticated socket path. A relay inside that deadline gets cancelled.
+    timeout = asyncio.timeout
+    monkeypatch.setattr(
+        "interactive.broker.asyncio.timeout",
+        lambda delay: timeout(0.05 if delay == 5 else delay),
+    )
+    client = MagicMock()
+    client.api.inspect_container.return_value = {"State": {"Running": True}}
+    token = b"credential"
+    b = Broker(
+        tmp_path / "broker.sock", token, client, "exact", "1000",
+        "/workspace", lambda: True,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def relay_ssh(reader, writer, opening):
+        assert opening == b"opening"
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(b, "relay_ssh", relay_ssh)
+    await b.start()
+    try:
+        reader, writer = await authenticate(b.path, token)
+        await write_record(writer, Type.SSH_OPEN, b"opening")
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.sleep(0.1)
+        assert not cancelled.is_set()
+        assert not finished.is_set()
+        release.set()
+        await asyncio.wait_for(finished.wait(), 1)
+        assert await asyncio.wait_for(reader.read(1), 1) == b""
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        release.set()
+        await b.stop()
+
+
 def test_error_after_exec_launch_stops_only_exact_workload(monkeypatch):
     monkeypatch.setattr(DockerSession, "members", lambda self: {})
     monkeypatch.setattr(

@@ -77,6 +77,11 @@ class InteractiveRuntime(Base):
     ssh_key_fingerprint = Column(String)
     ssh_generation = Column(Integer)
     ssh_connection_requested_at = Column(DateTime(timezone=True))
+    # Burst-tolerant SSH grant window (migration 010): VS Code opens install
+    # + exec legs in parallel, so a hard 1/sec throttle races them. Small
+    # fixed window keeps abuse control (still N/minute overall).
+    ssh_grant_window_start = Column(DateTime(timezone=True))
+    ssh_grant_window_count = Column(Integer, nullable=False, default=0)
     source_image_metadata = Column(JSON)
     __table_args__ = (
         ForeignKeyConstraint(

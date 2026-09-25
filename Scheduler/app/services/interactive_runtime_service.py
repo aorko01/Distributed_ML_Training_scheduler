@@ -479,6 +479,13 @@ def ssh_info(db, owner, runtime_id):
     return {
         "runtime_id": runtime.id,
         "generation": runtime.generation,
+        # Lifecycle snapshot so the CLI fails fast on dead runtimes instead
+        # of writing a host block for a STOPPED/FAILED runtime whose ssh_*
+        # flags are frozen at their last live values (all already in public()).
+        "state": runtime.state,
+        "desired_state": runtime.desired_state,
+        "failure_code": getattr(runtime, "failure_code", None),
+        "failure_detail": getattr(runtime, "failure_detail", None),
         "ssh_user": "dml",
         "workspace": "/workspace",
         "ssh_capable": bool(getattr(runtime, "ssh_capable", False)),
@@ -507,11 +514,18 @@ def ssh_connection(db, owner, runtime_id, management):
     )
     if not ssh_grant_ready(db, runtime):
         raise HTTPException(409, f"SSH unavailable ({_ssh_blocker(db, runtime)})")
-    # Independent rate limit from browser grants so VS Code's parallel
-    # connections work without removing abuse controls.
-    requested_at = getattr(runtime, "ssh_connection_requested_at", None)
-    if requested_at and utc(requested_at) > now() - timedelta(seconds=1):
+    # Burst-tolerant grant window, independent from browser grants: VS Code
+    # opens install + exec legs within the same second, so a hard 1/sec
+    # throttle races them into 429s. Allow a small burst per short window;
+    # abuse control is preserved (still N/minute overall).
+    window_start = getattr(runtime, "ssh_grant_window_start", None)
+    window_count = getattr(runtime, "ssh_grant_window_count", None) or 0
+    if not window_start or utc(window_start) <= now() - timedelta(seconds=10):
+        runtime.ssh_grant_window_start, runtime.ssh_grant_window_count = now(), 1
+    elif window_count >= 5:
         raise HTTPException(429, "Wait before requesting another SSH connection")
+    else:
+        runtime.ssh_grant_window_count = window_count + 1
     for field in ("ssh_host_key",):
         if not getattr(runtime, field, None):
             raise HTTPException(409, "SSH host key not reported")
