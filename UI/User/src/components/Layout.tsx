@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, LogOut, Activity, User, Hammer, Rocket } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, LogOut, Activity, User, Hammer, Rocket, MonitorPlay } from 'lucide-react';
 import { logout, getUsername } from '../services/auth';
 import { RuntimeWatcher } from '../features/interactive-capacity/RuntimeWatcher';
 
@@ -73,7 +73,7 @@ const Layout: React.FC = () => {
             Training
           </NavLink>
           <NavLink to="/interactive" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <PlusCircle size={20} />Interactive workspaces
+            <MonitorPlay size={20} />Interactive workspaces
           </NavLink>
         </nav>
       </aside>

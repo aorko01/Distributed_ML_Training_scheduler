@@ -291,7 +291,7 @@ const JobDetails: React.FC = () => {
             <strong>Interactive only · no workspace files</strong>
             <p>
               This image has no workspace files and is interactive-only. Open it as an{" "}
-              <Link to={`/submit?mode=interactive&source=job&job=${encodeURIComponent(job.id)}`}>interactive workspace</Link>,
+              <Link to={`/interactive/new?job=${encodeURIComponent(job.id)}`}>interactive workspace</Link>,
               add and save files, then submit the saved workspace for training.
             </p>
           </div>

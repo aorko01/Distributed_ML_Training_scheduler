@@ -142,7 +142,7 @@ const Training: React.FC = () => {
             {(job?.trainingEligible === false || job?.sourceKind === 'PACKAGES_ONLY') && job && (
               <div className="training-error" role="alert">
                 This image has no workspace files and is interactive-only. Open it as an{' '}
-                <Link to={`/submit?mode=interactive&source=job&job=${encodeURIComponent(job.id)}`}>
+                <Link to={`/interactive/new?job=${encodeURIComponent(job.id)}`}>
                   interactive workspace
                 </Link>
                 , add and save files, then submit the saved workspace for training.

@@ -10,6 +10,7 @@ import Builds from './pages/Builds';
 import BuildDetails from './pages/BuildDetails';
 import InteractiveDetails from './pages/InteractiveDetails';
 import InteractiveWorkspaces from './pages/InteractiveWorkspaces';
+import InteractiveCreate from './pages/InteractiveCreate';
 import InteractiveEditor from './pages/InteractiveEditor';
 import JobDetails from './pages/JobDetails';
 import Training from './pages/Training';
@@ -42,6 +43,7 @@ function App() {
           <Route path="builds" element={<Builds />} />
           <Route path="builds/:id" element={<BuildDetails />} />
           <Route path="interactive" element={<InteractiveWorkspaces />} />
+          <Route path="interactive/new" element={<InteractiveCreate />} />
           <Route path="interactive/:id" element={<InteractiveDetails />} />
           <Route path="interactive/:id/editor" element={<InteractiveEditor />} />
           <Route path="machines" element={<Navigate to="/interactive" replace />} />

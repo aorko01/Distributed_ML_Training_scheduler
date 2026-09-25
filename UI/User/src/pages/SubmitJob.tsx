@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { fetchPytorchVersions, type PytorchVersion, type CudaVariant } from '../services/docker';
 import { submitJob } from '../services/jobs';
-import InteractiveCreate from './InteractiveCreate';
 import {
   UploadCloud, CheckCircle2, Boxes, Cpu, Package, TerminalSquare, FileArchive, Sparkles, X,
 } from 'lucide-react';
@@ -418,11 +417,8 @@ const BatchForm: React.FC = () => {
 };
 
 const SubmitJob: React.FC = () => {
-  const [params, setParams] = useSearchParams();
-  const mode = params.get('mode') === 'interactive' ? 'interactive' : 'batch';
-  return <><div className="card ws-mode"><label className="form-label" htmlFor="submission-mode">Create</label>
-    <select id="submission-mode" className="form-select" value={mode} onChange={e => setParams({ mode: e.target.value })}>
-      <option value="batch">Workspace (batch job)</option><option value="interactive">Interactive workspace</option>
-    </select></div>{mode === 'batch' ? <BatchForm /> : <InteractiveCreate />}</>;
+  // Every workspace — batch or interactive — starts with an image build,
+  // so this page is build-only with no job-type selection.
+  return <BatchForm />;
 };
 export default SubmitJob;

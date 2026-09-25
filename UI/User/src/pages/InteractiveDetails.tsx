@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { ArrowLeft, Boxes, CheckCircle2, Cpu, Loader2, MonitorPlay, SquarePen, TerminalSquare } from 'lucide-react';
 import { interactive, interactiveCapacity, type Workspace, type Runtime, type CapacityOptions, type ResourceRequirements } from '../services/interactive';
 import { schedulerOrigin } from '../services/api';
 import { ResourceRequirementsForm } from '../features/interactive-capacity/ResourceRequirementsForm';
@@ -7,13 +8,26 @@ import { CapacitySummary } from '../features/interactive-capacity/CapacitySummar
 import { MachineGrid } from '../features/interactive-capacity/MachineGrid';
 import { useCapacityPreview } from '../features/interactive-capacity/useCapacityPreview';
 import { normalizeRequirements, requirementsValid } from '../features/interactive-capacity/requirements';
+import CopyButton from '../components/CopyButton';
 
 import { verifyConnection } from '../services/terminalVerification';
 
 function runtimeLabel(state: string): string {
-  if (state === 'QUEUED') return 'Waiting for a matching machine';
-  if (['ASSIGNED', 'PULLING', 'STARTING', 'CONNECTING'].includes(state)) return `Preparing (${state.toLowerCase()})`;
+  if (state === 'QUEUED') return 'Queued';
+  if (['ASSIGNED', 'PULLING', 'STARTING', 'CONNECTING'].includes(state)) return `Starting (${state.toLowerCase()})`;
+  if (state === 'READY') return 'Live';
   return state.toLowerCase();
+}
+
+function imageBadge(state: string): string {
+  switch (state) {
+    case 'IMAGE_READY': return 'badge badge-ready';
+    case 'BUILDING': return 'badge badge-building';
+    case 'QUEUED': return 'badge badge-pending';
+    case 'FAILED': return 'badge badge-failed';
+    case 'CANCELLED': return 'badge badge-offline';
+    default: return 'badge badge-pending';
+  }
 }
 
 export default function InteractiveDetails() {
@@ -33,6 +47,7 @@ export default function InteractiveDetails() {
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [cancelling, setCancelling] = useState(false);
+  const [copyError, setCopyError] = useState('');
   const [capOptions, setCapOptions] = useState<CapacityOptions | null>(null);
   const [requirements, setRequirements] = useState<ResourceRequirements | null>(null);
   const liveRuntime = runtime && !['STOPPED', 'FAILED'].includes(runtime.state);
@@ -118,68 +133,180 @@ export default function InteractiveDetails() {
     } finally { connectionBusy.current = false; }
   }
   const imageReady = workspace?.revision.state === 'IMAGE_READY';
+  const building = workspace && ['QUEUED', 'BUILDING'].includes(workspace.revision.state);
   const canRequest = imageReady && (!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && valid && !!requirements;
   const noCapable = preview && preview.matching_online === 0;
   const allBusy = preview && preview.matching_online > 0 && preview.available_now === 0;
-  return <div className="card">
-    <Link to="/interactive">All workspaces</Link>
-    {error && <div role="alert"><p>{error}</p><button className="btn btn-secondary" onClick={() => setReload(value => value + 1)}>Retry</button></div>}
-    {!workspace && !error && <p role="status">Loading workspace…</p>}
-    {workspace && <>
-      <h1>{workspace.name}</h1>
-      <p>Source: {workspace.source_type === 'UPLOAD' ? 'Uploaded workspace' : 'Existing job'} · Revision {workspace.revision.revision_number}</p>
-      {workspace.source_type === 'UPLOAD' && workspace.revision.requested_base_image && <p>Base image: <code>{workspace.revision.requested_base_image}</code></p>}
-      {workspace.source_type !== 'UPLOAD' && workspace.revision.source_image_tag && <p>Base image inherited from existing job: <code>{workspace.revision.source_image_tag}</code></p>}
-      <p role="status">{workspace.revision.state === 'IMAGE_READY' ? 'Image ready' : workspace.revision.state}</p>
-      {workspace.revision.failure_reason && <p role="alert">{workspace.revision.failure_reason}</p>}
-      {workspace.revision.image_tag && <p>Image tag: <code>{workspace.revision.image_tag}</code></p>}
-      {workspace.revision.image_digest_ref && <p title={workspace.revision.image_digest_ref}>Digest: <code>{workspace.revision.image_digest_ref.split('@')[1]?.slice(0, 23)}…</code></p>}
-      {workspace.revision.ssh_hint && <p role="status">VS Code Remote-SSH: {workspace.revision.ssh_hint}.</p>}
-      <pre aria-label="Build logs" style={{ whiteSpace: 'pre-wrap' }}>{lines.join('\n') || 'No build logs yet.'}</pre>
-      {['QUEUED', 'BUILDING'].includes(workspace.revision.state) && <button className="btn btn-secondary" disabled={cancelling} onClick={cancel}>Cancel build</button>}
-      <p>This runtime is temporary. Stop discards unsaved runtime changes; the saved source image remains available.</p>
-      {runtime && <><p role="status">Runtime: {runtimeLabel(runtime.state)}</p>
-        {runtime.failure_detail && <p role="alert">{runtime.failure_detail}</p>}
-        {runtime.assigned_machine && <p>Assigned machine: {runtime.assigned_machine.display_name} · {runtime.assigned_machine.gpu_model ?? 'GPU'} · {runtime.assigned_machine.total_vram_gb?.toFixed(0) ?? '?'} GB VRAM</p>}
-        {runtime.lifetime_deadline && <p>Runtime deadline: {runtime.lifetime_deadline}</p>}</>}
-      {imageReady && (!runtime || ['STOPPED','FAILED'].includes(runtime.state)) && <>
-        <h2>Request interactive access</h2>
-        {!imageReady && <p role="status">Workspace image is still building.</p>}
-        {requirements && <ResourceRequirementsForm value={requirements} options={capOptions} onChange={setRequirements} />}
-        {!valid && <p role="alert" className="error-text">Requirements are outside operator bounds.</p>}
-        <div style={{ marginTop: '1rem' }}>
-          <CapacitySummary preview={preview} loading={previewLoading} />
-          {previewError && <p role="alert" className="error-text">{previewError}</p>}
-        </div>
-        <div style={{ marginTop: '1rem' }}>
-          <MachineGrid machines={preview?.machines ?? []} />
-        </div>
-        {noCapable && <p role="status">No capable online machine exists. Reduce requirements or wait for a suitable worker to come online.</p>}
-        {allBusy && <p role="status">Matching machines are busy. You can queue and the scheduler will assign one when free.</p>}
-        <button className="btn" disabled={busy || !canRequest || !!noCapable} onClick={startRuntime}>
-          {allBusy ? 'Queue interactive access' : 'Request interactive access'}
-        </button>
-      </>}
-      {runtime && (runtime as unknown as { ssh_ready?: boolean; ssh_status?: string; ssh_generation?: number }).ssh_ready && runtime.state === 'READY' && <>
-        <h2>Connect with VS Code</h2>
-        <p>Native Remote-SSH into the workload container (<code>dml</code>, <code>/workspace</code>). Live only: Stop ends SSH immediately. Copy-paste on your machine:</p>
-        <pre>{`dml-ssh configure ${runtime.id} --scheduler ${schedulerOrigin()}\n# VS Code: Remote-SSH: Connect to Host -> dml-${runtime.id}-g${(runtime as unknown as { ssh_generation?: number }).ssh_generation ?? runtime.generation}\n# Open folder /workspace`}</pre>
-      </>}
-      {runtime && !(runtime as unknown as { ssh_ready?: boolean }).ssh_ready && runtime.state === 'READY' && (runtime as unknown as { ssh_capable?: boolean }).ssh_capable !== true && <p role="status">SSH unavailable for this runtime (rebuild from an SSH-capable revision).</p>}
-      {imageReady && !((runtime as unknown as { ssh_ready?: boolean } | null)?.ssh_ready && runtime?.state === 'READY') && <>
-        <h2>VS Code Remote-SSH</h2>
-        <p>Native Remote-SSH into the workload container (<code>dml</code>, <code>/workspace</code>) — same live files, Python environment and GPU as the browser editor. Requires VS Code with the Remote-SSH extension, an OpenSSH client, and the <code>dml-ssh</code> CLI (<code>pip install ./dml-ssh</code> from the repo). Copy-paste on your machine:</p>
-        <pre>{`dml-ssh login --scheduler ${schedulerOrigin()}\ndml-ssh configure <runtime-id> --scheduler ${schedulerOrigin()}\n# VS Code: Remote-SSH: Connect to Host, then open /workspace`}</pre>
-        {(!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && <p role="status">Start a runtime above first — the exact connect command for your runtime appears here once it is READY and SSH-capable.</p>}
-        {runtime && !['STOPPED', 'FAILED', 'READY'].includes(runtime.state) && <p role="status">Your runtime is still starting — the connect command appears here once it is READY and SSH-capable.</p>}
-        {runtime?.state === 'READY' && <p role="status">This runtime is not SSH-capable: rebuild the image from an SSH-capable revision, then start a new runtime.</p>}
-      </>}
-      {runtime && !['STOPPED','FAILED'].includes(runtime.state) && <button className="btn btn-secondary" disabled={busy || runtime.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop</button>}{' '}
-      <button className="btn btn-secondary" disabled={busy || runtime?.state !== 'READY' || runtime.desired_state !== 'RUNNING' || connectionState === 'Checking connection…'} onClick={connect}>Connect</button>{' '}
-      {runtime?.state === 'READY' && <Link className="btn" to={`/interactive/${id}/editor`}>Open Editor</Link>}{' '}
-      {runtime && !runtime.editor_capable && <span title="Start a new editor-capable runtime after the workspace editor rollout is enabled">Editor unavailable for this runtime</span>}{' '}
-      <button className="btn btn-secondary" disabled title="Saving is not available in this phase">Save as new revision</button>
-      {connectionState && <p role="status">{connectionState}</p>}
-    </>}
-  </div>;
+  const ready = runtime?.state === 'READY';
+  const sshReady = (runtime as unknown as { ssh_ready?: boolean } | null)?.ssh_ready && ready;
+  const sshCmd = runtime
+    ? `dml-ssh configure ${runtime.id} --scheduler ${schedulerOrigin()}\n# VS Code: Remote-SSH → dml-${runtime.id}-g${(runtime as unknown as { ssh_generation?: number }).ssh_generation ?? runtime.generation}\n# Open folder /workspace`
+    : '';
+  const assignedJobs = preview?.machines.reduce((n, m) => n + m.workloads.length, 0) ?? 0;
+
+  return (
+    <div className="fade-in iw-detail">
+      <Link to="/interactive" className="iw-back"><ArrowLeft size={15} /> Sessions</Link>
+
+      {error && <div className="card training-error" role="alert">{error}<div style={{ marginTop: '0.6rem' }}><button className="btn btn-secondary" onClick={() => setReload(v => v + 1)}>Retry</button></div></div>}
+      {!workspace && !error && <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}><Loader2 className="animate-spin" size={30} /></div>}
+
+      {workspace && (
+        <>
+          <div className="builds-hero iw-hero">
+            <div>
+              <span className="ws-eyebrow"><MonitorPlay size={14} /> Session · Rev {workspace.revision.revision_number}</span>
+              <h1>{workspace.name}</h1>
+              <div className="iw-card-badges">
+                <span className={imageBadge(workspace.revision.state)}>
+                  {workspace.revision.state === 'IMAGE_READY' ? 'Image ready' : workspace.revision.state.toLowerCase()}
+                </span>
+                {runtime && <span className="badge badge-running">{runtimeLabel(runtime.state)}</span>}
+                {runtime?.assigned_machine && <span className="iw-machine-tag">{runtime.assigned_machine.display_name}</span>}
+              </div>
+            </div>
+            <div className="iw-hero-actions">
+              {ready && (
+                <Link className="btn btn-primary" to={`/interactive/${id}/editor`}><SquarePen size={16} /> Open editor</Link>
+              )}
+              {liveRuntime && (
+                <button className="btn btn-secondary" disabled={busy || runtime?.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop</button>
+              )}
+            </div>
+          </div>
+
+          {/* Step 1 — image */}
+          <section className="card iw-step">
+            <header className="iw-step-head">
+              <span className="iw-step-no">1</span>
+              <div>
+                <h2>Image</h2>
+                <p className="iw-muted">
+                  {workspace.source_type === 'UPLOAD' ? 'Uploaded workspace' : 'From existing build'}
+                  {workspace.revision.requested_base_image ? <> · <code>{workspace.revision.requested_base_image}</code></> : null}
+                  {workspace.source_type !== 'UPLOAD' && workspace.revision.source_image_tag ? <> · <code>{workspace.revision.source_image_tag}</code></> : null}
+                </p>
+              </div>
+              <span className="iw-step-state">{building ? 'Building…' : imageReady ? 'Ready' : workspace.revision.state.toLowerCase()}</span>
+            </header>
+            {workspace.revision.image_tag && <p className="iw-mono">Tag <code>{workspace.revision.image_tag}</code></p>}
+            {workspace.revision.failure_reason && <p role="alert" className="error-text">{workspace.revision.failure_reason}</p>}
+            <details className="iw-logs">
+              <summary>Build logs</summary>
+              <pre aria-label="Build logs">{lines.join('\n') || 'No build logs yet.'}</pre>
+            </details>
+            {building && <div><button className="btn btn-secondary" disabled={cancelling} onClick={cancel}>Cancel build</button></div>}
+          </section>
+
+          {/* Step 2 — machine */}
+          {imageReady && (!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && (
+            <section className="card iw-step">
+              <header className="iw-step-head">
+                <span className="iw-step-no">2</span>
+                <div>
+                  <h2>Machine</h2>
+                  <p className="iw-muted">Set minimums — only matching machines are listed, with current load.</p>
+                </div>
+              </header>
+              {requirements && <ResourceRequirementsForm value={requirements} options={capOptions} onChange={setRequirements} />}
+              {!valid && <p role="alert" className="error-text">Requirements are outside operator bounds.</p>}
+              <div style={{ marginTop: '1rem' }}>
+                <CapacitySummary preview={preview} loading={previewLoading} />
+                {previewError && <p role="alert" className="error-text">{previewError}</p>}
+                {!previewLoading && preview && (
+                  <p className="iw-muted" style={{ marginTop: '0.5rem' }}>
+                    {preview.matching_online} eligible machine{preview.matching_online === 1 ? '' : 's'} · {assignedJobs} job{assignedJobs === 1 ? '' : 's'} running on them
+                  </p>
+                )}
+              </div>
+              <div style={{ marginTop: '1rem' }}>
+                <MachineGrid machines={preview?.machines ?? []} />
+              </div>
+              {noCapable && <p role="status" className="iw-muted">No capable machine online — lower the minimums or wait.</p>}
+              {allBusy && <p role="status" className="iw-muted">Matching machines are busy — you can queue and we’ll assign one when free.</p>}
+              <div className="iw-create-foot">
+                <span className="iw-muted">Runtime is temporary — Stop discards unsaved changes.</span>
+                <button className="btn btn-primary" disabled={busy || !canRequest || !!noCapable} onClick={startRuntime}>
+                  {busy ? 'Requesting…' : allBusy ? 'Queue on a machine' : 'Get a machine'}
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* Step 3 — session */}
+          {liveRuntime && (
+            <section className="card iw-step">
+              <header className="iw-step-head">
+                <span className="iw-step-no">3</span>
+                <div>
+                  <h2>Session {ready ? 'live' : runtimeLabel(runtime!.state)}</h2>
+                  <p className="iw-muted">
+                    {runtime?.assigned_machine
+                      ? <>{runtime.assigned_machine.display_name} · {runtime.assigned_machine.gpu_model ?? 'GPU'} · {runtime.assigned_machine.total_vram_gb?.toFixed(0) ?? '?'} GB VRAM</>
+                      : 'Waiting for a matching machine…'}
+                    {runtime?.lifetime_deadline ? <> · ends {new Date(runtime.lifetime_deadline).toLocaleString()}</> : null}
+                  </p>
+                </div>
+              </header>
+              {runtime?.failure_detail && <p role="alert" className="error-text">{runtime.failure_detail}</p>}
+
+              <div className="iw-connect-grid">
+                <div className="iw-connect-card">
+                  <TerminalSquare size={18} />
+                  <div>
+                    <strong>Browser editor</strong>
+                    <p>Same files, environment and GPU — no setup.</p>
+                    {ready
+                      ? <Link className="btn btn-primary" to={`/interactive/${id}/editor`}><SquarePen size={15} /> Open editor</Link>
+                      : <p className="iw-muted">Editor unlocks once the session is live.</p>}
+                    {runtime && !runtime.editor_capable && <p className="iw-muted">Editor unavailable for this runtime.</p>}
+                  </div>
+                </div>
+                <div className="iw-connect-card">
+                  <Cpu size={18} />
+                  <div>
+                    <strong>VS Code Remote-SSH</strong>
+                    <p>Paste in your terminal, then connect to the host in VS Code and open <code>/workspace</code>.</p>
+                    {sshReady ? (
+                      <>
+                        <pre className="iw-cmd">{sshCmd}</pre>
+                        <div className="iw-cmd-row">
+                          <CopyButton value={sshCmd} label="Copy command" onResult={(ok) => setCopyError(ok ? '' : 'Copy failed — select the command manually.')} />
+                        </div>
+                        {copyError && <p role="alert" className="error-text">{copyError}</p>}
+                      </>
+                    ) : (
+                      <details className="iw-logs">
+                        <summary>How it works</summary>
+                        <pre className="iw-cmd">{`dml-ssh login --scheduler ${schedulerOrigin()}\ndml-ssh configure <runtime-id> --scheduler ${schedulerOrigin()}`}</pre>
+                        <p className="iw-muted">Needs VS Code + Remote-SSH, an OpenSSH client and the <code>dml-ssh</code> CLI. The exact command for this session appears here once it’s live{runtime && !['STOPPED', 'FAILED', 'READY'].includes(runtime.state) ? ' (still starting…)' : ''}.</p>
+                      </details>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="iw-session-foot">
+                <button className="btn btn-secondary" disabled={busy || runtime?.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop session</button>
+                <button
+                  className="btn btn-secondary"
+                  disabled={busy || runtime?.state !== 'READY' || runtime.desired_state !== 'RUNNING' || connectionState === 'Checking connection…'}
+                  onClick={connect}
+                >
+                  Check connection
+                </button>
+                <button className="btn btn-secondary" disabled title="Saving is not available in this phase">Save as new revision</button>
+                {connectionState && <span role="status" className="iw-muted">{connectionState}</span>}
+              </div>
+              <p className="iw-muted"><CheckCircle2 size={13} style={{ verticalAlign: '-2px' }} /> Live only — Stop ends browser + SSH access immediately.</p>
+            </section>
+          )}
+
+          {imageReady && !liveRuntime && (runtime as unknown as { ssh_ready?: boolean } | null) !== null && runtime && ['STOPPED', 'FAILED'].includes(runtime.state) && (
+            <p className="iw-muted"><Boxes size={13} style={{ verticalAlign: '-2px' }} /> Last session ended — pick a machine above to start again.</p>
+          )}
+        </>
+      )}
+    </div>
+  );
 }

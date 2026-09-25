@@ -168,7 +168,7 @@ const Builds: React.FC = () => {
                       <button
                         type="button"
                         className="build-card-link build-card-link--button"
-                        onClick={(e) => { e.stopPropagation(); navigate(`/submit?mode=interactive&source=job&job=${encodeURIComponent(job.id)}`); }}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/interactive/new?job=${encodeURIComponent(job.id)}`); }}
                       >
                         Use interactively <MonitorPlay size={14} />
                       </button>

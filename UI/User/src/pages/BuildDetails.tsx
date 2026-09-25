@@ -102,7 +102,7 @@ const BuildDetails: React.FC = () => {
             </Link>
           )}
           {isReady && interactiveOnly && (
-            <Link to={`/submit?mode=interactive&source=job&job=${encodeURIComponent(job.id)}`} className="btn btn-primary" style={{ textDecoration: 'none' }}>
+            <Link to={`/interactive/new?job=${encodeURIComponent(job.id)}`} className="btn btn-primary" style={{ textDecoration: 'none' }}>
               <MonitorPlay size={16} /> Use interactively
             </Link>
           )}
