@@ -1,6 +1,6 @@
 """Versioned Worker dispatch; long execution never blocks the heartbeat loop."""
 
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import os
 import json
 import logging
@@ -28,8 +28,30 @@ class BatchAPI(SchedulerAPI):
         super().__init__(worker_id)
         self.coordinator = coordinator
         self.execution_api = execution_api
+        self._attempt = threading.local()
+
+    @contextmanager
+    def bound(self, record):
+        """Keep a running thread tied to its original fenced attempt.
+
+        The same job can be reassigned after lease expiry while an old thread
+        is still unwinding. Looking up an assignment by job ID then would let
+        that old thread write a result into the new worker's attempt.
+        """
+        previous = getattr(self._attempt, "assignment_id", None)
+        self._attempt.assignment_id = record["assignment_id"]
+        try:
+            yield
+        finally:
+            self._attempt.assignment_id = previous
 
     def assignment(self, job_id):
+        bound_id = getattr(self._attempt, "assignment_id", None)
+        if bound_id:
+            record = self.coordinator.get(bound_id)
+            if record["payload"].get("id") != job_id:
+                raise ValueError("Batch attempt does not match job")
+            return record
         matches = [
             r
             for r in self.coordinator.records()
@@ -164,6 +186,15 @@ class ManagedWorker:
 
                     shutil.rmtree(directory)
             self.coordinator.mark_clean(record["assignment_id"])
+            if record.get("pending_result") and not record.get("result_accepted"):
+                try:
+                    self.api.result(record, record["pending_result"])
+                    self.coordinator.update(record["assignment_id"], result_accepted=True)
+                except SchedulerRejected as exc:
+                    if exc.status != 409:
+                        raise
+                    # Expired/reassigned attempts cannot publish a result.
+                    # Their exact cleanup is still acknowledged below.
             try:
                 released = self.api.cleanup(record)["released"]
             except SchedulerRejected as exc:
@@ -250,15 +281,16 @@ class ManagedWorker:
         record_heartbeat(True)
 
     def finish_batch(self, record):
-        try:
-            self.executor.process_job(record["payload"])
-        finally:
+        with self.batch_api.bound(record):
             try:
-                self.ops.cleanup(self.coordinator.get(record["assignment_id"]))
-                self.coordinator.mark_clean(record["assignment_id"])
-            except Exception:
-                self.coordinator.update(record["assignment_id"], uncertain=True)
-                self.coordinator.mode = "UNCERTAIN"
+                self.executor.process_job(record["payload"])
+            finally:
+                try:
+                    self.ops.cleanup(self.coordinator.get(record["assignment_id"]))
+                    self.coordinator.mark_clean(record["assignment_id"])
+                except Exception:
+                    self.coordinator.update(record["assignment_id"], uncertain=True)
+                    self.coordinator.mode = "UNCERTAIN"
 
     def maintenance(self):
         for record in self.coordinator.records():

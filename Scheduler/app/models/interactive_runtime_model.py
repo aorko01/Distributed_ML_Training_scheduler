@@ -151,7 +151,8 @@ class WorkerAssignment(Base):
         ),
         CheckConstraint("state IN ('CLAIMED','ACTIVE','CLEANING','LOST','RELEASED')"),
         CheckConstraint(
-            "(released_at IS NULL AND state != 'RELEASED') OR (released_at IS NOT NULL AND state = 'RELEASED' AND cleanup_ack)"
+            "(released_at IS NULL AND state != 'RELEASED') OR "
+            "(released_at IS NOT NULL AND state = 'RELEASED' AND (cleanup_ack OR job_id IS NOT NULL))"
         ),
         Index(
             "uq_assignment_live_job",

@@ -627,6 +627,12 @@ def release_if_clean(db, worker, assignment):
 
 def cleanup(db, worker_id, body):
     worker, assignment = fence(db, worker_id, body, cleanup=True)
+    # The scheduler may already have fenced and retired an expired batch
+    # attempt. A restarted worker still needs to clean its local container,
+    # then acknowledge that exact old identity without changing the tombstone.
+    if assignment.released_at:
+        db.commit()
+        return {"released": True}
     assignment.cleanup_ack = True
     failure_code = getattr(body, "failure_code", None)
     if failure_code and not assignment.runtime_id:
@@ -658,11 +664,32 @@ def expire(db):
         worker = lock_worker(db, worker_id)
         for assignment in live(db, worker_id):
             if utc(assignment.lease_until) <= now():
-                assignment.state = "LOST"
-                worker.execution_reconciling = True
-                if assignment.runtime_id:
+                if assignment.job_id:
+                    # A batch lease is the execution authority. Once it has
+                    # expired, late results are fenced by result(), and this
+                    # durable tombstone frees the unique live-job reservation
+                    # so another worker can retry even if the owner never
+                    # reconnects. Do not treat an unacknowledged result as a
+                    # completed job.
+                    job = db.query(Job).filter_by(id=assignment.job_id).with_for_update().one()
+                    job.status = (
+                        JobStatus.VRAM_ESTIMATION_PENDING
+                        if assignment.kind == Kind.ESTIMATION.value
+                        else JobStatus.RETRY_NEEDED
+                    )
+                    job.device = None
+                    job.failure_reason = "Worker assignment lease expired; retry required."
+                    assignment.state = "RELEASED"
+                    assignment.released_at = now()
+                    logger.warning(
+                        "Expired batch assignment %s for job %s; queued retry",
+                        assignment.id, job.id,
+                    )
+                else:
+                    assignment.state = "LOST"
                     runtime = db.get(Runtime, assignment.runtime_id)
                     if runtime.desired_state == "RUNNING":
                         runtime.state = "LOST"
                         runtime.failure_code = "LEASE_LOST"
+                worker.execution_reconciling = True
         db.commit()

@@ -278,6 +278,35 @@ class TestHandleVramEstimation:
 
 
 class TestHandleTraining:
+    def test_managed_attempt_uses_separate_workspace_and_job_identity(self, executor, tmp_path):
+        executor.coordinator = MagicMock()
+        executor.managed_assignment = MagicMock(
+            return_value={"assignment_id": "attempt-1", "payload": {"id": "j"}}
+        )
+        with (
+            patch.object(executor_module, "OUTPUT_DIR", str(tmp_path)),
+            patch.object(JobExecutor, "_remove_output_dir", return_value=True),
+            patch.object(JobExecutor, "_prepare_output_mount", return_value=("/ws", set())) as prepare,
+            patch.object(executor_module, "ObjectStore"),
+            patch.object(executor_module, "OutputFileMonitor"),
+            patch.object(JobExecutor, "_run_container"),
+        ):
+            executor.handle_training("j", "img", "python train.py")
+        prepare.assert_called_once_with(str(tmp_path / "j" / "attempt-1"), "img", "j")
+
+    def test_fresh_run_waits_for_stale_workspace_cleanup(self, executor):
+        executor.api.mark_job_failed = MagicMock()
+        with (
+            patch.object(JobExecutor, "_remove_output_dir", return_value=False),
+            patch.object(JobExecutor, "_prepare_output_mount") as prepare,
+            patch.object(JobExecutor, "_record_job"),
+            patch.object(executor_module, "clear_running_job"),
+        ):
+            executor.handle_training("j", "img", "python train.py")
+        prepare.assert_not_called()
+        executor.api.mark_job_failed.assert_called_once()
+        assert executor.api.mark_job_failed.call_args.args[1] == "system"
+
     def test_starts_monitor_and_runs(self, executor, tmp_path):
         with (
             patch.object(executor_module, "OUTPUT_DIR", str(tmp_path)),
@@ -352,6 +381,17 @@ class TestHandleRetry:
             executor.handle_retry("j", "img", "python resume.py", "python train.py")
         mock_train.assert_called_once()
 
+    def test_invalid_checkpoint_resume_restarts_original_command(self, executor):
+        with (
+            patch.object(
+                JobExecutor, "_resume_attempt",
+                return_value=("user", "invalid checkpoint state"),
+            ),
+            patch.object(JobExecutor, "handle_training") as fresh,
+        ):
+            executor.handle_retry("j", "img", "python resume.py", "python train.py")
+        fresh.assert_called_once_with("j", "img", "python train.py")
+
     def test_no_original_command_marks_failed(self, executor):
         executor.api.mark_job_failed = MagicMock()
         with (
@@ -366,6 +406,23 @@ class TestHandleRetry:
 
 
 class TestResumeAttempt:
+    def test_failed_checkpoint_cleanup_requeues_instead_of_starting_fresh(
+        self, executor, tmp_path
+    ):
+        store = MagicMock()
+        with (
+            patch.object(executor_module.os.path, "isfile", return_value=True),
+            patch.object(JobExecutor, "_resolve_mount_target", return_value="/ws"),
+            patch.object(executor_module, "load_baseline", return_value=set()),
+            patch.object(executor_module, "OutputFileMonitor"),
+            patch.object(JobExecutor, "_run_container", return_value=(False, "user", "invalid checkpoint state")),
+            patch.object(JobExecutor, "_remove_output_dir", return_value=False),
+        ):
+            result = executor._resume_attempt(
+                "j", "img", str(tmp_path), store, "python resume.py", 0.0
+            )
+        assert result[0] == "system"
+
     def test_local_baseline_reused(self, executor, tmp_path):
         store = MagicMock()
         with (
@@ -552,6 +609,7 @@ class TestFinalizeJob:
         monitor = MagicMock()
         monitor.pending_uploads.return_value = ["/out/a"]
         executor.api.mark_job_completed = MagicMock()
+        executor.api.mark_job_failed = MagicMock()
         with (
             patch.object(JobExecutor, "_remove_output_dir") as mock_rm,
             patch.object(JobExecutor, "_record_job"),
@@ -560,6 +618,10 @@ class TestFinalizeJob:
             executor._finalize_job("j", "img", "/out", monitor, 0.0, True)
         mock_rm.assert_not_called()
         mock_clear.assert_called_once_with("j")
+        executor.api.mark_job_completed.assert_not_called()
+        executor.api.mark_job_failed.assert_called_once_with(
+            "j", "system", "1 output file(s) were not uploaded"
+        )
 
     def test_failure_marks_failed(self, executor):
         monitor = MagicMock()

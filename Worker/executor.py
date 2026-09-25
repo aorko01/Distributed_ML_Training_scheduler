@@ -86,6 +86,20 @@ class JobExecutor:
             result.extend(['--label', key+'='+value])
         return result
 
+    def _job_output_dir(self, job_id: str) -> str:
+        if hasattr(self, "coordinator"):
+            # Attempts for the same job must never share a writable workspace.
+            # An expired attempt can still be unwinding while a retry starts.
+            assignment_id = self.managed_assignment(job_id)["assignment_id"]
+            return os.path.join(OUTPUT_DIR, job_id, assignment_id)
+        return os.path.join(OUTPUT_DIR, job_id)
+
+    def _upload_authority(self, job_id: str):
+        if not hasattr(self, "coordinator"):
+            return None
+        assignment_id = self.managed_assignment(job_id)["assignment_id"]
+        return lambda: self.coordinator.authoritative(assignment_id)
+
     @property
     def active_jobs_count(self) -> int:
         with self._active_jobs_lock:
@@ -227,7 +241,7 @@ class JobExecutor:
         return workdir
 
     def _prepare_output_mount(self, job_output_dir: str,
-                              image_name: str) -> tuple[str, set[str]]:
+                              image_name: str, job_id: str | None = None) -> tuple[str, set[str]]:
         """Make the host output dir behave as the container's working directory.
 
         Seeds the output dir with the image's WORKDIR contents and returns the
@@ -246,7 +260,9 @@ class JobExecutor:
             return CONTAINER_OUTPUT_MOUNT, set()
 
         seed_name = f"seed-{uuid.uuid4().hex[:12]}"
-        managed_args = self._managed_launch_args(os.path.basename(job_output_dir), 'batch-seed') if hasattr(self, 'coordinator') else []
+        managed_args = self._managed_launch_args(
+            job_id or os.path.basename(job_output_dir), 'batch-seed'
+        ) if hasattr(self, 'coordinator') else []
         if managed_args:
             seed_name = managed_args[1]
             managed_args = managed_args[2:]
@@ -455,16 +471,25 @@ class JobExecutor:
         logger.info("Training job received for job %s.", job_id)
         record_event("info", f"Job {job_id} training started")
 
-        job_output_dir = os.path.join(OUTPUT_DIR, job_id)
+        job_output_dir = self._job_output_dir(job_id)
         # Start from a clean slate: a leftover dir could hold stale files from a
         # previous attempt that never got cleaned up.
-        self._remove_output_dir(job_output_dir)
+        if not self._remove_output_dir(job_output_dir, job_id):
+            reason = "Could not clear previous output workspace before fresh training"
+            logger.error("Job %s: %s", job_id, reason)
+            self._record_job(job_id, image_name, "training", "failed", started_at)
+            self.api.mark_job_failed(job_id, "system", reason)
+            clear_running_job(job_id)
+            return
         os.makedirs(job_output_dir, exist_ok=True)
 
-        mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name)
+        mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name, job_id)
 
         store = ObjectStore()
-        monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
+        monitor = OutputFileMonitor(
+            job_id, job_output_dir, store, exclude=baseline,
+            can_upload=self._upload_authority(job_id),
+        )
         monitor.start()
 
         # Image building and training are decoupled: the image is built without
@@ -487,7 +512,7 @@ class JobExecutor:
         logger.info("Retry job received for job %s.", job_id)
         record_event("info", f"Job {job_id} retry started")
 
-        job_output_dir = os.path.join(OUTPUT_DIR, job_id)
+        job_output_dir = self._job_output_dir(job_id)
         store = ObjectStore()
 
         # First try to pick up where the last run left off: restore the saved
@@ -561,17 +586,21 @@ class JobExecutor:
                 job_id, job_output_dir,
             )
         else:
-            self._remove_output_dir(job_output_dir)
+            if not self._remove_output_dir(job_output_dir, job_id):
+                return "system", "Could not clear stale output workspace before checkpoint restore"
             os.makedirs(job_output_dir, exist_ok=True)
 
-            mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name)
+            mount_target, baseline = self._prepare_output_mount(job_output_dir, image_name, job_id)
 
             # Restore the checkpoints into the workspace after the baseline is
             # recorded, so only the image's baked-in files are excluded from
             # uploads and the resumed run's updated checkpoints still get pushed.
             self._restore_job_output(job_id, job_output_dir, store)
 
-        monitor = OutputFileMonitor(job_id, job_output_dir, store, exclude=baseline)
+        monitor = OutputFileMonitor(
+            job_id, job_output_dir, store, exclude=baseline,
+            can_upload=self._upload_authority(job_id),
+        )
         monitor.start()
 
         self._reset_log_state(job_id)
@@ -591,7 +620,8 @@ class JobExecutor:
 
         logger.error("Job %s: resume failed (%s: %s).",
                      job_id, failure_type, failure_reason)
-        self._remove_output_dir(job_output_dir)
+        if not self._remove_output_dir(job_output_dir, job_id):
+            return "system", "Could not clear failed checkpoint workspace"
         return failure_type, failure_reason
 
     def _restore_job_output(self, job_id: str, job_output_dir: str, store: ObjectStore):
@@ -683,7 +713,7 @@ class JobExecutor:
         self._finalize_job(job_id, image_name, job_output_dir, monitor,
                            started_at, success, failure_type, failure_reason)
 
-    def _remove_output_dir(self, job_output_dir: str) -> bool:
+    def _remove_output_dir(self, job_output_dir: str, job_id: str | None = None) -> bool:
         """Delete a job output dir, falling back to a root docker helper when
         it contains files/dirs owned by the container's root user."""
         shutil.rmtree(job_output_dir, ignore_errors=True)
@@ -696,7 +726,7 @@ class JobExecutor:
             subprocess.run(
                 [
                     "docker", "run", "--rm",
-                    *self._managed_launch_args(os.path.basename(job_output_dir), "batch-cleanup"),
+                    *self._managed_launch_args(job_id or os.path.basename(job_output_dir), "batch-cleanup"),
                     "-v", f"{_docker_host_path(job_output_dir)}:/cleanup",
                     "alpine", "sh", "-c", "rm -rf /cleanup/* /cleanup/.[!.]* /cleanup/..?* 2>/dev/null; true",
                 ],
@@ -721,7 +751,11 @@ class JobExecutor:
                 "keeping output dir at %s",
                 job_id, len(pending), job_output_dir,
             )
-        elif self._remove_output_dir(job_output_dir):
+            if success:
+                success = False
+                failure_type = "system"
+                failure_reason = f"{len(pending)} output file(s) were not uploaded"
+        elif self._remove_output_dir(job_output_dir, job_id):
             logger.info("Deleted output directory for job %s.", job_id)
         else:
             logger.warning("Could not fully delete output dir for job %s: %s",

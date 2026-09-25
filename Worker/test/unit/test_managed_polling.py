@@ -110,6 +110,64 @@ def test_network_failure_cannot_release_pending_result(tmp_path):
     c.close()
 
 
+def test_batch_result_stays_bound_to_original_attempt_after_reassignment(tmp_path):
+    import time
+
+    c = Coordinator(tmp_path)
+    c.available()
+    first = assignment("batch_training")
+    first["payload"] = {"id": "job"}
+    c.begin_claim()
+    c.accept({"assignment": first}, time.monotonic())
+    transport = MagicMock()
+    api = BatchAPI("worker", c, transport)
+
+    with api.bound(first):
+        c.mark_clean(first["assignment_id"])
+        c.released(first["assignment_id"])
+        second = assignment("batch_training")
+        second["payload"] = {"id": "job"}
+        c.persist({**second, "local_clean": False, "released": False})
+        api.mark_job_completed("job")
+
+    assert c.get(first["assignment_id"])["pending_result"] == {"outcome": "completed"}
+    assert "pending_result" not in c.get(second["assignment_id"])
+    c.close()
+
+
+def test_startup_replays_persisted_batch_result_after_local_cleanup(
+    tmp_path, reset_telemetry
+):
+    import time
+
+    c = Coordinator(tmp_path)
+    c.available()
+    attempt = assignment("batch_training")
+    attempt["payload"] = {"id": "job"}
+    c.begin_claim()
+    c.accept({"assignment": attempt}, time.monotonic())
+    c.update(attempt["assignment_id"], pending_result={"outcome": "completed"})
+
+    api = MagicMock()
+    api.register.return_value = {"reconcile_assignments": [attempt]}
+    api.cleanup.return_value = {"released": True}
+    api.heartbeat.return_value = {"sequence": 1, "decisions": []}
+    ops = MagicMock()
+    ops.preflight.return_value = False
+    with patch("managed_worker.JobExecutor"), patch(
+        "job_state.load_running_jobs", return_value=[]
+    ):
+        worker = ManagedWorker("worker", c, api, ops, lambda *args, **kwargs: {})
+        worker.startup()
+
+    assert c.get(attempt["assignment_id"])["released"]
+    assert c.get(attempt["assignment_id"])["result_accepted"]
+    api.result.assert_called_once()
+    assert api.result.call_args.args[1] == {"outcome": "completed"}
+    api.cleanup.assert_called_once()
+    c.close()
+
+
 def test_cleanup_retries_persisted_interactive_failure_code():
     from scheduler_protocol import ExecutionAPI
 

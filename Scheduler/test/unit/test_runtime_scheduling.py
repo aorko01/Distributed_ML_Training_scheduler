@@ -353,6 +353,57 @@ def test_expired_lease_holds_capacity_and_old_instance_can_only_cleanup(
     assert claims.cleanup(db, w.worker_id, fence(assigned)) == {"released": True}
 
 
+def test_expired_batch_can_be_retried_by_another_worker(db):
+    owner = make_user(db)
+    original = worker(db)
+    replacement = worker(db)
+    job = make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
+    first = pull(db, original)
+    assert first["payload"]["id"] == job.id
+
+    attempt = db.get(Assignment, first["assignment_id"])
+    attempt.lease_until = now() - timedelta(seconds=1)
+    db.commit()
+    claims.expire(db)
+
+    assert attempt.state == "RELEASED"
+    assert attempt.released_at is not None
+    assert not attempt.cleanup_ack
+    assert job.status == JobStatus.RETRY_NEEDED
+    assert job.device is None
+    second = pull(db, replacement)
+    assert second["payload"]["id"] == job.id
+    assert second["payload"]["flag"] == "retry"
+    assert second["assignment_id"] != first["assignment_id"]
+
+    with pytest.raises(HTTPException) as error:
+        claims.result(db, original.worker_id, Result(
+            **fence(first).model_dump(), outcome="completed"
+        ))
+    assert error.value.status_code == 409
+    # A returning worker can acknowledge local cleanup of the retired
+    # attempt without changing the replacement attempt or its job state.
+    assert claims.cleanup(db, original.worker_id, fence(first)) == {"released": True}
+    assert job.status == JobStatus.IN_PROGRESS
+    assert not attempt.cleanup_ack
+
+
+def test_expired_estimation_returns_to_estimation_queue(db):
+    owner = make_user(db)
+    original = worker(db)
+    replacement = worker(db)
+    job = make_job(db, owner.user_id, status=JobStatus.VRAM_ESTIMATION_PENDING)
+    first = pull(db, original)
+    attempt = db.get(Assignment, first["assignment_id"])
+    attempt.lease_until = now() - timedelta(seconds=1)
+    db.commit()
+
+    claims.expire(db)
+    assert job.status == JobStatus.VRAM_ESTIMATION_PENDING
+    assert attempt.released_at is not None
+    assert pull(db, replacement)["payload"]["id"] == job.id
+
+
 def test_cleanup_preserves_worker_runtime_failure_when_event_was_lost(db, monkeypatch):
     owner = make_user(db)
     w = worker(db)

@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import logging
+from typing import Callable
 
 from object_store import ObjectStore
 
@@ -50,6 +51,7 @@ class OutputFileMonitor(threading.Thread):
         store: ObjectStore,
         poll_interval: float = 2.0,
         exclude: set[str] | None = None,
+        can_upload: Callable[[], bool] | None = None,
     ):
         super().__init__(daemon=True)
         self.job_id = job_id
@@ -57,6 +59,7 @@ class OutputFileMonitor(threading.Thread):
         self.store = store
         self.poll_interval = poll_interval
         self._exclude = exclude or set()
+        self._can_upload = can_upload or (lambda: True)
         self._stop_event = threading.Event()
         self._uploaded: dict[str, tuple[int, float]] = {}
         self._lock = threading.Lock()
@@ -96,14 +99,18 @@ class OutputFileMonitor(threading.Thread):
                 if path in self._exclude:
                     continue
                 object_key = f"{self.job_id}/{os.path.relpath(path, self.output_dir)}"
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
                 with self._lock:
-                    if object_key in self._uploaded:
+                    if self._uploaded.get(object_key) == (stat.st_size, stat.st_mtime):
                         continue
                 pending.append(path)
         return pending
 
     def _maybe_upload(self, file_path: str):
-        if file_path in self._exclude:
+        if file_path in self._exclude or not self._can_upload():
             return
         try:
             stat = os.stat(file_path)

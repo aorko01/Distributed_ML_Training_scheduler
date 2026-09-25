@@ -51,6 +51,15 @@ class TestMonitor:
         monitor._scan()
         store.upload_file.assert_not_called()
 
+    def test_expired_attempt_does_not_upload_even_during_flush(self, tmp_path):
+        authority = MagicMock(return_value=False)
+        monitor, store = self._monitor(tmp_path, can_upload=authority)
+        (tmp_path / "checkpoint.pt").write_text("old state")
+        monitor._scan()
+        monitor.flush(retries=1)
+        assert authority.call_count == 2
+        store.upload_file.assert_not_called()
+
     def test_unchanged_files_not_reuploaded(self, tmp_path):
         monitor, store = self._monitor(tmp_path)
         (tmp_path / "out.txt").write_text("data")
@@ -92,6 +101,16 @@ class TestMonitor:
         assert len(pending) == 2
         monitor._scan()
         assert monitor.pending_uploads() == []
+
+    def test_changed_file_with_failed_reupload_is_pending(self, tmp_path):
+        monitor, store = self._monitor(tmp_path)
+        checkpoint = tmp_path / "checkpoint.pt"
+        checkpoint.write_text("valid")
+        monitor._scan()
+        checkpoint.write_text("new checkpoint")
+        store.upload_file.return_value = False
+        monitor._scan()
+        assert monitor.pending_uploads() == [str(checkpoint)]
 
     def test_pending_skips_excluded(self, tmp_path):
         excluded = str(tmp_path / "seed.txt")
