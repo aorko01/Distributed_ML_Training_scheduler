@@ -1,7 +1,8 @@
 # Joining a new GPU worker to the Scheduler
 
 Run these on the **new worker machine**. You only need this repo checkout and
-`sudo`. The installer does everything else.
+`sudo`. The single installer provisions both the persistent systemd Worker and
+the separate Electron monitoring console.
 
 ## 1. Prerequisites
 
@@ -15,45 +16,31 @@ Run these on the **new worker machine**. You only need this repo checkout and
 - A checkout of this repo (needs `Worker/`, `Access_Container/`,
   `deploy/interactive/worker/`).
 
-## 2. Fill in `Worker/.env`
+## 2. Install Worker + Electron UI
 
 ```bash
 cd <checkout>
-cp Worker/.env.example Worker/.env
+sudo bash install.sh
 ```
 
-Edit `Worker/.env` — set these, leave the rest:
+On a fresh checkout, `install.sh` creates `Worker/.env` with the current
+deployment's non-secret defaults. If `Worker/.env` already exists, it is never
+overwritten. The installer automatically detects:
 
-```dotenv
-SCHEDULER_URL=https://scheduler.zulfiker.xyz
-OBJECT_STORE_URL=https://object.zulfiker.xyz
-INTERACTIVE_WORKER_ENABLED=1
-INTERACTIVE_REGISTRY_PREFIXES=docker.io/aorko123
-INTERACTIVE_ACCESS_IMAGE=docker.io/aorko123/access@sha256:f7884b44f15d2c29daff40b3f74a7df1d3e2da27348ff3f44c52d328f5d23065
-INTERACTIVE_PREFLIGHT_IMAGE=docker.io/aorko123/quota-fixture@sha256:b0b2526e7fe571f62b3077ff32cf0371182348f400714bcc0c561bda70dd81c3
-# SSH is live (gate passed): new hosts join with it on.
-INTERACTIVE_ALLOW_SSH=1
-INTERACTIVE_SSH_MAX_DURATION_SECONDS=14400
-INTERACTIVE_SSH_CAPACITY=8
-# Registry pull credentials (protected JSON file, server/username/password).
-INTERACTIVE_REGISTRY_CREDENTIAL_FILE=/etc/dml/registry-pull.json
-```
+- Docker's real data root (`docker info`), even when it is not `/var/lib/docker`.
+- Hostname/IP, CPU, RAM, disks, architecture, NVIDIA GPUs, and runtime support.
+- A persistent Worker UUID and service secret.
 
-You do **not** need to set `DOCKER_DATA_ROOT` — the installer detects Docker's
-real data root itself and writes it into the live config.
+The only secret it may ask for is the registry pull token. It first attempts to
+import the existing Docker login for the invoking desktop user. A private CA
+path cannot be inferred; the current public HTTPS deployment does not require
+one. Custom deployments must set the relevant `*_CA_FILE` values themselves.
 
-## 3. Run the installer
+The NVIDIA host driver also cannot be selected safely without knowing the GPU
+and kernel. Install a supported driver and reboot first; Docker and the NVIDIA
+Container Toolkit are then configured automatically.
 
-```bash
-sudo bash Worker/join_worker.sh
-```
-
-This installs Docker + NVIDIA toolkit if missing, creates this worker's UUID
-and secret, deploys everything under `/opt/dml`, installs the systemd units,
-and pre-pulls the service images. You do **not** create the UUID/secret
-yourself — the installer generates both.
-
-## 4. Register on the scheduler (manual step)
+## 3. Register on the scheduler (manual step)
 
 The installer prints a JSON entry like:
 
@@ -71,6 +58,15 @@ Need the entry again later? Run:
 ```bash
 sudo bash Worker/join_worker.sh --show-registration
 ```
+
+## 4. Launch the UI
+
+```bash
+dml-worker-ui
+```
+
+You can also use the **DML Worker Console** desktop-menu entry. The UI is not a
+systemd unit: closing it does not stop `dml-worker.service`.
 
 ## 5. Verify
 

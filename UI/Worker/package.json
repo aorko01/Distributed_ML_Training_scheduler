@@ -1,7 +1,7 @@
 {
   "name": "distributeml-worker-ui",
   "version": "0.1.0",
-  "description": "Cross-platform desktop UI for the Distributed ML worker agent (dummy UI, no worker IPC yet)",
+  "description": "Linux desktop monitoring console for the Distributed ML worker service",
   "main": "./out/main/index.js",
   "author": "Distributed ML Training Scheduler",
   "homepage": "https://github.com/anomalyco/opencode",

@@ -148,7 +148,9 @@ class Manager:
 
     def progress(self, record, phase, health=None, code=None, ssh=None):
         record = self.coordinator.update(
-            record["assignment_id"], event_sequence=record.get("event_sequence", 0) + 1
+            record["assignment_id"],
+            event_sequence=record.get("event_sequence", 0) + 1,
+            current_phase=phase,
         )
         self.api.event(record, phase, health, code, ssh if ssh is not None else self.ssh_report)
         return record

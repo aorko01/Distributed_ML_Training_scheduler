@@ -11,7 +11,13 @@ export interface WorkerInfo {
   dockerAvailable: boolean
   cudaAvailable: boolean
   cpus: number
+  cpuModel: string
   memTotalGb: number
+  diskTotalGb: number
+  diskFreeGb: number
+  dockerDataRoot: string | null
+  kernel: string
+  uptimeSec: number
   gpuCount: number
   gpuName: string
   gpuVramTotalGb: number
@@ -31,6 +37,8 @@ export interface Metrics {
   diskWriteBytesPerS: number
   netRecvBytesPerS: number
   netSentBytesPerS: number
+  diskTotalGb: number
+  diskFreeGb: number
   timestamp: number
 }
 
@@ -48,11 +56,20 @@ export interface GpuInfo {
 export interface JobRecord {
   id: string
   image: string
-  type: 'training' | 'estimation'
+  type: 'training' | 'estimation' | 'interactive'
   status: 'running' | 'completed' | 'failed'
   vramEstimateGb: number
   startedAt: string
   durationSec: number
+  assignmentId: string | null
+  phase: string | null
+}
+
+export interface WorkerLogRecord {
+  timestamp: string
+  level: string
+  logger: string
+  message: string
 }
 
 export interface EventRecord {
@@ -66,6 +83,8 @@ export interface WorkerStatus {
   lastHeartbeatAt: string | null
   schedulerUrl: string
   paused: boolean
+  mode: string
+  activeAssignments: number
 }
 
 export interface WorkerConfig {
@@ -91,4 +110,13 @@ export function formatBytes(bytesPerS: number): string {
   if (bytesPerS < 1024 * 1024) return `${(bytesPerS / 1024).toFixed(1)} KB/s`
   if (bytesPerS < 1024 * 1024 * 1024) return `${(bytesPerS / (1024 * 1024)).toFixed(1)} MB/s`
   return `${(bytesPerS / (1024 * 1024 * 1024)).toFixed(2)} GB/s`
+}
+
+export function formatUptime(seconds: number): string {
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m`
 }

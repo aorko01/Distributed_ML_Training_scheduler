@@ -4,6 +4,7 @@ import asyncio
 import threading
 import platform
 import logging
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,12 +18,14 @@ from hardware import (
     get_or_create_worker_id, get_hostname, get_ip_address, get_gpu_info,
     count_gpus_in_use, get_cpu_load, get_mem_usage, get_mem_total_gb,
     get_gpu_temperature, docker_available, cuda_available, get_os_info,
-    get_gpus_info,
+    get_gpus_info, get_cpu_model, get_disk_info, get_docker_data_root,
+    get_uptime_seconds,
 )
 
 logger = logging.getLogger("server")
 
 app = FastAPI(title="Worker Agent API", version="0.2.0")
+_managed_worker: Any | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,7 +49,13 @@ class WorkerInfo(BaseModel):
     dockerAvailable: bool
     cudaAvailable: bool
     cpus: int
+    cpuModel: str = "Unknown"
     memTotalGb: float
+    diskTotalGb: float = 0.0
+    diskFreeGb: float = 0.0
+    dockerDataRoot: str | None = None
+    kernel: str = ""
+    uptimeSec: int = 0
     gpuCount: int
     gpuName: str
     gpuVramTotalGb: float
@@ -66,6 +75,8 @@ class Metrics(BaseModel):
     diskWriteBytesPerS: float
     netRecvBytesPerS: float
     netSentBytesPerS: float
+    diskTotalGb: float = 0.0
+    diskFreeGb: float = 0.0
     timestamp: float
 
 
@@ -88,6 +99,15 @@ class JobRecord(BaseModel):
     vramEstimateGb: float
     startedAt: str
     durationSec: int
+    assignmentId: str | None = None
+    phase: str | None = None
+
+
+class WorkerLogRecord(BaseModel):
+    timestamp: str
+    level: str
+    logger: str
+    message: str
 
 
 class EventRecord(BaseModel):
@@ -110,10 +130,19 @@ class Status(BaseModel):
     lastHeartbeatAt: str | None
     schedulerUrl: str
     paused: bool
+    mode: str = "UNKNOWN"
+    activeAssignments: int = 0
+
+
+def set_managed_worker(worker: Any | None):
+    """Provide read-only live assignment state to the loopback UI API."""
+    global _managed_worker
+    _managed_worker = worker
 
 
 def _build_worker_info() -> WorkerInfo:
     gpu_name, total_vram, _, num_gpus, _ = get_gpu_info()
+    disk_total, disk_free = get_disk_info()
     return WorkerInfo(
         workerId=get_or_create_worker_id(),
         hostname=get_hostname(),
@@ -127,7 +156,13 @@ def _build_worker_info() -> WorkerInfo:
         dockerAvailable=docker_available(),
         cudaAvailable=cuda_available(),
         cpus=os.cpu_count() or 1,
+        cpuModel=get_cpu_model(),
         memTotalGb=get_mem_total_gb(),
+        diskTotalGb=disk_total,
+        diskFreeGb=disk_free,
+        dockerDataRoot=get_docker_data_root(),
+        kernel=platform.release(),
+        uptimeSec=get_uptime_seconds(),
         gpuCount=num_gpus,
         gpuName=gpu_name,
         gpuVramTotalGb=total_vram,
@@ -139,6 +174,7 @@ def _build_metrics() -> Metrics:
     gpu_name, total_vram, free_vram, _, gpu_load = get_gpu_info()
     used_vram = round(max(0.0, total_vram - free_vram), 2)
     io = io_monitor.sample()
+    disk_total, disk_free = get_disk_info()
     return Metrics(
         cpuLoad=get_cpu_load(),
         memUsage=get_mem_usage(),
@@ -153,6 +189,8 @@ def _build_metrics() -> Metrics:
         diskWriteBytesPerS=io["diskWriteBytesPerS"],
         netRecvBytesPerS=io["netRecvBytesPerS"],
         netSentBytesPerS=io["netSentBytesPerS"],
+        diskTotalGb=disk_total,
+        diskFreeGb=disk_free,
         timestamp=time.time(),
     )
 
@@ -164,12 +202,82 @@ def _build_status() -> Status:
     last_heartbeat_at = (
         time.strftime("%H:%M:%S", time.localtime(last_at)) if last_at else None
     )
+    records = []
+    mode = "UNKNOWN"
+    if _managed_worker is not None:
+        try:
+            records = [
+                record
+                for record in _managed_worker.coordinator.records()
+                if not record.get("released")
+            ]
+            mode = str(_managed_worker.coordinator.mode)
+        except Exception:
+            records = []
     return Status(
         connected=connected,
         lastHeartbeatAt=last_heartbeat_at,
         schedulerUrl=config_module.get_scheduler_url(),
         paused=telemetry.is_paused(),
+        mode=mode,
+        activeAssignments=len(records),
     )
+
+
+def _payload_image(payload: dict) -> str:
+    return str(
+        payload.get("image_name")
+        or payload.get("docker_image")
+        or payload.get("image")
+        or payload.get("image_digest_ref")
+        or "—"
+    )
+
+
+def _active_jobs() -> list[dict]:
+    if _managed_worker is None:
+        return []
+    try:
+        records = [
+            record
+            for record in _managed_worker.coordinator.records()
+            if not record.get("released")
+        ]
+    except Exception:
+        return []
+
+    now = time.time()
+    jobs = []
+    for record in records:
+        payload = record.get("payload") or {}
+        kind = str(record.get("kind") or "batch_training")
+        job_id = payload.get("id") or payload.get("job_id") or payload.get("runtime_id")
+        accepted_at = float(record.get("accepted_at") or now)
+        if kind == "interactive_access":
+            job_type = "interactive"
+        elif kind == "vram_estimation":
+            job_type = "estimation"
+        else:
+            job_type = "training"
+        phase = record.get("current_phase")
+        if record.get("uncertain"):
+            phase = "UNCERTAIN"
+        elif record.get("local_clean"):
+            phase = "CLEANING"
+        jobs.append(
+            {
+                "id": str(job_id or record.get("assignment_id", "unknown")),
+                "image": _payload_image(payload),
+                "type": job_type,
+                "status": "running",
+                "vramEstimateGb": float(payload.get("vram_required") or 0),
+                "startedAt": time.strftime("%H:%M:%S", time.localtime(accepted_at)),
+                "durationSec": max(0, int(now - accepted_at)),
+                "assignmentId": str(record.get("assignment_id")),
+                "phase": str(phase or "ACTIVE"),
+            }
+        )
+    return jobs
 
 
 @app.get("/health")
@@ -194,12 +302,21 @@ def get_gpus():
 
 @app.get("/api/jobs", response_model=list[JobRecord])
 def get_jobs():
-    return telemetry.get_jobs()
+    active = _active_jobs()
+    active_ids = {job["id"] for job in active}
+    history = [job for job in reversed(telemetry.get_jobs()) if job.get("id") not in active_ids]
+    return active + history[: max(0, 50 - len(active))]
 
 
 @app.get("/api/events", response_model=list[EventRecord])
 def get_events():
     return telemetry.get_events()
+
+
+@app.get("/api/logs", response_model=list[WorkerLogRecord])
+def get_worker_logs(limit: int = 200):
+    """Return Worker service logs only; container logs are never collected."""
+    return telemetry.get_worker_logs(limit)
 
 
 @app.get("/api/status", response_model=Status)

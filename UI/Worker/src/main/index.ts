@@ -10,7 +10,8 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0a0a0a',
-    title: 'Worker Agent',
+    title: 'DML Worker Console',
+    icon: join(__dirname, '../../resources/dml-worker-ui.svg'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -23,8 +24,13 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (details.url.startsWith('https://')) void shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow.webContents.getURL()
+    if (current && url !== current) event.preventDefault()
   })
 
   const devUrl = process.env['ELECTRON_RENDERER_URL']

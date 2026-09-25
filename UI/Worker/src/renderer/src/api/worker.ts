@@ -5,6 +5,7 @@ import type {
   Metrics,
   WorkerConfig,
   WorkerInfo,
+  WorkerLogRecord,
   WorkerStatus
 } from '../types'
 
@@ -49,6 +50,10 @@ export function fetchJobs(): Promise<JobRecord[]> {
 
 export function fetchEvents(): Promise<EventRecord[]> {
   return getJson<EventRecord[]>('/api/events')
+}
+
+export function fetchLogs(): Promise<WorkerLogRecord[]> {
+  return getJson<WorkerLogRecord[]>('/api/logs?limit=300')
 }
 
 export function fetchStatus(): Promise<WorkerStatus> {

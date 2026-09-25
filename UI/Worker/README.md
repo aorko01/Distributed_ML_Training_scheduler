@@ -1,72 +1,52 @@
-# Worker Agent UI
+# DML Worker Console
 
-Cross-platform desktop app (Electron + React + TypeScript) for the Distributed ML worker agent.
+Linux Electron console for the local Distributed ML Worker. The Python Worker
+runs independently under `dml-worker.service`; closing this window never stops
+heartbeats, assignments, or containers.
 
-> **Status: dummy UI** — all data is simulated locally in the renderer. It does **not** talk to the
-> Python worker process (`Worker/main.py`) or the scheduler yet. The Disconnect/Reconnect controls
-> only toggle local UI state.
+The console reads the loopback-only API at `http://127.0.0.1:8600` and shows:
 
-## Features
+- CPU, memory, Docker-storage, disk/network I/O, host identity, and uptime.
+- Every detected NVIDIA GPU, including utilization, VRAM, and temperature.
+- Live coordinator assignments plus recent completed/failed jobs.
+- Worker Python logs captured in-process. Docker/container logs are deliberately
+  not read or displayed.
+- Scheduler connectivity and the Worker's current assignment mode.
 
-- **Worker information**: worker ID, hostname, IP, OS, platform, scheduler URL, heartbeat / job-poll intervals
-- **GPU card**: GPU model, CUDA/Docker availability, GPU load, VRAM used/free, temperature
-- **Resource utilization**: live-simulated CPU, memory, GPU load, and VRAM gauges plus a CPU history sparkline
-- **Disconnect / Reconnect**: confirm-and-disconnect modal that simulates the worker going offline
-  (metrics idle out, jobs/log stream pause)
-- **Logs console**: streaming dummy worker logs with pause / clear / export to file
-- **Dark UI** consistent with the existing Admin dashboard
+The **Accept no more jobs** control is intentionally visual-only in this
+version. It changes only local renderer state and never calls a Worker or
+Scheduler control endpoint.
 
-## Requirements
+## Install the complete application
 
-- **Node.js >= 22.12** (and npm). Install from https://nodejs.org or via `nvm install 22`.
-- The app itself is cross-platform (Windows / macOS / Linux). GPU/CUDA/Docker are **not** required —
-  nothing is actually probed.
-
-## Getting started
+From the repository root on Ubuntu:
 
 ```bash
-npm install
+sudo bash install.sh
+```
+
+That command installs the Worker and lease guard as systemd services, builds
+the Electron console, creates the `dml-worker-ui` launcher and desktop-menu
+entry, detects Docker's active data root, and performs the GPU/storage checks.
+See `Worker/setup_worker.md` for registration details.
+
+## Develop the console
+
+Node.js 22 or newer is required:
+
+```bash
+npm ci
 npm run dev
 ```
 
-`npm run dev` launches the Electron window with Vite hot-reload.
+Useful checks:
 
-## Scripts
-
-| Command             | Description                                  |
-| ------------------- | -------------------------------------------- |
-| `npm run dev`       | Run the app in development (HMR)             |
-| `npm start`         | Preview the production build                 |
-| `npm run build`     | Typecheck + build main/preload/renderer      |
-| `npm run typecheck` | Type-check main, preload and renderer        |
-| `npm run lint`      | Lint with oxlint                             |
-
-## Project structure
-
-```
-UI/Worker/
-├── electron.vite.config.ts   # electron-vite config
-├── package.json
-├── src/
-│   ├── main/index.ts         # Electron main process (window creation)
-│   ├── preload/index.ts      # Preload bridge (exposes platform/versions only)
-│   └── renderer/
-│       ├── index.html
-│       └── src/
-│           ├── App.tsx              # view switching + connection state
-│           ├── index.css
-│           ├── data/mock.ts         # all dummy worker data
-│           ├── hooks/useSimulation.ts   # simulated live metrics
-│           ├── components/          # Sidebar, cards, gauges, modal, tables
-│           └── views/               # Dashboard, Logs
+```bash
+npm run typecheck
+npm run lint
+npm run build
 ```
 
-## Next steps (real integration)
-
-When wiring the real worker:
-
-1. Expose IPC channels in `src/main/index.ts` and `src/preload/index.ts` (e.g. `worker:metrics`,
-   `worker:disconnect`, `worker:reconnect`) talking to the worker process or its HTTP API.
-2. Replace `data/mock.ts` and `hooks/useSimulation.ts` with data sourced from the worker's heartbeat payload
-   (see `Worker/hardware.py` — `collect_node_info()`, `get_gpu_info()`).
-3. Use `window.worker` in `src/preload/index.d.ts` to type the bridge.
+The renderer talks directly to the loopback API. The preload exposes only the
+platform, Electron versions, and API URL; it does not control the systemd
+service or provide shell access.

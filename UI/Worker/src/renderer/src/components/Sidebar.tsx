@@ -6,6 +6,7 @@ export type View = 'dashboard'
 interface SidebarProps {
   view: View
   connected: boolean
+  apiReachable: boolean
   platform: string
 }
 
@@ -13,7 +14,7 @@ const NAV_ITEMS: { key: View; label: string; icon: typeof LayoutDashboard }[] = 
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }
 ]
 
-const Sidebar: React.FC<SidebarProps> = ({ view, connected, platform }) => (
+const Sidebar: React.FC<SidebarProps> = ({ view, connected, apiReachable, platform }) => (
   <aside className="sidebar">
     <div className="sidebar-header">
       <div className="logo-mark">
@@ -40,7 +41,9 @@ const Sidebar: React.FC<SidebarProps> = ({ view, connected, platform }) => (
     <div className="sidebar-footer">
       <div className="sidebar-status">
         <span className={`status-dot${connected ? ' status-dot-on' : ''}`} />
-        <span>{connected ? 'Connected to scheduler' : 'Disconnected'}</span>
+        <span>
+          {!apiReachable ? 'Worker service offline' : connected ? 'Scheduler connected' : 'Scheduler offline'}
+        </span>
       </div>
       <div className="sidebar-meta">
         {connected ? <Wifi size={13} /> : <WifiOff size={13} />}

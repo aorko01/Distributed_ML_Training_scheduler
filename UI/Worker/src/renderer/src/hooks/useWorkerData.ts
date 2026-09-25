@@ -1,24 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   WORKER_WS_URL,
-  fetchConfig,
-  fetchEvents,
+  fetchLogs,
   fetchJobs,
   fetchMetrics,
   fetchGpus,
   fetchStatus,
   fetchWorker,
-  pauseWorker,
-  resumeWorker,
-  updateConfig
 } from '../api/worker'
 import type {
-  EventRecord,
   GpuInfo,
   JobRecord,
   Metrics,
-  WorkerConfig,
   WorkerInfo,
+  WorkerLogRecord,
   WorkerStatus
 } from '../types'
 
@@ -35,9 +30,9 @@ export interface WorkerData {
   metrics: Metrics | null
   gpus: GpuInfo[]
   jobs: JobRecord[]
-  events: EventRecord[]
+  logs: WorkerLogRecord[]
   status: WorkerStatus | null
-  config: WorkerConfig | null
+  acceptingJobs: boolean
   connected: boolean
   paused: boolean
   apiReachable: boolean
@@ -47,9 +42,7 @@ export interface WorkerData {
   netRecvHistory: number[]
   lastHeartbeat: string
   error: string | null
-  updateConfig: (patch: Partial<WorkerConfig>) => Promise<WorkerConfig>
-  pauseWorker: () => Promise<void>
-  resumeWorker: () => Promise<void>
+  toggleAcceptingJobs: () => void
 }
 
 export function useWorkerData(): WorkerData {
@@ -57,9 +50,9 @@ export function useWorkerData(): WorkerData {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [gpus, setGpus] = useState<GpuInfo[]>([])
   const [jobs, setJobs] = useState<JobRecord[]>([])
-  const [events, setEvents] = useState<EventRecord[]>([])
+  const [logs, setLogs] = useState<WorkerLogRecord[]>([])
   const [status, setStatus] = useState<WorkerStatus | null>(null)
-  const [config, setConfig] = useState<WorkerConfig | null>(null)
+  const [acceptingJobs, setAcceptingJobs] = useState(true)
   const [apiReachable, setApiReachable] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [wsActive, setWsActive] = useState(false)
@@ -69,6 +62,7 @@ export function useWorkerData(): WorkerData {
   const [diskReadHistory, setDiskReadHistory] = useState<number[]>([])
   const [netRecvHistory, setNetRecvHistory] = useState<number[]>([])
   const wsActiveRef = useRef(false)
+  const workerLoadedRef = useRef(false)
 
   useEffect(() => {
     wsActiveRef.current = wsActive
@@ -133,13 +127,20 @@ export function useWorkerData(): WorkerData {
 
     const tick = async () => {
       try {
-        const [s, j, e] = await Promise.all([fetchStatus(), fetchJobs(), fetchEvents()])
+        const [s, j, workerLogs] = await Promise.all([fetchStatus(), fetchJobs(), fetchLogs()])
         if (cancelled) return
         setStatus(s)
         setJobs(j)
-        setEvents(e)
+        setLogs(workerLogs)
         setApiReachable(true)
         setError(null)
+
+        if (!workerLoadedRef.current) {
+          const info = await fetchWorker()
+          if (cancelled) return
+          setWorker(info)
+          workerLoadedRef.current = true
+        }
 
         if (!wsActiveRef.current) {
           const [m, g] = await Promise.all([fetchMetrics(), fetchGpus()])
@@ -166,45 +167,8 @@ export function useWorkerData(): WorkerData {
     }
   }, [])
 
-  useEffect(() => {
-    let cancelled = false
-    fetchWorker()
-      .then((w) => {
-        if (!cancelled) setWorker(w)
-      })
-      .catch(() => undefined)
-    fetchConfig()
-      .then((c) => {
-        if (!cancelled) setConfig(c)
-      })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const handleUpdateConfig = useCallback(async (patch: Partial<WorkerConfig>) => {
-    const updated = await updateConfig(patch)
-    setConfig(updated)
-    return updated
-  }, [])
-
-  const handlePause = useCallback(async () => {
-    try {
-      const s = await pauseWorker()
-      setStatus(s)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }, [])
-
-  const handleResume = useCallback(async () => {
-    try {
-      const s = await resumeWorker()
-      setStatus(s)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+  const toggleAcceptingJobs = useCallback(() => {
+    setAcceptingJobs((value) => !value)
   }, [])
 
   const paused = status?.paused ?? false
@@ -216,9 +180,9 @@ export function useWorkerData(): WorkerData {
     metrics,
     gpus,
     jobs,
-    events,
+    logs,
     status,
-    config,
+    acceptingJobs,
     connected,
     paused,
     apiReachable,
@@ -228,8 +192,6 @@ export function useWorkerData(): WorkerData {
     netRecvHistory,
     lastHeartbeat,
     error,
-    updateConfig: handleUpdateConfig,
-    pauseWorker: handlePause,
-    resumeWorker: handleResume
+    toggleAcceptingJobs
   }
 }

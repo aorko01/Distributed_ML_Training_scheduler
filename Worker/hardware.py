@@ -4,9 +4,32 @@ import subprocess
 import uuid
 import shutil
 import platform
+import time
 import GPUtil
 import psutil
 from config import WORKER_ID_FILE, OUTPUT_DIR
+
+
+def get_cpu_model() -> str:
+    """Return a useful host CPU model without requiring extra packages."""
+    try:
+        if os.path.exists("/proc/cpuinfo"):
+            with open("/proc/cpuinfo", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.lower().startswith(("model name", "hardware")):
+                        value = line.split(":", 1)[-1].strip()
+                        if value:
+                            return value
+    except OSError:
+        pass
+    return platform.processor() or "Unknown"
+
+
+def get_uptime_seconds() -> int:
+    try:
+        return max(0, int(time.time() - psutil.boot_time()))
+    except Exception:
+        return 0
 
 def get_or_create_worker_id() -> str:
     """Retrieve existing worker ID or generate a new persistent one."""

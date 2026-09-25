@@ -13,7 +13,7 @@ from executor import JobExecutor
 from execution_state import Coordinator
 from scheduler_protocol import ExecutionAPI, Fence, SchedulerRejected
 from hardware import get_or_create_worker_id, get_gpu_info, execution_inventory
-from telemetry import is_paused, record_heartbeat
+from telemetry import install_logging_capture, is_paused, record_heartbeat
 import runtime_config
 from interactive.docker_ops import DockerOps
 from interactive.manager import Manager
@@ -404,6 +404,7 @@ def scheduler_startup_error(worker_id, error):
 
 
 def run():
+    install_logging_capture()
     state_dir = os.environ.get("WORKER_STATE_DIR") or _default_state_dir()
     # Default the host lock inside the state dir (user-writable). Only honor
     # an explicit override; the old /run/... default requires root.
@@ -438,6 +439,7 @@ def run():
         heartbeat.start()
         import server
 
+        server.set_managed_worker(worker)
         server.run_in_thread(
             os.getenv("WORKER_API_HOST", "127.0.0.1"),
             int(os.getenv("WORKER_API_PORT", "8600")),

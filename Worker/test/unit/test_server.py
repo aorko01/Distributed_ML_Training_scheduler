@@ -101,6 +101,41 @@ class TestGpusJobsEvents:
         assert client.get("/api/jobs").json()[0]["id"] == "j1"
         assert client.get("/api/events").json()[-1]["message"] == "hello"
 
+    def test_worker_logs_endpoint_never_reads_container_logs(self, client, reset_telemetry):
+        import logging
+        import telemetry
+
+        handler = telemetry._WorkerLogHandler()
+        handler.emit(logging.LogRecord(
+            "executor", logging.INFO, "", 0, "[job j1] secret training output", (), None
+        ))
+        handler.emit(logging.LogRecord(
+            "managed_worker", logging.INFO, "", 0, "worker polling", (), None
+        ))
+        response = client.get("/api/logs?limit=20")
+        assert response.status_code == 200
+        assert response.json()[-1]["message"] == "worker polling"
+        assert all("secret training output" not in item["message"] for item in response.json())
+
+    def test_jobs_include_live_coordinator_assignments(self, client):
+        coordinator = MagicMock()
+        coordinator.records.return_value = [{
+            "assignment_id": "assignment-1",
+            "kind": "batch_training",
+            "payload": {"id": "job-1", "image_name": "repo/train:1", "vram_required": 4},
+            "accepted_at": 1,
+            "released": False,
+        }]
+        worker = MagicMock(coordinator=coordinator)
+        server.set_managed_worker(worker)
+        try:
+            job = client.get("/api/jobs").json()[0]
+        finally:
+            server.set_managed_worker(None)
+        assert job["id"] == "job-1"
+        assert job["status"] == "running"
+        assert job["assignmentId"] == "assignment-1"
+
 
 class TestStatus:
     def test_connected_when_recent(self, reset_telemetry):

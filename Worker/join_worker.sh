@@ -12,6 +12,8 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 SOURCE_ENV="$SCRIPT_DIR/.env"
 LIVE_ENV="/etc/dml/worker.env"
 INSTALL_ROOT="/opt/dml"
+UI_SOURCE="$REPO_ROOT/UI/Worker"
+UI_INSTALL_ROOT="$INSTALL_ROOT/WorkerUI"
 STATE_DEFAULT="/var/lib/dml-worker"
 SERVICE_NAME="dml-worker.service"
 GUARD_NAME="dml-worker-lease-guard.service"
@@ -63,6 +65,7 @@ done
 [[ -f "$SOURCE_ENV" ]] || die "Missing $SOURCE_ENV. Place the configured .env in Worker/ first."
 [[ -d "$REPO_ROOT/Access_Container" ]] || die "Missing $REPO_ROOT/Access_Container; a Worker-only copy is not runnable."
 [[ -f "$REPO_ROOT/deploy/interactive/worker/dml-worker.service" ]] || die "Missing Worker systemd unit files under deploy/interactive/worker/."
+[[ -f "$UI_SOURCE/package-lock.json" ]] || die "Missing $UI_SOURCE; the integrated Worker UI is required."
 
 # Read dotenv values without sourcing shell code. This intentionally supports
 # the simple KEY=value, quoted-value format accepted by the supplied example.
@@ -107,15 +110,23 @@ require_absolute_path() {
 
 validate_env_file() {
     local file="$1" get_cmd="$2"
-    local scheduler interactive prefixes access_image preflight_image
+    local scheduler interactive prefixes access_image preflight_image api_host api_port
     scheduler="$($get_cmd SCHEDULER_URL)"
     interactive="$($get_cmd INTERACTIVE_WORKER_ENABLED)"
     prefixes="$($get_cmd INTERACTIVE_REGISTRY_PREFIXES)"
     access_image="$($get_cmd INTERACTIVE_ACCESS_IMAGE)"
     preflight_image="$($get_cmd INTERACTIVE_PREFLIGHT_IMAGE)"
+    api_host="$($get_cmd WORKER_API_HOST)"
+    api_port="$($get_cmd WORKER_API_PORT)"
 
     [[ "$scheduler" == https://* ]] || die "SCHEDULER_URL must be a routable https:// URL in $file."
     [[ "$interactive" == "1" ]] || die "INTERACTIVE_WORKER_ENABLED=1 is required for an interactive Worker."
+    [[ -z "$api_host" || "$api_host" == "127.0.0.1" || "$api_host" == "localhost" ]] ||
+        die "WORKER_API_HOST must stay loopback-only for the integrated desktop UI."
+    if [[ -n "$api_port" ]]; then
+        [[ "$api_port" =~ ^[0-9]+$ ]] && ((api_port >= 1 && api_port <= 65535)) ||
+            die "WORKER_API_PORT must be an integer from 1 to 65535."
+    fi
     [[ -n "$prefixes" ]] || die "INTERACTIVE_REGISTRY_PREFIXES is required in $file."
     local require_idle_gpu allow_ssh allow_internet allow_developer ssh_max ssh_capacity
     require_idle_gpu="$($get_cmd INTERACTIVE_REQUIRE_IDLE_GPU)"
@@ -218,10 +229,160 @@ fi
 
 install_base_packages() {
     log "Installing host packages..."
+    # This installer runs with umask 077 to protect Worker credentials. APT,
+    # however, deliberately reads repositories as the unprivileged `_apt`
+    # user. Repair files left by an interrupted older installer before the
+    # first apt-get update, otherwise NodeSource is ignored or its signature
+    # cannot be verified.
+    [[ ! -e /etc/apt/sources.list.d/nodesource.list ]] ||
+        chmod 0644 /etc/apt/sources.list.d/nodesource.list
+    [[ ! -e /etc/apt/keyrings/nodesource.gpg ]] ||
+        chmod 0644 /etc/apt/keyrings/nodesource.gpg
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg openssl python3 python3-pip python3-venv rsync
+        ca-certificates curl gnupg openssl python3 python3-pip python3-venv rsync \
+        libnss3 libxss1 libgbm1 libnotify4 libxtst6 libatspi2.0-0 \
+        libuuid1 libsecret-1-0 xdg-utils
+
+    if ! dpkg-query -W -f='${db:Status-Status}' libgtk-3-0t64 2>/dev/null | grep -q '^installed$' \
+        && ! dpkg-query -W -f='${db:Status-Status}' libgtk-3-0 2>/dev/null | grep -q '^installed$'; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgtk-3-0t64 \
+            || DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgtk-3-0
+    fi
+
+    # Electron needs ALSA even on hosts that do not have speakers. Ubuntu
+    # 24.04 renamed the package while 22.04 retains the original name.
+    if ! dpkg-query -W -f='${db:Status-Status}' libasound2t64 2>/dev/null | grep -q '^installed$' \
+        && ! dpkg-query -W -f='${db:Status-Status}' libasound2 2>/dev/null | grep -q '^installed$'; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libasound2t64 \
+            || DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libasound2
+    fi
 }
+
+install_node_build_toolchain() {
+    local major
+    major=0
+    if command -v node >/dev/null 2>&1; then
+        major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf 0)"
+    fi
+    if [[ "$major" =~ ^[0-9]+$ ]] && ((major >= 22)); then
+        command -v npm >/dev/null 2>&1 || die "Node.js is present but npm is missing."
+        return
+    fi
+
+    log "Installing Node.js 22 build tooling for the Electron UI..."
+    install -d -m 0755 /etc/apt/keyrings
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    chmod 0644 /etc/apt/keyrings/nodesource.gpg
+    printf '%s\n' \
+        'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main' \
+        > /etc/apt/sources.list.d/nodesource.list
+    chmod 0644 /etc/apt/sources.list.d/nodesource.list
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+    major="$(node -p 'Number(process.versions.node.split(".")[0])')"
+    ((major >= 22)) || die "Node.js 22 or newer is required to build the Worker UI."
+}
+
+install_worker_ui() (
+    local build_dir api_port verify_user
+    install_node_build_toolchain
+    build_dir="$(mktemp -d /tmp/dml-worker-ui-build.XXXXXX)"
+    trap 'rm -rf -- "$build_dir"' EXIT
+
+    log "Building the Electron Worker console..."
+    rsync -a --delete \
+        --exclude='node_modules/' --exclude='out/' --exclude='dist/' \
+        "$UI_SOURCE/" "$build_dir/"
+    (
+        cd -- "$build_dir"
+        npm ci --no-audit --no-fund
+        # Electron 43 exposes a dedicated install-electron command instead of
+        # an npm postinstall lifecycle. `npm ci` therefore installs the JS
+        # package but may leave out the ~270 MB runtime archive entirely.
+        # Download it explicitly and fail here with a useful error rather than
+        # letting the later rsync report a missing dist/ directory.
+        if [[ ! -x node_modules/electron/dist/electron ]]; then
+            log "Downloading the pinned Electron runtime..."
+            node node_modules/electron/install.js
+        fi
+        [[ -x node_modules/electron/dist/electron ]] ||
+            die "Electron runtime download did not produce node_modules/electron/dist/electron."
+        npm run build
+    )
+
+    install -d -o root -g root -m 0755 "$UI_INSTALL_ROOT"
+    rsync -a --delete "$build_dir/out/" "$UI_INSTALL_ROOT/out/"
+    rsync -a --delete "$build_dir/resources/" "$UI_INSTALL_ROOT/resources/"
+    install -o root -g root -m 0644 "$build_dir/package.json" "$UI_INSTALL_ROOT/package.json"
+    rsync -a --delete "$build_dir/node_modules/electron/dist/" "$UI_INSTALL_ROOT/electron/"
+    chown -R root:root "$UI_INSTALL_ROOT"
+    # The installer-wide umask is intentionally 077 for credentials, but this
+    # application tree must be readable/traversable by the desktop user.
+    # Preserve execute bits only on directories and files already executable.
+    chmod -R u=rwX,go=rX "$UI_INSTALL_ROOT"
+    chmod 4755 "$UI_INSTALL_ROOT/electron/chrome-sandbox"
+
+    api_port="$(env_get WORKER_API_PORT)"
+    # Keep this non-secret endpoint outside /etc/dml: that directory is 0700
+    # because it also contains Worker and registry credentials, so desktop
+    # users must never be granted traversal access to it.
+    printf 'WORKER_API_URL=http://127.0.0.1:%s\n' "$api_port" > /etc/dml-worker-ui.env
+    chown root:root /etc/dml-worker-ui.env
+    chmod 0644 /etc/dml-worker-ui.env
+
+    cat > /usr/local/bin/dml-worker-ui <<'EOF'
+#!/usr/bin/env sh
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Run dml-worker-ui as a desktop user, not root." >&2
+    exit 1
+fi
+WORKER_API_URL=http://127.0.0.1:8600
+if [ -r /etc/dml-worker-ui.env ]; then
+    . /etc/dml-worker-ui.env
+fi
+export WORKER_API_URL
+exec /opt/dml/WorkerUI/electron/electron /opt/dml/WorkerUI "$@"
+EOF
+    chmod 0755 /usr/local/bin/dml-worker-ui
+
+    # Do not announce success until the actual desktop user can traverse the
+    # app, read its entry point/config, and execute Electron. This catches any
+    # future restrictive-umask regression during installation.
+    verify_user="${SUDO_USER:-nobody}"
+    if [[ "$verify_user" == "root" ]] || ! id "$verify_user" >/dev/null 2>&1; then
+        verify_user=nobody
+    fi
+    if command -v runuser >/dev/null 2>&1; then
+        runuser -u "$verify_user" -- test -x "$UI_INSTALL_ROOT/electron/electron" ||
+            die "Installed Electron binary is not executable by desktop users."
+        runuser -u "$verify_user" -- test -r "$UI_INSTALL_ROOT/out/main/index.js" ||
+            die "Installed Worker UI bundle is not readable by desktop users."
+        runuser -u "$verify_user" -- test -r /etc/dml-worker-ui.env ||
+            die "Installed Worker UI endpoint config is not readable by desktop users."
+        runuser -u "$verify_user" -- "$UI_INSTALL_ROOT/electron/electron" --version >/dev/null ||
+            die "Installed Electron runtime failed its non-root execution check."
+    fi
+
+    install -o root -g root -m 0644 "$UI_SOURCE/resources/dml-worker-ui.svg" \
+        /usr/share/icons/hicolor/scalable/apps/dml-worker-ui.svg
+    cat > /usr/share/applications/dml-worker-ui.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=DML Worker Console
+Comment=Monitor the local Distributed ML worker
+Exec=/usr/local/bin/dml-worker-ui
+Icon=dml-worker-ui
+Terminal=false
+Categories=System;Monitor;
+StartupNotify=true
+EOF
+    chmod 0644 /usr/share/applications/dml-worker-ui.desktop
+    command -v update-desktop-database >/dev/null 2>&1 \
+        && update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    log "Electron console installed. Launch it from the app menu or run: dml-worker-ui"
+)
 
 install_docker_if_needed() {
     if command -v docker >/dev/null; then
@@ -771,6 +932,7 @@ ensure_identity
 ensure_registry_credentials
 validate_optional_files
 validate_scheduler_connectivity
+install_worker_ui
 deploy_worker_code
 pull_runtime_images
 interactive_preflight

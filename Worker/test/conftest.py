@@ -47,6 +47,7 @@ def reset_telemetry():
     with telemetry._lock:
         old_jobs = list(telemetry._job_history)
         old_events = list(telemetry._events)
+        old_worker_logs = list(telemetry._worker_logs)
         old_success = telemetry._last_heartbeat_success
         old_error = telemetry._last_heartbeat_error
         old_paused = telemetry._paused
@@ -54,6 +55,7 @@ def reset_telemetry():
     with telemetry._lock:
         telemetry._job_history = old_jobs
         telemetry._events = old_events
+        telemetry._worker_logs = old_worker_logs
         telemetry._last_heartbeat_success = old_success
         telemetry._last_heartbeat_error = old_error
         telemetry._paused = old_paused

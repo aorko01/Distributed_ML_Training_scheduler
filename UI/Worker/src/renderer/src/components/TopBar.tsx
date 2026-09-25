@@ -1,28 +1,26 @@
 import React from 'react'
-import { Pause, Play, PlugZap, Radio, Settings } from 'lucide-react'
+import { Ban, CheckCircle2, PlugZap, Radio } from 'lucide-react'
 
 interface TopBarProps {
   connected: boolean
-  paused: boolean
+  acceptingJobs: boolean
   hostname: string
   ipAddress: string
   lastHeartbeat: string
-  onTogglePause: () => void
-  onOpenConfig: () => void
+  onToggleAccepting: () => void
 }
 
 const TopBar: React.FC<TopBarProps> = ({
   connected,
-  paused,
+  acceptingJobs,
   hostname,
   ipAddress,
   lastHeartbeat,
-  onTogglePause,
-  onOpenConfig
+  onToggleAccepting
 }) => {
-  const badgeClass = paused ? 'badge-offline' : connected ? 'badge-online' : 'badge-offline'
-  const badgeLabel = paused ? 'Paused' : connected ? 'Online' : 'Offline'
-  const BadgeIcon = paused ? Pause : connected ? Radio : PlugZap
+  const badgeClass = connected ? 'badge-online' : 'badge-offline'
+  const badgeLabel = connected ? 'Online' : 'Offline'
+  const BadgeIcon = connected ? Radio : PlugZap
 
   return (
     <div className="top-header">
@@ -39,20 +37,15 @@ const TopBar: React.FC<TopBarProps> = ({
           {badgeLabel}
         </span>
 
-        <button className="btn btn-secondary btn-sm" onClick={onOpenConfig}>
-          <Settings size={14} />
-          Settings
-        </button>
-
-        {paused ? (
-          <button className="btn btn-success btn-sm" onClick={onTogglePause}>
-            <Play size={14} />
-            Resume
+        {acceptingJobs ? (
+          <button className="btn btn-danger btn-sm" onClick={onToggleAccepting}>
+            <Ban size={14} />
+            Accept no more jobs
           </button>
         ) : (
-          <button className="btn btn-danger btn-sm" onClick={onTogglePause}>
-            <Pause size={14} />
-            Pause
+          <button className="btn btn-success btn-sm" onClick={onToggleAccepting}>
+            <CheckCircle2 size={14} />
+            Accept jobs
           </button>
         )}
       </div>

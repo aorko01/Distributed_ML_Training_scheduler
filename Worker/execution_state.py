@@ -234,6 +234,7 @@ class Coordinator:
                     released=False,
                     containers={},
                     event_sequence=0,
+                    accepted_at=time.time(),
                     uncertain=conflict,
                 )
                 self.persist(assignment)

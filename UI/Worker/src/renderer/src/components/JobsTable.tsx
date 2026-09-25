@@ -20,7 +20,7 @@ const JobsTable: React.FC<JobsTableProps> = ({ jobs, connected }) => (
       <h3 style={{ margin: 0 }}>Recent Jobs</h3>
     </div>
 
-    {connected ? (
+    {connected && jobs.length > 0 ? (
       <div className="table-container" style={{ marginTop: '1rem' }}>
         <table>
           <thead>
@@ -30,6 +30,7 @@ const JobsTable: React.FC<JobsTableProps> = ({ jobs, connected }) => (
               <th>Type</th>
               <th>VRAM Est.</th>
               <th>Status</th>
+              <th>Phase</th>
               <th>Started</th>
               <th>Duration</th>
             </tr>
@@ -48,6 +49,7 @@ const JobsTable: React.FC<JobsTableProps> = ({ jobs, connected }) => (
                     {job.status}
                   </span>
                 </td>
+                <td className="mono">{job.phase ?? '—'}</td>
                 <td className="mono">{job.startedAt}</td>
                 <td className="mono">{formatDuration(job.durationSec)}</td>
               </tr>
@@ -58,7 +60,7 @@ const JobsTable: React.FC<JobsTableProps> = ({ jobs, connected }) => (
     ) : (
       <div className="empty-state" style={{ padding: '2rem' }}>
         <XCircle size={28} />
-        <span>No job history available while disconnected.</span>
+        <span>{connected ? 'No jobs have run on this worker yet.' : 'Worker service is offline.'}</span>
       </div>
     )}
   </div>
