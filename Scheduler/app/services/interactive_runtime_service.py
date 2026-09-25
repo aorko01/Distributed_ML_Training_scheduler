@@ -349,6 +349,29 @@ def ssh_grant_ready(db, runtime):
         return False
 
 
+def _ssh_blocker(db, runtime):
+    """Name the actual failing clause (never the ssh_status label)."""
+    try:
+        if runtime.desired_state != "RUNNING" or runtime.state != "READY":
+            return f"state={runtime.state}/{runtime.desired_state}"
+        if not (runtime.health_at and utc(runtime.health_at) > now() - timedelta(seconds=15)):
+            return "health-stale"
+        if not all((runtime.health or {}).get(x) is True for x in ("workload", "broker", "access", "endpoint")):
+            return "health-failed"
+        assignment = db.get(Assignment, runtime.assignment_id) if runtime.assignment_id else None
+        if not assignment or assignment.released_at or assignment.state in ("LOST", "CLEANING"):
+            return "assignment-released"
+        if not (utc(assignment.lease_until) > now() and assignment.generation == runtime.generation):
+            return "lease-or-generation"
+        if not getattr(runtime, "ssh_capable", False):
+            return "not-ssh-capable"
+        if not getattr(runtime, "ssh_ready", False):
+            return f"ssh-{getattr(runtime, 'ssh_status', None) or 'not-ready'}"
+        return "not-ready"
+    except Exception:
+        return "not-ready"
+
+
 def ready(db, runtime):
     assignment = (
         db.get(Assignment, runtime.assignment_id) if runtime.assignment_id else None
@@ -483,8 +506,7 @@ def ssh_connection(db, owner, runtime_id, management):
         .one()
     )
     if not ssh_grant_ready(db, runtime):
-        status = getattr(runtime, "ssh_status", None) or "unavailable"
-        raise HTTPException(409, f"SSH unavailable ({status})")
+        raise HTTPException(409, f"SSH unavailable ({_ssh_blocker(db, runtime)})")
     # Independent rate limit from browser grants so VS Code's parallel
     # connections work without removing abuse controls.
     requested_at = getattr(runtime, "ssh_connection_requested_at", None)
