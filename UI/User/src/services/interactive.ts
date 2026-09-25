@@ -15,6 +15,8 @@ export interface Revision {
   source_image_tag?: string | null;
   developer_profile?: string | null;
   package_hint?: string | null;
+  ssh_profile?: string | null;
+  ssh_hint?: string | null;
 }
 export interface Workspace {
   id: string;

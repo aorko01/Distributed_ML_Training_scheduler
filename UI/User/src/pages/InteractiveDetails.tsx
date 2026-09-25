@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { interactive, interactiveCapacity, type Workspace, type Runtime, type CapacityOptions, type ResourceRequirements } from '../services/interactive';
+import { schedulerOrigin } from '../services/api';
 import { ResourceRequirementsForm } from '../features/interactive-capacity/ResourceRequirementsForm';
 import { CapacitySummary } from '../features/interactive-capacity/CapacitySummary';
 import { MachineGrid } from '../features/interactive-capacity/MachineGrid';
@@ -133,6 +134,7 @@ export default function InteractiveDetails() {
       {workspace.revision.failure_reason && <p role="alert">{workspace.revision.failure_reason}</p>}
       {workspace.revision.image_tag && <p>Image tag: <code>{workspace.revision.image_tag}</code></p>}
       {workspace.revision.image_digest_ref && <p title={workspace.revision.image_digest_ref}>Digest: <code>{workspace.revision.image_digest_ref.split('@')[1]?.slice(0, 23)}…</code></p>}
+      {workspace.revision.ssh_hint && <p role="status">VS Code Remote-SSH: {workspace.revision.ssh_hint}.</p>}
       <pre aria-label="Build logs" style={{ whiteSpace: 'pre-wrap' }}>{lines.join('\n') || 'No build logs yet.'}</pre>
       {['QUEUED', 'BUILDING'].includes(workspace.revision.state) && <button className="btn btn-secondary" disabled={cancelling} onClick={cancel}>Cancel build</button>}
       <p>This runtime is temporary. Stop discards unsaved runtime changes; the saved source image remains available.</p>
@@ -160,10 +162,18 @@ export default function InteractiveDetails() {
       </>}
       {runtime && (runtime as unknown as { ssh_ready?: boolean; ssh_status?: string; ssh_generation?: number }).ssh_ready && runtime.state === 'READY' && <>
         <h2>Connect with VS Code</h2>
-        <p>Native Remote-SSH into the workload container (<code>dml</code>, <code>/workspace</code>). Live only: Stop ends SSH immediately.</p>
-        <pre>{`dml-ssh configure ${runtime.id}\n# Remote-SSH: Connect to Host -> dml-${runtime.id}-g${(runtime as unknown as { ssh_generation?: number }).ssh_generation ?? runtime.generation}\n# Open folder /workspace`}</pre>
+        <p>Native Remote-SSH into the workload container (<code>dml</code>, <code>/workspace</code>). Live only: Stop ends SSH immediately. Copy-paste on your machine:</p>
+        <pre>{`dml-ssh configure ${runtime.id} --scheduler ${schedulerOrigin()}\n# VS Code: Remote-SSH: Connect to Host -> dml-${runtime.id}-g${(runtime as unknown as { ssh_generation?: number }).ssh_generation ?? runtime.generation}\n# Open folder /workspace`}</pre>
       </>}
       {runtime && !(runtime as unknown as { ssh_ready?: boolean }).ssh_ready && runtime.state === 'READY' && (runtime as unknown as { ssh_capable?: boolean }).ssh_capable !== true && <p role="status">SSH unavailable for this runtime (rebuild from an SSH-capable revision).</p>}
+      {imageReady && !((runtime as unknown as { ssh_ready?: boolean } | null)?.ssh_ready && runtime?.state === 'READY') && <>
+        <h2>VS Code Remote-SSH</h2>
+        <p>Native Remote-SSH into the workload container (<code>dml</code>, <code>/workspace</code>) — same live files, Python environment and GPU as the browser editor. Requires VS Code with the Remote-SSH extension, an OpenSSH client, and the <code>dml-ssh</code> CLI (<code>pip install ./dml-ssh</code> from the repo). Copy-paste on your machine:</p>
+        <pre>{`dml-ssh login --scheduler ${schedulerOrigin()}\ndml-ssh configure <runtime-id> --scheduler ${schedulerOrigin()}\n# VS Code: Remote-SSH: Connect to Host, then open /workspace`}</pre>
+        {(!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && <p role="status">Start a runtime above first — the exact connect command for your runtime appears here once it is READY and SSH-capable.</p>}
+        {runtime && !['STOPPED', 'FAILED', 'READY'].includes(runtime.state) && <p role="status">Your runtime is still starting — the connect command appears here once it is READY and SSH-capable.</p>}
+        {runtime?.state === 'READY' && <p role="status">This runtime is not SSH-capable: rebuild the image from an SSH-capable revision, then start a new runtime.</p>}
+      </>}
       {runtime && !['STOPPED','FAILED'].includes(runtime.state) && <button className="btn btn-secondary" disabled={busy || runtime.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop</button>}{' '}
       <button className="btn btn-secondary" disabled={busy || runtime?.state !== 'READY' || runtime.desired_state !== 'RUNNING' || connectionState === 'Checking connection…'} onClick={connect}>Connect</button>{' '}
       {runtime?.state === 'READY' && <Link className="btn" to={`/interactive/${id}/editor`}>Open Editor</Link>}{' '}

@@ -1,4 +1,15 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+export const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+
+/** Scheduler origin for copy-pasteable CLI commands (dml-ssh needs https). */
+export function schedulerOrigin(): string {
+  try {
+    const url = new URL(API_BASE_URL, window.location.origin);
+    if (url.protocol === 'https:') return url.origin;
+  } catch {
+    /* fall through to placeholder */
+  }
+  return 'https://<scheduler-host>';
+}
 
 export const getToken = (): string | null => localStorage.getItem('auth_token');
 export const setToken = (token: string): void => localStorage.setItem('auth_token', token);
