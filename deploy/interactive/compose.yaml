@@ -13,6 +13,7 @@ x-management-env: &management-env
   HM_VERIFICATION_KEYS_FILE: /secrets/public.json
   HM_SIGNING_KID: ${HM_SIGNING_KID:-primary}
   HM_REQUIRED_POLICY_FILE: /required-policy.json
+  HM_SSH_SESSION_MAX: ${HM_SSH_SESSION_MAX:-14400}
   GATEWAY_ID: ${GATEWAY_ID:?set persistent gateway identity}
   GATEWAY_GENERATION: ${GATEWAY_GENERATION:?set persistent gateway generation}
 x-management-mounts: &management-mounts
