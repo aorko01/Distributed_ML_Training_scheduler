@@ -1,5 +1,6 @@
 """Unit tests for Scheduler FastAPI routes (auth/worker/scheduler/resource/jobs)."""
 import io
+import secrets
 import zipfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,7 +9,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.api import auth_route, docker_route, jobs_route, resource_route
+from app.api import admin_workers_route, auth_route, docker_route, jobs_route
+from app.api import resource_route
 from app.api import scheduler_route, worker_route
 from app.models.job_model import JobStatus
 from app.utils.auth import create_access_token, get_password_hash
@@ -115,10 +117,12 @@ class TestDeps:
 # worker_route
 # ---------------------------------------------------------------------------
 class TestWorkerRoutes:
-    def _client(self, db):
+    def _client(self, db, admin=None):
         app = FastAPI()
         app.include_router(worker_route.router)
         app.dependency_overrides[worker_route.get_db] = lambda: db
+        if admin is not None:
+            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
         return TestClient(app, raise_server_exceptions=False)
 
     def test_register(self, db):
@@ -157,7 +161,9 @@ class TestWorkerRoutes:
 
     def test_total_gpus_and_nodes(self, db):
         make_worker(db, worker_id="w1", num_gpus=3)
-        client = self._client(db)
+        admin = make_user(db)
+        admin.is_superuser = True
+        client = self._client(db, admin=admin)
         assert client.get("/total_gpus").json() == {"total_gpus": 3}
         with patch.object(
             worker_route.worker_service, "get_all_workers",
@@ -165,15 +171,27 @@ class TestWorkerRoutes:
         ):
             assert client.get("/nodes").json() == {"nodes": []}
 
+    def test_nodes_requires_authentication(self, db):
+        client = self._client(db)
+        assert client.get("/nodes").status_code == 401
+
+    def test_nodes_forbids_non_admin(self, db):
+        user = make_user(db)
+        assert user.is_superuser is not True
+        client = self._client(db, admin=user)
+        assert client.get("/nodes").status_code == 403
+
 
 # ---------------------------------------------------------------------------
 # scheduler_route
 # ---------------------------------------------------------------------------
 class TestSchedulerRoutes:
-    def _client(self, db):
+    def _client(self, db, admin=None):
         app = FastAPI()
         app.include_router(scheduler_route.router)
         app.dependency_overrides[scheduler_route.get_db] = lambda: db
+        if admin is not None:
+            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
         return TestClient(app, raise_server_exceptions=False)
 
     def test_health(self, db):
@@ -182,7 +200,9 @@ class TestSchedulerRoutes:
         }
 
     def test_overview_and_throughput(self, db):
-        client = self._client(db)
+        admin = make_user(db)
+        admin.is_superuser = True
+        client = self._client(db, admin=admin)
         with patch.object(
             scheduler_route.scheduler_service, "get_overview",
             new=AsyncMock(return_value={"nodes_online": 1}),
@@ -193,6 +213,18 @@ class TestSchedulerRoutes:
             return_value={"daily": []},
         ):
             assert client.get("/throughput").json() == {"daily": []}
+
+    def test_overview_requires_authentication(self, db):
+        client = self._client(db)
+        assert client.get("/overview").status_code == 401
+        assert client.get("/throughput").status_code == 401
+
+    def test_overview_forbids_non_admin(self, db):
+        user = make_user(db)
+        assert user.is_superuser is not True
+        client = self._client(db, admin=user)
+        assert client.get("/overview").status_code == 403
+        assert client.get("/throughput").status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +654,76 @@ class TestJobsRoutes:
         client = self._client(db)
         resp = client.post("/get_output_by_id", json={"job_id": "ghost"})
         assert "error" in resp.json()
+
+
+class TestAdminWorkerCredentials:
+    def _client(self, db, admin=None):
+        app = FastAPI()
+        app.include_router(admin_workers_route.router)
+        app.dependency_overrides[deps.get_db] = lambda: db
+        if admin is not None:
+            app.dependency_overrides[deps.get_current_superuser] = lambda: admin
+        return TestClient(app, raise_server_exceptions=False)
+
+    def _admin(self, db):
+        admin = make_user(db)
+        admin.is_superuser = True
+        return admin
+
+    def test_requires_authentication(self, db):
+        client = self._client(db)
+        assert client.get("/admin/workers/credentials").status_code == 401
+
+    def test_forbids_non_admin(self, db):
+        client = self._client(db, admin=make_user(db))
+        assert client.get("/admin/workers/credentials").status_code == 403
+        resp = client.post(
+            "/admin/workers/credentials",
+            json={"worker_id": "w1", "secret": secrets.token_urlsafe(48)},
+        )
+        assert resp.status_code == 403
+
+    def test_register_list_and_revoke(self, db):
+        client = self._client(db, admin=self._admin(db))
+        s1, s2, s3 = (secrets.token_urlsafe(48) for _ in range(3))
+
+        resp = client.post(
+            "/admin/workers/credentials",
+            json={"worker_id": "w1", "secret": s1},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["worker_id"] == "w1"
+
+        # Duplicate secret is rejected.
+        assert client.post(
+            "/admin/workers/credentials",
+            json={"worker_id": "w1", "secret": s1},
+        ).status_code == 400
+
+        # Second secret allows rotation overlap.
+        assert client.post(
+            "/admin/workers/credentials",
+            json={"worker_id": "w1", "secret": s2},
+        ).status_code == 201
+
+        # Third secret exceeds the overlap bound.
+        assert client.post(
+            "/admin/workers/credentials",
+            json={"worker_id": "w1", "secret": s3},
+        ).status_code == 400
+
+        # Weak secrets are rejected.
+        assert client.post(
+            "/admin/workers/credentials",
+            json={"worker_id": "w2", "secret": "short"},
+        ).status_code in (400, 422)
+
+        listed = client.get("/admin/workers/credentials").json()
+        assert {"worker_id": "w1", "source": "db", "num_secrets": 2} in listed
+        assert all("secret" not in entry for entry in listed)
+
+        assert client.delete("/admin/workers/credentials/w1").status_code == 204
+        assert client.delete("/admin/workers/credentials/w1").status_code == 404
 
 
 class TestWsAuthenticate:
