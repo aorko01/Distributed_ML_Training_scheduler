@@ -10,6 +10,7 @@ OPEN_TIMEOUT = 5
 
 
 def _req(base, method, path, body=None, token=None):
+    import urllib.error
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method=method,
                                  headers={"Content-Type": "application/json"})
@@ -19,8 +20,34 @@ def _req(base, method, path, body=None, token=None):
     try:
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        # Surface status + server detail (409/429/503/401 are otherwise
+        # indistinguishable as "request failed: HTTPError"). Body is bounded;
+        # auth materials never appear in error details.
+        try:
+            raw = exc.read(4096).decode("utf-8", errors="replace")
+        except Exception:
+            raw = ""
+        detail = raw.strip()
+        try:
+            parsed = json.loads(raw) if raw else None
+            if isinstance(parsed, dict) and isinstance(parsed.get("detail"), str):
+                detail = parsed["detail"]
+        except Exception:
+            pass
+        err = RuntimeError(f"request failed: HTTP {exc.code} {detail}".strip())
+        err.status = exc.code  # type: ignore[attr-defined]
+        err.detail = detail  # type: ignore[attr-defined]
+        raise err from None
     except Exception as exc:
-        raise RuntimeError(f"request failed: {type(exc).__name__}") from None
+        err = RuntimeError(f"request failed: {type(exc).__name__}")
+        err.status = None  # type: ignore[attr-defined]
+        raise err from None
+
+
+def _should_refresh(exc) -> bool:
+    """Refresh only on 401/network errors; 409/429/503 must surface as-is."""
+    return getattr(exc, "status", None) in (None, 401)
 
 
 def login(base, username, password):
@@ -42,7 +69,9 @@ def _authed(base, method, path, token, body=None):
     import urllib.error
     try:
         return _req(base, method, path, body, token)
-    except RuntimeError:
+    except RuntimeError as exc:
+        if not _should_refresh(exc):
+            raise
         # Refresh silently once; on invalid refresh exit with login instruction.
         state = _store.load() or {}
         try:
@@ -56,7 +85,9 @@ def _authed(base, method, path, token, body=None):
 def ssh_info(base, token, ident):
     try:
         return _req(base, "GET", f"/interactive/runtimes/{ident}/ssh-info", None, token)
-    except RuntimeError:
+    except RuntimeError as exc:
+        if not _should_refresh(exc):
+            raise
         state = _store.load() or {}
         try:
             pair = _refresh(base, state.get("refresh_token", ""))
@@ -69,7 +100,9 @@ def ssh_info(base, token, ident):
 def ssh_grant(base, token, runtime_id):
     try:
         return _req(base, "POST", f"/interactive/runtimes/{runtime_id}/ssh-connection", {}, token)
-    except RuntimeError:
+    except RuntimeError as exc:
+        if not _should_refresh(exc):
+            raise
         state = _store.load() or {}
         try:
             pair = _refresh(base, state.get("refresh_token", ""))
@@ -116,29 +149,71 @@ def proxy_stream(grant, public_key, generation, stdin, stdout):
             raise RuntimeError("SSH rejected")
         # Raw relay: WSS binary frames are arbitrary chunks. stdout stays
         # byte-clean (errors only to stderr).
+        import os
         import threading
         stop = threading.Event()
+        close_cause = {"msg": "gateway closed connection"}
 
         def pump_in():
+            # Select-wakeup loop on POSIX so the thread always observes
+            # stop and exits before interpreter teardown: a daemon thread
+            # blocked in stdin.read races shutdown with
+            # "Fatal Python error: _enter_buffered_busy". os.read on the
+            # fileno avoids buffered-reader hidden bytes. Windows (no
+            # select-on-pipe) keeps the blocking read fallback.
+            try:
+                fileno = stdin.fileno()
+            except Exception:
+                return
+            use_select = True
+            try:
+                import select as _select
+                _select.select([fileno], [], [], 0)
+            except Exception:
+                use_select = False
             try:
                 while not stop.is_set():
-                    chunk = stdin.read(32768)
+                    if use_select:
+                        import select as _select
+                        try:
+                            ready, _, _ = _select.select([fileno], [], [], 1.0)
+                        except Exception:
+                            return
+                        if not ready:
+                            continue
+                        try:
+                            chunk = os.read(fileno, 32768)
+                        except OSError:
+                            return
+                    else:
+                        try:
+                            chunk = stdin.read(32768)
+                        except (ValueError, OSError):
+                            return  # stdio torn down; quiet exit
                     if not chunk:
                         stop.set()
                         return
-                    ws.send_binary(chunk)
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode()
+                    try:
+                        ws.send_binary(chunk)
+                    except Exception as exc:
+                        close_cause["msg"] = f"send failed: {exc}"
+                        stop.set()
+                        return
             except Exception as exc:
                 print(f"dml-ssh proxy: {exc}", file=sys.stderr)
                 stop.set()
 
-        t = threading.Thread(target=pump_in, daemon=True)
+        t = threading.Thread(target=pump_in, daemon=False)
         t.start()
         try:
             while not stop.is_set():
                 ws.settimeout(60)
                 try:
                     data = ws.recv()
-                except Exception:
+                except Exception as exc:
+                    close_cause["msg"] = f"recv failed: {exc}"
                     break
                 if isinstance(data, str):
                     continue
@@ -148,7 +223,12 @@ def proxy_stream(grant, public_key, generation, stdin, stdout):
                 stdout.flush()
         finally:
             stop.set()
-            t.join(timeout=2)
+            t.join(timeout=5)
+            if t.is_alive():
+                print("dml-ssh proxy: stdin pump did not exit cleanly",
+                      file=sys.stderr)
+            else:
+                print(f"dml-ssh proxy: {close_cause['msg']}", file=sys.stderr)
     finally:
         try:
             ws.close()
