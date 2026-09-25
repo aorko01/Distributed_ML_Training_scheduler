@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from app.api.deps import get_current_superuser
 from app.db.database import SessionLocal
+from app.models.user_model import User
 from app.services import worker_service
 from app.schemas.worker_schema import WorkerInfo, WorkerResponse
 from app.schemas.heartbeat_schema import HeartbeatSchema,HeartbeatResponse
@@ -38,7 +40,10 @@ def get_total_gpus(db: Session = Depends(get_db)):
 
 
 @router.get("/nodes")
-async def get_nodes(db: Session = Depends(get_db)):
+async def get_nodes(
+    _: User = Depends(get_current_superuser),
+    db: Session = Depends(get_db),
+):
     """Returns all registered workers with live status and resource metrics."""
     workers = await worker_service.get_all_workers(db)
     return {"nodes": workers}

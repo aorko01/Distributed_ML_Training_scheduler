@@ -38,6 +38,7 @@ import app.models.user_model  # noqa: E402,F401
 import app.models.job_model  # noqa: E402,F401
 import app.models.worker_model  # noqa: E402,F401
 import app.models.resource_request_model  # noqa: E402,F401
+import app.models.worker_credential_model  # noqa: E402,F401
 
 import app.models.interactive_workspace_model  # noqa: E402,F401
 

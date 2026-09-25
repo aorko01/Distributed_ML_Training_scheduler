@@ -24,9 +24,28 @@ def read_secret(path):
 def worker_auth(authorization: str = Header(default="")):
     # Protected map: identity -> list of active secrets; removing a secret revokes
     # it on the next request. Two entries support bounded rotation overlap.
+    # Credentials live in the DB (managed via the Admin UI, no restart needed)
+    # with the JSON file as fallback for pre-existing deployments.
+    if not authorization:
+        raise HTTPException(401, "Worker authentication required")
+    db_available = True
+    try:
+        from app.db.database import SessionLocal
+        from app.services import worker_credential_service as creds
+
+        db = SessionLocal()
+        try:
+            matched = creds.match_db_secret(db, authorization)
+        finally:
+            db.close()
+    except Exception:
+        db_available = False
+        matched = None
+    if matched:
+        return matched
     try:
         values = json.loads(read_secret(os.environ["WORKER_CREDENTIALS_FILE"]))
-        matched = None
+        file_matched = None
         for identity, secrets in values.items():
             if not isinstance(secrets, list) or not 1 <= len(secrets) <= 2:
                 raise ValueError()
@@ -36,11 +55,14 @@ def worker_auth(authorization: str = Header(default="")):
                 if hmac.compare_digest(
                     authorization.encode(), ("Bearer " + secret).encode()
                 ):
-                    if matched:
+                    if file_matched:
                         raise ValueError()
-                    matched = identity
+                    file_matched = identity
+        if file_matched:
+            return file_matched
     except (OSError, KeyError, ValueError, TypeError, UnicodeError):
-        raise HTTPException(503, "Worker authentication unavailable") from None
-    if not matched:
-        raise HTTPException(401, "Worker authentication required")
-    return matched
+        if not db_available:
+            raise HTTPException(503, "Worker authentication unavailable") from None
+        # File missing/unusable but DB was readable: fall through to 401.
+        pass
+    raise HTTPException(401, "Worker authentication required")

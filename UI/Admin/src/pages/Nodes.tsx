@@ -1,12 +1,21 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, Server, Terminal, Unplug } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Search, Server, Terminal, Unplug, Plus, Trash2 } from 'lucide-react';
 import {
   nodes as seedNodes,
   type ClusterNode,
   type NodeStatus,
   type NodeSortKey,
 } from '../data/mock';
-import { fetchNodes, type ApiNode } from '../services/api';
+import {
+  fetchNodes,
+  fetchWorkerCredentials,
+  registerWorkerCredential,
+  revokeWorkerCredential,
+  UnauthorizedError,
+  type ApiNode,
+  type WorkerCredential,
+} from '../services/api';
 
 type StatusFilter = 'all' | NodeStatus;
 
@@ -53,6 +62,12 @@ const Nodes: React.FC = () => {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<NodeSortKey>('name');
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+  const [credentials, setCredentials] = useState<WorkerCredential[]>([]);
+  const [newWorkerId, setNewWorkerId] = useState('');
+  const [newSecret, setNewSecret] = useState('');
+  const [registering, setRegistering] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let cancelled = false;
@@ -65,19 +80,75 @@ const Nodes: React.FC = () => {
         }
       } catch (err) {
         if (!cancelled) {
+          if (err instanceof UnauthorizedError) {
+            navigate('/login', { replace: true });
+            return;
+          }
           console.error('Failed to load nodes:', err);
           setNodeList(seedNodes);
         }
       }
     };
 
+    const refreshCredentials = async () => {
+      try {
+        const creds = await fetchWorkerCredentials();
+        if (!cancelled) setCredentials(creds);
+      } catch (err) {
+        if (!cancelled) {
+          if (err instanceof UnauthorizedError) {
+            navigate('/login', { replace: true });
+            return;
+          }
+          console.error('Failed to load worker credentials:', err);
+        }
+      }
+    };
+
     void refresh();
+    void refreshCredentials();
     const interval = window.setInterval(refresh, REFRESH_INTERVAL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [navigate]);
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRegistering(true);
+    setRegisterError(null);
+    try {
+      await registerWorkerCredential(newWorkerId.trim(), newSecret);
+      setNewWorkerId('');
+      setNewSecret('');
+      const creds = await fetchWorkerCredentials();
+      setCredentials(creds);
+      showFeedback('Worker credential registered — no restart needed');
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      setRegisterError(err instanceof Error ? err.message : 'Registration failed.');
+    } finally {
+      setRegistering(false);
+    }
+  };
+
+  const handleRevoke = async (workerId: string) => {
+    try {
+      await revokeWorkerCredential(workerId);
+      setCredentials((prev) => prev.filter((c) => c.worker_id !== workerId));
+      showFeedback(`${workerId.slice(0, 8)} credential revoked`);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      showFeedback(err instanceof Error ? err.message : 'Revoke failed.');
+    }
+  };
 
   const visibleNodes = useMemo(() => {
     const filtered = nodeList.filter((n) => {
@@ -125,6 +196,76 @@ const Nodes: React.FC = () => {
   return (
     <div className="fade-in">
       <h1>Cluster Nodes</h1>
+
+      <div className="card" style={{ marginBottom: '1.5rem' }}>
+        <h3 style={{ marginTop: 0 }}>Register worker</h3>
+        <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          Paste the worker_id + secret pair issued by the backend owner. It is stored
+          in the Scheduler database and takes effect immediately — no file edit or
+          restart needed.
+        </p>
+        <form onSubmit={handleRegister} style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="form-group" style={{ marginBottom: 0, minWidth: 220 }}>
+            <label className="form-label">Worker ID</label>
+            <input
+              className="form-input mono"
+              placeholder="6ea7fbeb-…"
+              value={newWorkerId}
+              onChange={(e) => setNewWorkerId(e.target.value)}
+              required
+            />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0, minWidth: 260, flex: 1 }}>
+            <label className="form-label">Secret (32–256 chars)</label>
+            <input
+              type="password"
+              className="form-input mono"
+              placeholder="paste worker secret"
+              value={newSecret}
+              onChange={(e) => setNewSecret(e.target.value)}
+              required
+              minLength={32}
+            />
+          </div>
+          <button type="submit" className="btn btn-primary" disabled={registering}>
+            <Plus size={16} />
+            {registering ? 'Registering…' : 'Register'}
+          </button>
+        </form>
+        {registerError && (
+          <div style={{ marginTop: '0.75rem', fontSize: '0.875rem', color: 'var(--status-failed)' }}>
+            {registerError}
+          </div>
+        )}
+        {credentials.length > 0 && (
+          <div style={{ marginTop: '1rem' }}>
+            <div className="form-label">Registered credentials ({credentials.length})</div>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              {credentials.map((c) => (
+                <span
+                  key={c.worker_id}
+                  className="badge"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
+                  title={`source: ${c.source}, secrets: ${c.num_secrets}`}
+                >
+                  <span className="mono">{c.worker_id.slice(0, 8)}…</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>({c.source})</span>
+                  {c.source === 'db' && (
+                    <button
+                      type="button"
+                      onClick={() => handleRevoke(c.worker_id)}
+                      title="Revoke credential"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex' }}
+                    >
+                      <Trash2 size={14} color="var(--status-failed)" />
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="toolbar">
         <div className="toolbar-controls">

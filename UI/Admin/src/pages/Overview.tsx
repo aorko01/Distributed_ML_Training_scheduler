@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Server, Gauge, ListOrdered, Cpu, TrendingUp } from 'lucide-react';
 import RingChart from '../components/RingChart';
 import BarChart from '../components/BarChart';
@@ -11,6 +12,7 @@ import {
 import {
   fetchOverview,
   fetchThroughput,
+  UnauthorizedError,
   type OverviewStats,
 } from '../services/api';
 
@@ -35,6 +37,7 @@ const Overview: React.FC = () => {
   });
   const [throughputData, setThroughputData] = useState<ThroughputPoint[]>(mockThroughput[period]);
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +50,10 @@ const Overview: React.FC = () => {
         setThroughputData(throughput[period]);
       } catch (err) {
         if (!cancelled) {
+          if (err instanceof UnauthorizedError) {
+            navigate('/login', { replace: true });
+            return;
+          }
           console.error('Failed to load cluster overview:', err);
         }
       }
@@ -58,7 +65,7 @@ const Overview: React.FC = () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [period]);
+  }, [period, navigate]);
 
   const handlePeriodChange = (next: ThroughputPeriod) => {
     setPeriod(next);

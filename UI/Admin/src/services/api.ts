@@ -1,3 +1,9 @@
+import {
+  authHeaders,
+  UnauthorizedError,
+  handleUnauthorized,
+} from './auth';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 export interface ApiNode {
@@ -43,8 +49,30 @@ export interface ThroughputResponse {
   yearly: ThroughputPoint[];
 }
 
+export interface WorkerCredential {
+  worker_id: string;
+  source: 'db' | 'file';
+  num_secrets: number;
+}
+
+async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(init.headers ?? {}),
+    },
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    handleUnauthorized();
+    throw new UnauthorizedError();
+  }
+  return resp;
+}
+
 export async function fetchNodes(): Promise<ApiNode[]> {
-  const resp = await fetch(`${API_BASE}/workers/nodes`);
+  const resp = await authedFetch('/workers/nodes');
   if (!resp.ok) {
     throw new Error(`Failed to fetch nodes: ${resp.status}`);
   }
@@ -53,7 +81,7 @@ export async function fetchNodes(): Promise<ApiNode[]> {
 }
 
 export async function fetchOverview(): Promise<OverviewStats> {
-  const resp = await fetch(`${API_BASE}/scheduler/overview`);
+  const resp = await authedFetch('/scheduler/overview');
   if (!resp.ok) {
     throw new Error(`Failed to fetch overview: ${resp.status}`);
   }
@@ -61,9 +89,57 @@ export async function fetchOverview(): Promise<OverviewStats> {
 }
 
 export async function fetchThroughput(): Promise<ThroughputResponse> {
-  const resp = await fetch(`${API_BASE}/scheduler/throughput`);
+  const resp = await authedFetch('/scheduler/throughput');
   if (!resp.ok) {
     throw new Error(`Failed to fetch throughput: ${resp.status}`);
   }
   return (await resp.json()) as ThroughputResponse;
 }
+
+export async function fetchWorkerCredentials(): Promise<WorkerCredential[]> {
+  const resp = await authedFetch('/admin/workers/credentials');
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch worker credentials: ${resp.status}`);
+  }
+  return (await resp.json()) as WorkerCredential[];
+}
+
+export async function registerWorkerCredential(
+  worker_id: string,
+  secret: string,
+): Promise<WorkerCredential> {
+  const resp = await authedFetch('/admin/workers/credentials', {
+    method: 'POST',
+    body: JSON.stringify({ worker_id, secret }),
+  });
+  if (!resp.ok) {
+    let detail = `Failed to register worker: ${resp.status}`;
+    try {
+      const data = (await resp.json()) as { detail?: string };
+      if (data.detail) detail = data.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+  return (await resp.json()) as WorkerCredential;
+}
+
+export async function revokeWorkerCredential(worker_id: string): Promise<void> {
+  const resp = await authedFetch(
+    `/admin/workers/credentials/${encodeURIComponent(worker_id)}`,
+    { method: 'DELETE' },
+  );
+  if (!resp.ok && resp.status !== 204) {
+    let detail = `Failed to revoke worker: ${resp.status}`;
+    try {
+      const data = (await resp.json()) as { detail?: string };
+      if (data.detail) detail = data.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+}
+
+export { UnauthorizedError };

@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { ShieldCheck, LayoutDashboard, Server, Users, ListOrdered, LogOut } from 'lucide-react';
-import { logout } from '../services/auth';
+import { logout, getStoredUsername } from '../services/auth';
 
 const Layout: React.FC = () => {
   const navigate = useNavigate();
@@ -56,7 +56,7 @@ const Layout: React.FC = () => {
 
         <div className="sidebar-footer">
           <div style={{ marginBottom: '0.5rem' }}>Logged in as</div>
-          <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>admin</div>
+          <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{getStoredUsername()}</div>
         </div>
       </aside>
 

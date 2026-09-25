@@ -46,6 +46,15 @@ def get_current_active_user(
     return current_user
 
 
+def get_current_superuser(
+    current_user: User = Depends(get_current_active_user),
+) -> User:
+    """Admin principal: only active superusers may use the Admin console API."""
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    return current_user
+
+
 def get_cli_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),

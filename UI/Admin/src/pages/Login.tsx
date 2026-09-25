@@ -90,7 +90,7 @@ const Login: React.FC = () => {
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
           <p style={{ textAlign: 'center', marginTop: '1rem', fontSize: '0.75rem' }}>
-            Dummy credentials — <span className="mono">admin / admin</span>
+            Sign in with a Scheduler admin (superuser) account.
           </p>
         </form>
       </div>
