@@ -139,8 +139,11 @@ export default function InteractiveDetails() {
   const allBusy = preview && preview.matching_online > 0 && preview.available_now === 0;
   const ready = runtime?.state === 'READY';
   const sshReady = (runtime as unknown as { ssh_ready?: boolean } | null)?.ssh_ready && ready;
+  const sshAlias = runtime
+    ? `dml-${runtime.id}-g${(runtime as unknown as { ssh_generation?: number }).ssh_generation ?? runtime.generation}`
+    : '';
   const sshCmd = runtime
-    ? `dml-ssh configure ${runtime.id} --scheduler ${schedulerOrigin()}\n# VS Code: Remote-SSH → dml-${runtime.id}-g${(runtime as unknown as { ssh_generation?: number }).ssh_generation ?? runtime.generation}\n# Open folder /workspace`
+    ? `dml-ssh configure ${runtime.id} --scheduler ${schedulerOrigin()}\ncode --folder-uri vscode-remote://ssh-remote+${sshAlias}/workspace`
     : '';
   const assignedJobs = preview?.machines.reduce((n, m) => n + m.workloads.length, 0) ?? 0;
 
@@ -266,7 +269,7 @@ export default function InteractiveDetails() {
                   <Cpu size={18} />
                   <div>
                     <strong>VS Code Remote-SSH</strong>
-                    <p>Paste in your terminal, then connect to the host in VS Code and open <code>/workspace</code>.</p>
+                    <p>Paste in your terminal to open <code>/workspace</code> in VS Code. It uses the same files and Python environment as the browser editor.</p>
                     {sshReady ? (
                       <>
                         <pre className="iw-cmd">{sshCmd}</pre>
@@ -278,7 +281,7 @@ export default function InteractiveDetails() {
                     ) : (
                       <details className="iw-logs">
                         <summary>How it works</summary>
-                        <pre className="iw-cmd">{`dml-ssh login --scheduler ${schedulerOrigin()}\ndml-ssh configure <runtime-id> --scheduler ${schedulerOrigin()}`}</pre>
+                        <pre className="iw-cmd">{`dml-ssh login --scheduler ${schedulerOrigin()}\ndml-ssh configure <runtime-id> --scheduler ${schedulerOrigin()}\ncode --folder-uri vscode-remote://ssh-remote+<configured-host>/workspace`}</pre>
                         <p className="iw-muted">Needs VS Code + Remote-SSH, an OpenSSH client and the <code>dml-ssh</code> CLI. The exact command for this session appears here once it’s live{runtime && !['STOPPED', 'FAILED', 'READY'].includes(runtime.state) ? ' (still starting…)' : ''}.</p>
                       </details>
                     )}

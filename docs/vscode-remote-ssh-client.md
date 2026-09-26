@@ -48,6 +48,7 @@ export DML_SCHEDULER_URL=https://scheduler.zulfiker.xyz
 
    ```bash
    dml-ssh configure 9f3a1c2d3e4f5a6b7c8d9e0f1a2b3c4d --scheduler https://scheduler.zulfiker.xyz
+   code --folder-uri vscode-remote://ssh-remote+dml-9f3a1c2d3e4f5a6b7c8d9e0f1a2b3c4d-g4/workspace
    ```
 
 2. Paste and run it in your terminal. First run creates `~/.ssh/dml-<id>`
@@ -60,15 +61,20 @@ export DML_SCHEDULER_URL=https://scheduler.zulfiker.xyz
 
    Success prints the host name, e.g. `configured host dml-9f3a…-g4`.
 
-3. In VS Code: **F1 → "Remote-SSH: Connect to Host"** → pick the printed
-   host (`dml-<runtime-id>-g<generation>`) → **File → Open Folder →
-   `/workspace`**.
+3. The second command opens the remote `/workspace` folder directly. If this
+   is your first connection, add the printed `Include` line to `~/.ssh/config`
+   before running it. If the `code` command is unavailable, open VS Code
+   manually: **Remote-SSH: Connect to Host** → select the printed host →
+   **File → Open Folder → `/workspace`**. Connecting to the host alone opens
+   an empty window. The latest `dml-ssh` also accepts `configure --open` to
+   run both steps.
 
 4. Verify in a VS Code terminal (it runs inside your container):
 
    ```bash
    pwd    # must print /workspace
    id -u  # must print 10001
+   command -v python  # must print /opt/dml-venv/bin/python
    python -c "import torch; print(torch.cuda.is_available())"
    ```
 
@@ -97,6 +103,7 @@ edits are instantly visible in the browser editor and vice versa.
 | VS Code reports host-key mismatch | You are dialling an old generation. Re-run the current `dml-ssh configure` from the page; never bypass with `StrictHostKeyChecking=no`. |
 | Connection drops | Reconnect. If the runtime was Stopped (or hit the 4h session cap), that is expected — start/connect anew. |
 | `dml-ssh doctor` shows ssh MISSING | Install an OpenSSH client for your OS first. |
+| VS Code opens an empty window or a terminal in `/home/dml` | Open the remote `/workspace` folder with the printed `code --folder-uri ...` command, or File → Open Folder in the remote window. |
 
 ## 5. Session end and safety notes
 

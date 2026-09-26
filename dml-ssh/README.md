@@ -14,9 +14,10 @@ pip install ./dml-ssh
 
 ```bash
 dml-ssh login --scheduler https://scheduler.example.internal
-dml-ssh configure <workspace-or-runtime-id> --scheduler https://scheduler.example.internal
-# In VS Code: Remote-SSH: Connect to Host -> dml-<runtime>-g<generation>
-# Open folder /workspace. Port forward 127.0.0.1:8888 via VS Code UI.
+dml-ssh configure <workspace-or-runtime-id> --scheduler https://scheduler.example.internal --open
+# Opens the remote /workspace folder in VS Code. If prompted, add the printed
+# Include line to ~/.ssh/config and run configure again. Without --open, run
+# the printed `code --folder-uri .../workspace` command after configure.
 dml-ssh doctor
 dml-ssh logout
 ```

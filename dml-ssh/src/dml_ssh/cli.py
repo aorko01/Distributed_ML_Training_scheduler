@@ -4,6 +4,7 @@ import getpass
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -83,7 +84,26 @@ def cmd_configure(args):
         print(f"removed stale key {p}")
     print(f"Include file: {out}")
     print(f"Add to ~/.ssh/config if needed:\nInclude {out}")
-    print("VS Code: Remote-SSH: Connect to Host -> %s, then open /workspace" % alias)
+    folder_uri = f"vscode-remote://ssh-remote+{alias}/workspace"
+    print(f"VS Code workspace: code --folder-uri {folder_uri}")
+    if args.open:
+        # A new Remote-SSH connection otherwise opens an empty window. Open
+        # the remote folder itself so Explorer and terminals use /workspace.
+        code = shutil.which("code")
+        if not code:
+            print("VS Code command not found; run the workspace command above after installing the 'code' CLI", file=sys.stderr)
+            sys.exit(1)
+        config = subprocess.run(["ssh", "-G", alias], capture_output=True, text=True)
+        if config.returncode or not any(
+            line.startswith("proxycommand ") and "dml-ssh" in line and " proxy " in line
+            for line in config.stdout.lower().splitlines()
+        ):
+            print(f"SSH host is not active; add 'Include {out}' to ~/.ssh/config, then run the workspace command above", file=sys.stderr)
+            sys.exit(1)
+        result = subprocess.run([code, "--folder-uri", folder_uri])
+        if result.returncode:
+            print(f"VS Code could not open /workspace (exit {result.returncode}); run the workspace command above", file=sys.stderr)
+            sys.exit(result.returncode)
     _ = pubkey
 
 
@@ -140,6 +160,7 @@ def build():
     c.add_argument("runtime")
     c.add_argument("--identity", default="")
     c.add_argument("--output", default="")
+    c.add_argument("--open", action="store_true", help="open /workspace in VS Code after configuring the SSH host")
     c.add_argument("--keep-previous", action="store_true",
                    help="keep stale dml-* hosts instead of erasing them (default: erase)")
     c.add_argument("--scheduler", default=argparse.SUPPRESS)
