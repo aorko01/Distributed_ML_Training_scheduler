@@ -12,9 +12,9 @@ BEGIN
    SELECT conname FROM pg_constraint
    WHERE conrelid = 'worker_assignments'::regclass
      AND contype = 'c'
-     AND pg_get_constraintdef(oid) LIKE '%released_at%'
+     AND position('released_at' in pg_get_constraintdef(oid)) > 0
   LOOP
-   EXECUTE format('ALTER TABLE worker_assignments DROP CONSTRAINT %I', old_constraint.conname);
+   EXECUTE 'ALTER TABLE worker_assignments DROP CONSTRAINT ' || quote_ident(old_constraint.conname);
   END LOOP;
   ALTER TABLE worker_assignments
    ADD CONSTRAINT ck_assignment_release_or_expired_batch
