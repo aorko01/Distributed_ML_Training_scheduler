@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
   Activity,
   Clock3,
@@ -58,6 +58,21 @@ const Dashboard: React.FC<WorkerData> = ({
   const vramPct = vramTotalGb > 0 ? Math.round((vramUsedGb / vramTotalGb) * 100) : 0
   const diskUsedPct = diskTotalGb > 0 ? ((diskTotalGb - diskFreeGb) / diskTotalGb) * 100 : 0
   const live = apiReachable
+  const logBodyRef = useRef<HTMLDivElement>(null)
+  const [logAutoScroll, setLogAutoScroll] = useState(true)
+
+  useEffect(() => {
+    if (logBodyRef.current && logAutoScroll) {
+      logBodyRef.current.scrollTop = logBodyRef.current.scrollHeight
+    }
+  }, [logs, logAutoScroll])
+
+  const handleLogScroll = () => {
+    if (logBodyRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = logBodyRef.current
+      setLogAutoScroll(scrollHeight - scrollTop - clientHeight < 12)
+    }
+  }
 
   return (
     <div className="dashboard">
@@ -137,7 +152,7 @@ const Dashboard: React.FC<WorkerData> = ({
             unit="%"
             sub={gpuName}
             percent={live ? gpuLoad : 0}
-            color="#2dd4bf"
+            color="#39a9ff"
             icon={Gauge}
           />
           <StatCard
@@ -216,11 +231,11 @@ const Dashboard: React.FC<WorkerData> = ({
           </div>
           <div className="card chart-card">
             <div className="card-header">
-              <Gauge size={19} color="#2dd4bf" />
+              <Gauge size={19} color="#39a9ff" />
               <h3>GPU</h3>
               <span className="chart-value">{live ? `${Math.round(gpuLoad)}%` : '—'}</span>
             </div>
-            <Sparkline data={gpuHistory} color="#2dd4bf" />
+            <Sparkline data={gpuHistory} color="#39a9ff" />
           </div>
           <div className="card chart-card">
             <div className="card-header">
@@ -244,16 +259,21 @@ const Dashboard: React.FC<WorkerData> = ({
 
         <JobsTable jobs={jobs} connected={apiReachable} />
 
-        <section className="card service-log-card">
-          <div className="card-header service-log-header">
+        <section className="card service-log-card terminal-window">
+          <div className="terminal-header service-log-header">
+            <div className="mac-btns" aria-hidden="true">
+              <span className="mac-btn close" />
+              <span className="mac-btn minimize" />
+              <span className="mac-btn maximize" />
+            </div>
             <TerminalSquare size={20} color="var(--accent-primary)" />
-            <div>
+            <div className="terminal-title-wrap">
               <h3>Worker service logs</h3>
               <p>Python worker activity only — training container output is intentionally excluded.</p>
             </div>
             <span className="badge badge-running">{logs.length} lines</span>
           </div>
-          <div className="service-log-body mono">
+          <div ref={logBodyRef} onScroll={handleLogScroll} className="service-log-body terminal-body mono">
             {logs.length === 0 ? (
               <div className="empty-state">
                 <Clock3 size={24} />
