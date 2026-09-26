@@ -1,6 +1,7 @@
 import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.schemas.job_schema import TrainingSubmissionRequest
 
 # Operator-owned identifiers, not arbitrary FROM strings. Keep UI and builder aligned
 # by returning the resolved mapping in authenticated internal claims.
@@ -57,6 +58,19 @@ class FromJob(Strict):
         if not isinstance(value, dict):
             raise ValueError('requirements must be an object')
         return ResourceRequirements(**value).canonical()
+
+
+class RevisionTraining(TrainingSubmissionRequest):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator('name')
+    @classmethod
+    def clean_training_name(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError('Name is required')
+        return value
 
 
 class Claim(Strict):

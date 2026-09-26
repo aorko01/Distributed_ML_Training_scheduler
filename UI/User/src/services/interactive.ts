@@ -55,6 +55,7 @@ export interface TrainingSubmission {
   id: string; workspace_id: string; runtime_id: string; state: string; job_id: string | null;
   failure_code: string | null; failure_detail: string | null;
 }
+export interface RevisionTrainingJob { job_id: string; status: string }
 export interface ConnectionGrant {
   wss_url: string; ticket: string; expires_at: string; runtime_id: string; generation: number;
   protocol: 'tcp-stream-v1'; terminal_protocol: 'terminal-stream-v1' | null; workspace_protocol?: 'workspace-stream-v1' | null; service?: string;
@@ -185,6 +186,11 @@ export const interactive = {
   detail: (id: string) => request<Workspace>(`/${encodeURIComponent(id)}`),
   logs: (id: string) => request<{ lines: string[]; state: string }>(`/${encodeURIComponent(id)}/build-logs`),
   cancel: (id: string) => request<Workspace>(`/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  submitRevisionTraining: (workspaceId: string, key: string, settings: { name: string; command: string; resume_command?: string | null }) =>
+    request<RevisionTrainingJob>(`/${encodeURIComponent(workspaceId)}/training`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify(settings),
+    }),
   saveWorkspace: (runtimeId: string, key: string, generation: number, parentRevisionId: string) =>
     request<WorkspaceSave>(`/runtimes/${encodeURIComponent(runtimeId)}/saves`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },

@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_db, get_current_active_user
 from app.api.interactive_workspace_route import router, internal_router
 from app.models.interactive_workspace_model import InteractiveWorkspace as Workspace, InteractiveImageRevision as Revision
-from app.models.job_model import JobStatus
-from app.schemas.interactive_workspace_schema import Ready, Failure, Heartbeat, Logs
+from app.models.job_model import Job, JobStatus
+from app.schemas.interactive_workspace_schema import Ready, Failure, Heartbeat, Logs, RevisionTraining
 from app.services import interactive_workspace_service as service
 from test.helpers import make_user, make_job
 
@@ -48,6 +48,40 @@ def test_upload_idempotency_and_private_status(db, created):
         assert exc.value.status_code == 409
     assert db.query(Workspace).count() == db.query(Revision).count() == 1
     assert 'private/key' not in str(item)
+
+
+def test_submit_built_interactive_image_as_separate_training_job(db, created):
+    user, workspace = created
+    settings = RevisionTraining(name=' New training ', command='python train.py', resume_command='python retry.py')
+    with pytest.raises(HTTPException) as exc:
+        service.submit_revision_training(db, user.user_id, workspace['id'], 'training-request-123', settings)
+    assert exc.value.status_code == 409
+
+    claim = service.claim(db, 'builder')
+    service.mark_ready(db, ready_body(claim))
+    result = service.submit_revision_training(db, user.user_id, workspace['id'], 'training-request-123', settings)
+    job = db.get(Job, result['job_id'])
+    assert result['status'] == 'VRAM_ESTIMATION_PENDING'
+    assert job.name == 'New training'
+    assert job.command == 'python train.py'
+    assert job.resume_command == 'python retry.py'
+    assert job.source_kind == 'WORKSPACE_REVISION'
+    assert job.source_workspace_id == workspace['id']
+    assert job.source_revision_id == claim['id']
+    assert job.image_tag == ready_body(claim).image_digest_ref
+    assert job.source_image_digest_ref == job.executable_image_digest_ref == job.image_tag
+    assert job.docker_base_image == ready_body(claim).resolved_base_digest
+    assert job.object_key is None
+    assert service.submit_revision_training(db, user.user_id, workspace['id'], 'training-request-123', settings) == result
+    assert db.query(Job).count() == 1
+
+    with pytest.raises(HTTPException) as exc:
+        service.submit_revision_training(db, user.user_id, workspace['id'], 'training-request-123',
+                                         RevisionTraining(name='Different', command='python train.py'))
+    assert exc.value.status_code == 409
+    with pytest.raises(HTTPException) as exc:
+        service.submit_revision_training(db, make_user(db).user_id, workspace['id'], 'other-training-key', settings)
+    assert exc.value.status_code == 404
 
 
 def test_from_job_ownership_and_image_states(db):

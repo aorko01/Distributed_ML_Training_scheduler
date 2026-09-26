@@ -39,6 +39,10 @@ class Job(Base):
     # interactive-only and never directly trainable. WORKSPACE_REVISION
     # belongs to the separate durable-workspace flow.
     source_kind = Column(String, nullable=False, default="ARCHIVE")
+    source_workspace_id = Column(String, nullable=True)
+    source_revision_id = Column(String, nullable=True)
+    source_image_digest_ref = Column(String, nullable=True)
+    executable_image_digest_ref = Column(String, nullable=True)
     name = Column(String, nullable=True)
     # Entry command.  NULL while a workspace is build-only; it is filled in when
     # training is submitted for an already built image.

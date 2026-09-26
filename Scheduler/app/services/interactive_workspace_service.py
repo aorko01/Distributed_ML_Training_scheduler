@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from sqlalchemy import or_
@@ -58,6 +59,54 @@ def public(db, item):
         if getattr(rev, 'ssh_profile', None) != 'v1' and rev.state == 'IMAGE_READY':
             base['revision']['ssh_hint'] = 'rebuild the image to enable VS Code Remote-SSH'
     return base
+
+
+def submit_revision_training(db, owner, workspace_id, key, settings):
+    """Queue a separate batch job from the published interactive image only."""
+    from app.models.user_model import User
+
+    # Serialize retries for this owner, including requests handled by other
+    # scheduler processes. The key identifies one submission per workspace.
+    db.query(User).filter_by(user_id=owner).with_for_update().one()
+    item = owned(db, owner, workspace_id)
+    payload = settings.model_dump(mode='json')
+    job_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'interactive-training:{owner}:{workspace_id}:{key}'))
+    existing = db.query(Job).filter_by(id=job_id, user_id=owner).first()
+    if existing:
+        request_digest = hashlib.sha256(json.dumps([existing.source_revision_id, payload], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if not isinstance(existing.config, dict) or existing.config.get('request_digest') != request_digest:
+            raise HTTPException(409, 'Idempotency key reused for a different request')
+        return {'job_id': existing.id, 'status': existing.status.value}
+
+    rev = revision(db, item.id)
+    if not rev or rev.state != 'IMAGE_READY' or not rev.image_digest_ref or not rev.resolved_base_digest:
+        raise HTTPException(409, 'Workspace image is not ready for training')
+    request_digest = hashlib.sha256(json.dumps([rev.id, payload], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+    job = Job(
+        id=job_id, user_id=owner, source_kind='WORKSPACE_REVISION',
+        source_workspace_id=item.id, source_revision_id=rev.id,
+        source_image_digest_ref=rev.image_digest_ref,
+        executable_image_digest_ref=rev.image_digest_ref,
+        name=settings.name, command=settings.command,
+        resume_command=settings.resume_command,
+        docker_base_image=rev.resolved_base_digest,
+        image_tag=rev.image_digest_ref,
+        priority=settings.priority,
+        reason_for_priority=settings.reason_for_priority,
+        config={'request_digest': request_digest},
+        status=JobStatus.VRAM_ESTIMATION_PENDING,
+    )
+    db.add(job)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(Job).filter_by(id=job_id, user_id=owner).first()
+        if existing and isinstance(existing.config, dict) and existing.config.get('request_digest') == request_digest:
+            return {'job_id': existing.id, 'status': existing.status.value}
+        raise HTTPException(409, 'Conflicting training submission') from None
+    return {'job_id': job.id, 'status': job.status.value}
 
 
 def canonical_requirements(value):

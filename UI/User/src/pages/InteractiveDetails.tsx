@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useEffect, useState, useRef, type FormEvent } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Boxes, CheckCircle2, Cpu, Loader2, MonitorPlay, SquarePen, TerminalSquare } from 'lucide-react';
 import { interactive, interactiveCapacity, type Workspace, type Runtime, type CapacityOptions, type ResourceRequirements } from '../services/interactive';
 import { schedulerOrigin } from '../services/api';
@@ -32,6 +32,7 @@ function imageBadge(state: string): string {
 
 export default function InteractiveDetails() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const runtimeLatest = useRef<Runtime | null>(null);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
   const [busy, setBusy] = useState(false);
@@ -48,6 +49,13 @@ export default function InteractiveDetails() {
   const [reload, setReload] = useState(0);
   const [cancelling, setCancelling] = useState(false);
   const [copyError, setCopyError] = useState('');
+  const [trainingOpen, setTrainingOpen] = useState(false);
+  const [trainingName, setTrainingName] = useState('');
+  const [entryScript, setEntryScript] = useState('');
+  const [retryScript, setRetryScript] = useState('');
+  const [trainingBusy, setTrainingBusy] = useState(false);
+  const [trainingError, setTrainingError] = useState('');
+  const trainingKey = useRef<string | null>(null);
   const [capOptions, setCapOptions] = useState<CapacityOptions | null>(null);
   const [requirements, setRequirements] = useState<ResourceRequirements | null>(null);
   const liveRuntime = runtime && !['STOPPED', 'FAILED'].includes(runtime.state);
@@ -132,6 +140,26 @@ export default function InteractiveDetails() {
       if (!controller.signal.aborted && identity === currentRuntime.current) setConnectionState(err instanceof Error ? err.message : 'Connection failed');
     } finally { connectionBusy.current = false; }
   }
+  function openTraining() {
+    setTrainingName(`${workspace?.name ?? 'Workspace'} training`);
+    setEntryScript(''); setRetryScript(''); setTrainingError(''); trainingKey.current = null;
+    setTrainingOpen(true);
+  }
+  async function submitTraining(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (trainingBusy || !id || !imageReady || !trainingName.trim() || !entryScript.trim()) return;
+    setTrainingBusy(true); setTrainingError('');
+    trainingKey.current ??= crypto.randomUUID();
+    try {
+      const job = await interactive.submitRevisionTraining(id, trainingKey.current, {
+        name: trainingName.trim(), command: entryScript.trim(), resume_command: retryScript.trim() || null,
+      });
+      setTrainingOpen(false);
+      navigate(`/jobs/${job.job_id}`);
+    } catch (err) {
+      setTrainingError(err instanceof Error ? err.message : 'Training submission failed');
+    } finally { setTrainingBusy(false); }
+  }
   const imageReady = workspace?.revision.state === 'IMAGE_READY';
   const building = workspace && ['QUEUED', 'BUILDING'].includes(workspace.revision.state);
   const canRequest = imageReady && (!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && valid && !!requirements;
@@ -199,6 +227,7 @@ export default function InteractiveDetails() {
               <pre aria-label="Build logs">{lines.join('\n') || 'No build logs yet.'}</pre>
             </details>
             {building && <div><button className="btn btn-secondary" disabled={cancelling} onClick={cancel}>Cancel build</button></div>}
+            {imageReady && !liveRuntime && <button className="btn btn-primary" type="button" onClick={openTraining}>Submit for training</button>}
           </section>
 
           {/* Step 2 — machine */}
@@ -298,7 +327,7 @@ export default function InteractiveDetails() {
                 >
                   Check connection
                 </button>
-                <button className="btn btn-secondary" disabled title="Saving is not available in this phase">Save as new revision</button>
+                <button className="btn btn-primary" type="button" onClick={openTraining}>Submit for training</button>
                 {connectionState && <span role="status" className="iw-muted">{connectionState}</span>}
               </div>
               <p className="iw-muted"><CheckCircle2 size={13} style={{ verticalAlign: '-2px' }} /> Live only — Stop ends browser + SSH access immediately.</p>
@@ -309,6 +338,26 @@ export default function InteractiveDetails() {
             <p className="iw-muted"><Boxes size={13} style={{ verticalAlign: '-2px' }} /> Last session ended — pick a machine above to start again.</p>
           )}
         </>
+      )}
+      {trainingOpen && (
+        <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget && !trainingBusy) setTrainingOpen(false); }}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="revision-training-title">
+            <div className="modal-header"><h2 id="revision-training-title">Submit for training</h2></div>
+            <form onSubmit={submitTraining}>
+              <div className="modal-body">
+                <p className="iw-muted">Creates a new batch job from this session’s built image. Changes in the live container are not included.</p>
+                <div className="form-group"><label className="form-label" htmlFor="training-name">New job name</label><input id="training-name" className="form-input" maxLength={120} required autoFocus value={trainingName} onChange={event => { setTrainingName(event.target.value); trainingKey.current = null; }} /></div>
+                <div className="form-group"><label className="form-label" htmlFor="training-entry">Entry script</label><input id="training-entry" className="form-input" maxLength={4096} required placeholder="python train.py" value={entryScript} onChange={event => { setEntryScript(event.target.value); trainingKey.current = null; }} /></div>
+                <div className="form-group"><label className="form-label" htmlFor="training-retry">Retry script (optional)</label><input id="training-retry" className="form-input" maxLength={4096} placeholder="python resume.py" value={retryScript} onChange={event => { setRetryScript(event.target.value); trainingKey.current = null; }} /></div>
+                {trainingError && <p role="alert" className="error-text">{trainingError}</p>}
+              </div>
+              <div className="modal-footer" style={{ justifyContent: 'flex-end', gap: '0.6rem' }}>
+                <button type="button" className="btn btn-secondary" disabled={trainingBusy} onClick={() => setTrainingOpen(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary" disabled={trainingBusy || !trainingName.trim() || !entryScript.trim()}>{trainingBusy ? 'Submitting…' : 'Submit for training'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

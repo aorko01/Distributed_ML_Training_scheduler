@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_current_active_user
 from app.models.interactive_workspace_model import InteractiveWorkspace as Workspace
 from app.models.job_model import Job
-from app.schemas.interactive_workspace_schema import BASE_IMAGES, FromJob, Claim, Heartbeat, Ready, Failure, Logs
+from app.schemas.interactive_workspace_schema import BASE_IMAGES, FromJob, RevisionTraining, Claim, Heartbeat, Ready, Failure, Logs
 from app.services import interactive_workspace_service as service
 from app.utils.interactive_archive import MAX_UPLOAD
 
@@ -101,6 +101,12 @@ def listing(db: Session = Depends(get_db), user=Depends(get_current_active_user)
 @router.get('/{workspace_id}')
 def detail(workspace_id: str, db: Session = Depends(get_db), user=Depends(get_current_active_user)):
     return service.public(db, service.owned(db, user.user_id, workspace_id))
+
+
+@router.post('/{workspace_id}/training', status_code=201)
+def submit_revision_training(workspace_id: str, body: RevisionTraining, request_key=Depends(key),
+                             db: Session = Depends(get_db), user=Depends(get_current_active_user)):
+    return service.submit_revision_training(db, user.user_id, workspace_id, request_key, body)
 
 
 @router.get('/{workspace_id}/build-logs')
