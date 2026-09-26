@@ -243,7 +243,7 @@ class ManagedWorker:
                 "instance_id": self.coordinator.instance_id,
                 "sequence": self.sequence,
                 "paused": self.coordinator.paused,
-                "draining": self.coordinator.draining,
+                "draining": self.coordinator.draining or not self.coordinator.accepting_jobs,
                 "inventory": self.inventory(),
                 "assignments": [
                     {

@@ -4,6 +4,7 @@ import { Ban, CheckCircle2, PlugZap, Radio } from 'lucide-react'
 interface TopBarProps {
   connected: boolean
   acceptingJobs: boolean
+  acceptingJobsDisabled: boolean
   hostname: string
   ipAddress: string
   lastHeartbeat: string
@@ -13,6 +14,7 @@ interface TopBarProps {
 const TopBar: React.FC<TopBarProps> = ({
   connected,
   acceptingJobs,
+  acceptingJobsDisabled,
   hostname,
   ipAddress,
   lastHeartbeat,
@@ -38,12 +40,12 @@ const TopBar: React.FC<TopBarProps> = ({
         </span>
 
         {acceptingJobs ? (
-          <button className="btn btn-danger btn-sm" onClick={onToggleAccepting}>
+          <button className="btn btn-danger btn-sm" onClick={onToggleAccepting} disabled={acceptingJobsDisabled}>
             <Ban size={14} />
             Accept no more jobs
           </button>
         ) : (
-          <button className="btn btn-success btn-sm" onClick={onToggleAccepting}>
+          <button className="btn btn-success btn-sm" onClick={onToggleAccepting} disabled={acceptingJobsDisabled}>
             <CheckCircle2 size={14} />
             Accept jobs
           </button>

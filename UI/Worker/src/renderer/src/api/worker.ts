@@ -75,3 +75,7 @@ export function pauseWorker(): Promise<WorkerStatus> {
 export function resumeWorker(): Promise<WorkerStatus> {
   return sendJson<WorkerStatus>('POST', '/api/control/resume')
 }
+
+export function updateAcceptingJobs(acceptingJobs: boolean): Promise<WorkerStatus> {
+  return sendJson<WorkerStatus>('PUT', '/api/control/accepting-jobs', { acceptingJobs })
+}

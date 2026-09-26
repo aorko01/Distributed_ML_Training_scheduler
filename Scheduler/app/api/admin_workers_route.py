@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_superuser, get_db
 from app.models.user_model import User
 from app.models.worker_credential_model import WorkerCredential
+from app.models.worker_model import Worker
 from app.services import worker_credential_service as creds
 
 router = APIRouter(prefix="/admin/workers", tags=["admin-workers"])
@@ -19,6 +20,25 @@ class WorkerCredentialResponse(BaseModel):
     worker_id: str
     source: str
     num_secrets: int
+
+
+class WorkerAdmissionUpdate(BaseModel):
+    restricted: bool
+
+
+@router.put("/{worker_id}/admission")
+def update_worker_admission(
+    worker_id: str,
+    body: WorkerAdmissionUpdate,
+    _: User = Depends(get_current_superuser),
+    db: Session = Depends(get_db),
+):
+    worker = db.query(Worker).filter_by(worker_id=worker_id).with_for_update().first()
+    if worker is None:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    worker.admin_restricted = body.restricted
+    db.commit()
+    return {"worker_id": worker_id, "restricted": worker.admin_restricted}
 
 
 @router.get("/credentials", response_model=list[WorkerCredentialResponse])

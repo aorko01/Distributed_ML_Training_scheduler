@@ -17,6 +17,25 @@ class TestHealth:
         assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_accepting_jobs_control_updates_coordinator(client, tmp_path):
+    from execution_state import Coordinator
+
+    coordinator = Coordinator(tmp_path)
+    worker = MagicMock(coordinator=coordinator)
+    server.set_managed_worker(worker)
+    try:
+        stopped = client.put("/api/control/accepting-jobs", json={"acceptingJobs": False})
+        assert stopped.status_code == 200
+        assert stopped.json()["acceptingJobs"] is False
+        assert client.get("/api/status").json()["acceptingJobs"] is False
+        assert not coordinator.draining
+        resumed = client.put("/api/control/accepting-jobs", json={"acceptingJobs": True})
+        assert resumed.json()["acceptingJobs"] is True
+    finally:
+        server.set_managed_worker(None)
+        coordinator.close()
+
+
 class TestWorkerInfo:
     def test_build_worker_info(self):
         with (

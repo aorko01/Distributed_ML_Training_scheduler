@@ -18,6 +18,7 @@ from app.schemas.worker_execution_schema import (
     Cleanup,
     Event,
     Fence,
+    Heartbeat,
     Result,
     Start,
 )
@@ -199,6 +200,33 @@ def test_incompatible_interactive_does_not_block_batch(db, monkeypatch):
     db.commit()
     job = make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
     assert pull(db, w)["payload"]["id"] == job.id
+
+
+def test_restrictions_stop_new_claims_but_renew_existing_assignment(db):
+    owner = make_user(db)
+    w = worker(db)
+    make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
+    assigned = pull(db, w)
+    assert assigned["kind"] == "batch_training"
+    make_job(db, owner.user_id, status=JobStatus.RUNNABLE)
+    w.admin_restricted = True
+    db.commit()
+    report = Heartbeat(
+        instance_id=w.instance_id,
+        sequence=1,
+        paused=False,
+        draining=True,
+        inventory={
+            **inventory(),
+            "mode": "BATCH_ACTIVE",
+            "local_assignments": [assigned["assignment_id"]],
+        },
+        assignments=[fence(assigned).model_dump()],
+    )
+    response = claims.heartbeat(db, w.worker_id, report, SETTINGS)
+    assert response["decisions"][0]["action"] == "renew"
+    assert w.admin_restricted and w.execution_draining
+    assert pull(db, w) is None
 
 
 def test_batch_reservation_prevents_interactive_on_free_second_gpu(db, monkeypatch):

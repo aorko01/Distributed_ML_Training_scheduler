@@ -20,6 +20,8 @@ export interface ApiNode {
   mem_usage: number | null;
   status: string;
   running_jobs: number | null;
+  execution_draining: boolean;
+  admin_restricted: boolean;
 }
 
 export interface NodesResponse {
@@ -108,6 +110,16 @@ export async function fetchNodes(): Promise<ApiNode[]> {
   }
   const data = (await resp.json()) as NodesResponse;
   return data.nodes ?? [];
+}
+
+export async function updateWorkerAdmission(workerId: string, restricted: boolean): Promise<void> {
+  const resp = await authedFetch(`/admin/workers/${encodeURIComponent(workerId)}/admission`, {
+    method: 'PUT',
+    body: JSON.stringify({ restricted }),
+  });
+  if (!resp.ok) {
+    throw new Error(`Failed to update worker admission: ${resp.status}`);
+  }
 }
 
 export async function fetchOverview(): Promise<OverviewStats> {

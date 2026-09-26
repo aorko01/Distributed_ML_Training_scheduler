@@ -78,6 +78,18 @@ class Coordinator:
             "CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT)"
         )
         self.db.commit()
+        row = self.db.execute(
+            "SELECT value FROM metadata WHERE key='accepting_jobs'"
+        ).fetchone()
+        self.accepting_jobs = row is None or row[0] != "0"
+
+    def set_accepting_jobs(self, value):
+        with self.lock, self.db:
+            self.accepting_jobs = bool(value)
+            self.db.execute(
+                "INSERT OR REPLACE INTO metadata VALUES ('accepting_jobs',?)",
+                ("1" if self.accepting_jobs else "0",),
+            )
 
     def count(self, key):
         with self.lock, self.db:
@@ -180,6 +192,7 @@ class Coordinator:
             return (
                 not self.paused
                 and not self.draining
+                and self.accepting_jobs
                 and self.mode not in MODES_BLOCKING
                 and not self.claim_pending
                 and not self.estimation_active()
@@ -225,9 +238,12 @@ class Coordinator:
             assignment = envelope.get("assignment")
             if assignment:
                 active = [r for r in self.records() if not r.get("released")]
-                conflict = bool(active) and (
-                    assignment["kind"] in EXCLUSIVE_KINDS
-                    or any(r["kind"] in EXCLUSIVE_KINDS for r in active)
+                conflict = not self.accepting_jobs or (
+                    bool(active)
+                    and (
+                        assignment["kind"] in EXCLUSIVE_KINDS
+                        or any(r["kind"] in EXCLUSIVE_KINDS for r in active)
+                    )
                 )
                 assignment.update(
                     local_clean=False,

@@ -18,6 +18,8 @@ export interface ClusterNode {
   cpuLoad: number;
   mem: number;
   runningJobs: number;
+  executionDraining?: boolean;
+  adminRestricted?: boolean;
   sshPort: number;
 }
 

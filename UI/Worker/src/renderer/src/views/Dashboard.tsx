@@ -33,6 +33,8 @@ const Dashboard: React.FC<WorkerData> = ({
   connected,
   apiReachable,
   acceptingJobs,
+  updatingAcceptingJobs,
+  acceptingJobsError,
   cpuHistory,
   gpuHistory,
   diskReadHistory,
@@ -62,6 +64,7 @@ const Dashboard: React.FC<WorkerData> = ({
       <TopBar
         connected={connected}
         acceptingJobs={acceptingJobs}
+        acceptingJobsDisabled={!apiReachable || updatingAcceptingJobs}
         hostname={worker?.hostname ?? 'DML Worker'}
         ipAddress={worker?.ipAddress ?? '—'}
         lastHeartbeat={lastHeartbeat}
@@ -99,8 +102,14 @@ const Dashboard: React.FC<WorkerData> = ({
         {!acceptingJobs ? (
           <div className="banner banner-info">
             <Info size={16} />
-            Visual preview only: “Accept no more jobs” is selected, but scheduling is unchanged until
-            the scheduler integration is added.
+            This worker is not accepting new jobs. Running jobs continue.
+          </div>
+        ) : null}
+
+        {acceptingJobsError ? (
+          <div className="banner banner-warn">
+            <Info size={16} />
+            Could not update job acceptance: {acceptingJobsError}
           </div>
         ) : null}
 

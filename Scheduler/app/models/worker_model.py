@@ -32,5 +32,6 @@ class Worker(Base):
     execution_mode = Column(String, nullable=False, default='RECONCILING')
     execution_paused = Column(Boolean, nullable=False, default=False)
     execution_draining = Column(Boolean, nullable=False, default=False)
+    admin_restricted = Column(Boolean, nullable=False, default=False)
     execution_reconciling = Column(Boolean, nullable=False, default=True)
     heartbeat_sequence = Column(Integer, nullable=False, default=0)

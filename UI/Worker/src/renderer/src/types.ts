@@ -83,6 +83,7 @@ export interface WorkerStatus {
   lastHeartbeatAt: string | null
   schedulerUrl: string
   paused: boolean
+  acceptingJobs: boolean
   mode: string
   activeAssignments: number
 }

@@ -7,6 +7,7 @@ import {
   fetchGpus,
   fetchStatus,
   fetchWorker,
+  updateAcceptingJobs,
 } from '../api/worker'
 import type {
   GpuInfo,
@@ -33,6 +34,8 @@ export interface WorkerData {
   logs: WorkerLogRecord[]
   status: WorkerStatus | null
   acceptingJobs: boolean
+  updatingAcceptingJobs: boolean
+  acceptingJobsError: string | null
   connected: boolean
   paused: boolean
   apiReachable: boolean
@@ -42,7 +45,7 @@ export interface WorkerData {
   netRecvHistory: number[]
   lastHeartbeat: string
   error: string | null
-  toggleAcceptingJobs: () => void
+  toggleAcceptingJobs: () => Promise<void>
 }
 
 export function useWorkerData(): WorkerData {
@@ -52,7 +55,8 @@ export function useWorkerData(): WorkerData {
   const [jobs, setJobs] = useState<JobRecord[]>([])
   const [logs, setLogs] = useState<WorkerLogRecord[]>([])
   const [status, setStatus] = useState<WorkerStatus | null>(null)
-  const [acceptingJobs, setAcceptingJobs] = useState(true)
+  const [updatingAcceptingJobs, setUpdatingAcceptingJobs] = useState(false)
+  const [acceptingJobsError, setAcceptingJobsError] = useState<string | null>(null)
   const [apiReachable, setApiReachable] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [wsActive, setWsActive] = useState(false)
@@ -167,9 +171,18 @@ export function useWorkerData(): WorkerData {
     }
   }, [])
 
-  const toggleAcceptingJobs = useCallback(() => {
-    setAcceptingJobs((value) => !value)
-  }, [])
+  const toggleAcceptingJobs = useCallback(async () => {
+    if (!status || updatingAcceptingJobs) return
+    setUpdatingAcceptingJobs(true)
+    setAcceptingJobsError(null)
+    try {
+      setStatus(await updateAcceptingJobs(!status.acceptingJobs))
+    } catch (e) {
+      setAcceptingJobsError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUpdatingAcceptingJobs(false)
+    }
+  }, [status, updatingAcceptingJobs])
 
   const paused = status?.paused ?? false
   const connected = apiReachable && !paused && (status?.connected ?? false)
@@ -182,7 +195,9 @@ export function useWorkerData(): WorkerData {
     jobs,
     logs,
     status,
-    acceptingJobs,
+    acceptingJobs: status?.acceptingJobs ?? true,
+    updatingAcceptingJobs,
+    acceptingJobsError,
     connected,
     paused,
     apiReachable,

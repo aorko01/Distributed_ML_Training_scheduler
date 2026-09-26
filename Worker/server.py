@@ -130,6 +130,7 @@ class Status(BaseModel):
     lastHeartbeatAt: str | None
     schedulerUrl: str
     paused: bool
+    acceptingJobs: bool = True
     mode: str = "UNKNOWN"
     activeAssignments: int = 0
 
@@ -219,6 +220,10 @@ def _build_status() -> Status:
         lastHeartbeatAt=last_heartbeat_at,
         schedulerUrl=config_module.get_scheduler_url(),
         paused=telemetry.is_paused(),
+        acceptingJobs=(
+            _managed_worker.coordinator.accepting_jobs
+            if _managed_worker is not None else True
+        ),
         mode=mode,
         activeAssignments=len(records),
     )
@@ -390,6 +395,23 @@ def pause():
 def resume():
     telemetry.set_paused(False)
     telemetry.record_event("info", "Worker resumed; job polling restarted")
+    return _build_status()
+
+
+class AcceptingJobsUpdate(BaseModel):
+    acceptingJobs: bool
+
+
+@app.put("/api/control/accepting-jobs", response_model=Status)
+def update_accepting_jobs(update: AcceptingJobsUpdate):
+    if _managed_worker is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Managed Worker is unavailable")
+    _managed_worker.coordinator.set_accepting_jobs(update.acceptingJobs)
+    telemetry.record_event(
+        "info",
+        "Worker accepting new jobs" if update.acceptingJobs else "Worker stopped accepting new jobs",
+    )
     return _build_status()
 
 

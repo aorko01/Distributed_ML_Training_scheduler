@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Server, Plus, Trash2 } from 'lucide-react';
+import { Search, Server, Plus, Trash2, Ban, CheckCircle2 } from 'lucide-react';
 import {
   type ClusterNode,
   type NodeSortKey,
@@ -10,6 +10,7 @@ import {
   fetchWorkerCredentials,
   registerWorkerCredential,
   revokeWorkerCredential,
+  updateWorkerAdmission,
   UnauthorizedError,
   type ApiNode,
   type WorkerCredential,
@@ -51,6 +52,8 @@ const toClusterNode = (node: ApiNode): ClusterNode => ({
   cpuLoad: roundMetric(node.cpu_load),
   mem: roundMetric(node.mem_usage),
   runningJobs: node.running_jobs || 0,
+  executionDraining: node.execution_draining,
+  adminRestricted: node.admin_restricted,
   sshPort: 22,
 });
 
@@ -69,6 +72,7 @@ const Nodes: React.FC = () => {
   const [newSecret, setNewSecret] = useState('');
   const [registering, setRegistering] = useState(false);
   const [registerError, setRegisterError] = useState<string | null>(null);
+  const [admissionUpdating, setAdmissionUpdating] = useState<string | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -152,6 +156,27 @@ const Nodes: React.FC = () => {
         return;
       }
       showFeedback(err instanceof Error ? err.message : 'Revoke failed.');
+    }
+  };
+
+  const handleAdmission = async (node: ClusterNode) => {
+    setAdmissionUpdating(node.id);
+    try {
+      const restricted = !node.adminRestricted;
+      await updateWorkerAdmission(node.id, restricted);
+      setNodeList((prev) => prev.map((item) => item.id === node.id
+        ? { ...item, adminRestricted: restricted } : item));
+      showFeedback(restricted
+        ? `${node.name} will receive no new jobs; running jobs continue`
+        : `${node.name} admin restriction removed`);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      showFeedback(err instanceof Error ? err.message : 'Admission update failed.');
+    } finally {
+      setAdmissionUpdating(null);
     }
   };
 
@@ -335,12 +360,13 @@ const Nodes: React.FC = () => {
               <th>Load</th>
               <th>Mem</th>
               <th>Jobs</th>
+              <th>New jobs</th>
             </tr>
           </thead>
           <tbody>
             {visibleNodes.length === 0 && !nodesLoading && (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
+                <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
                   No nodes match the current filters.
                 </td>
               </tr>
@@ -386,6 +412,21 @@ const Nodes: React.FC = () => {
                   </div>
                 </td>
                 <td>{node.runningJobs}</td>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    {node.executionDraining && <span className="badge badge-draining">Worker stopped</span>}
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${node.adminRestricted ? 'btn-success' : 'btn-danger'}`}
+                      onClick={() => void handleAdmission(node)}
+                      disabled={admissionUpdating === node.id}
+                      title={node.adminRestricted ? 'Allow this worker to receive new jobs' : 'Stop new jobs; running jobs continue'}
+                    >
+                      {node.adminRestricted ? <CheckCircle2 size={14} /> : <Ban size={14} />}
+                      {node.adminRestricted ? 'Allow new jobs' : 'Restrict new jobs'}
+                    </button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>

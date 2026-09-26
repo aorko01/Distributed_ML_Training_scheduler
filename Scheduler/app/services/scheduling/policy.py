@@ -21,6 +21,7 @@ def worker_eligible(worker, timestamp, fresh=15):
         > timestamp - timedelta(seconds=fresh)
         and not worker.execution_paused
         and not worker.execution_draining
+        and not worker.admin_restricted
         and not worker.execution_reconciling
         and not worker.is_testing
         and worker.execution_mode in ("AVAILABLE", "BATCH_ACTIVE")
@@ -237,6 +238,7 @@ class ThreeTierPolicy:
             > now() - timedelta(seconds=settings.fresh_seconds),
             Worker.execution_paused.is_(False),
             Worker.execution_draining.is_(False),
+            Worker.admin_restricted.is_(False),
             Worker.execution_reconciling.is_(False),
             ~exists().where(
                 Assignment.worker_id == Worker.worker_id,

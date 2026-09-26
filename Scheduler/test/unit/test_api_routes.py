@@ -696,9 +696,36 @@ class TestAdminWorkerCredentials:
         client = self._client(db)
         assert client.get("/admin/workers/credentials").status_code == 401
 
+    def test_admin_can_restrict_without_stopping_active_work(self, db):
+        from app.services.scheduling.policy import worker_eligible
+        from app.services.scheduling.types import now
+
+        worker = make_worker(db)
+        worker.protocol_version = 1
+        worker.authenticated_heartbeat_at = now()
+        worker.execution_mode = "AVAILABLE"
+        worker.execution_reconciling = False
+        worker.inventory = {"complete": True, "available_slots": 1}
+        db.commit()
+        client = self._client(db, admin=self._admin(db))
+        assert worker_eligible(worker, now())
+        response = client.put(
+            f"/admin/workers/{worker.worker_id}/admission", json={"restricted": True}
+        )
+        assert response.status_code == 200
+        assert not worker_eligible(worker, now())
+        assert worker.execution_draining is False
+        assert client.put(
+            f"/admin/workers/{worker.worker_id}/admission", json={"restricted": False}
+        ).status_code == 200
+        assert worker_eligible(worker, now())
+
     def test_forbids_non_admin(self, db):
         client = self._client(db, admin=make_user(db))
         assert client.get("/admin/workers/credentials").status_code == 403
+        assert client.put(
+            "/admin/workers/any/admission", json={"restricted": True}
+        ).status_code == 403
         resp = client.post(
             "/admin/workers/credentials",
             json={"worker_id": "w1", "secret": secrets.token_urlsafe(48)},

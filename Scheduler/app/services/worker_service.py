@@ -201,6 +201,8 @@ async def get_all_workers(db: Session) -> list[dict]:
                 "total_disk": metric("total_disk"),
                 "available_disk": metric("available_disk"),
                 "status": "online" if online else "offline",
+                "execution_draining": bool(worker.execution_draining),
+                "admin_restricted": bool(worker.admin_restricted),
                 "running_jobs": int(running_jobs),
                 "first_seen": worker.first_seen.isoformat() if worker.first_seen else None,
                 "last_registered": (

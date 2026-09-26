@@ -1,0 +1,1 @@
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS admin_restricted BOOLEAN NOT NULL DEFAULT false;

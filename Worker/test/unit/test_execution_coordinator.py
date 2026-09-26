@@ -36,6 +36,37 @@ def test_claim_uuid_survives_lost_response_and_interactive_blocks_polling(tmp_pa
     c.close()
 
 
+def test_stopping_new_jobs_persists_and_keeps_active_lease(tmp_path):
+    c = Coordinator(tmp_path, clock=lambda: 10)
+    c.available()
+    c.begin_claim()
+    active = assignment("batch_training")
+    c.accept({"assignment": active}, 10)
+    c.set_accepting_jobs(False)
+    assert c.begin_claim() is None
+    assert c.renew(active["assignment_id"], 15, 45, 1)
+    c.close()
+
+    restarted = Coordinator(tmp_path, clock=lambda: 10)
+    restarted.available()
+    assert not restarted.accepting_jobs
+    assert restarted.begin_claim() is None
+    restarted.set_accepting_jobs(True)
+    assert restarted.begin_claim() is not None
+    restarted.close()
+
+
+def test_inflight_claim_does_not_start_after_admission_is_disabled(tmp_path):
+    c = Coordinator(tmp_path, clock=lambda: 10)
+    c.available()
+    c.begin_claim()
+    c.set_accepting_jobs(False)
+    pending = c.accept({"assignment": assignment("batch_training")}, 10)
+    assert pending["uncertain"]
+    assert not c.authoritative(pending["assignment_id"])
+    c.close()
+
+
 def test_expiry_and_out_of_order_response_cannot_resurrect(tmp_path):
     clock = [10]
     c = Coordinator(tmp_path, clock=lambda: clock[0])

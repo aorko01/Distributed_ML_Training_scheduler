@@ -13,9 +13,8 @@ The console reads the loopback-only API at `http://127.0.0.1:8600` and shows:
   not read or displayed.
 - Scheduler connectivity and the Worker's current assignment mode.
 
-The **Accept no more jobs** control is intentionally visual-only in this
-version. It changes only local renderer state and never calls a Worker or
-Scheduler control endpoint.
+The **Accept no more jobs** control stops new assignments through the local
+Worker API. The setting survives a Worker restart; active jobs continue to run.
 
 ## Install the complete application
 
