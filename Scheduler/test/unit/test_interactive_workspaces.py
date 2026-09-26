@@ -84,6 +84,48 @@ def test_submit_built_interactive_image_as_separate_training_job(db, created):
     assert exc.value.status_code == 404
 
 
+def test_training_route_uses_selected_published_revision_and_queues_batch_job(db, created):
+    user, workspace = created
+    claim = service.claim(db, 'builder')
+    service.mark_ready(db, ready_body(claim))
+    original = db.get(Revision, claim['id'])
+    newer = Revision(
+        workspace_id=workspace['id'], revision_number=2, origin='SNAPSHOT', state='IMAGE_READY',
+        image_tag='user/newer:revision-2', image_digest_ref='user/newer@sha256:' + 'c' * 64,
+        resolved_base_digest='pytorch/pytorch@sha256:' + 'd' * 64,
+    )
+    db.add(newer)
+    db.commit()
+
+    app = FastAPI(); app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_active_user] = lambda: user
+    client = TestClient(app)
+    url = f"/interactive/workspaces/{workspace['id']}/training"
+    headers = {'Idempotency-Key': 'selected-revision-key-123'}
+    body = {'name': 'Batch from original', 'command': 'python train.py',
+            'resume_command': 'python retry.py', 'revision_id': original.id}
+    response = client.post(url, json=body, headers=headers)
+    assert response.status_code == 201
+    assert client.post(url, json=body, headers=headers).json() == response.json()
+    job = db.get(Job, response.json()['job_id'])
+    assert job.source_revision_id == original.id
+    assert job.image_tag == original.image_digest_ref
+    assert job.docker_base_image == original.resolved_base_digest
+    assert job.object_key is None
+    assert db.query(Job).count() == 1
+
+    from app.services import job_service
+    assert job_service.get_user_job_by_id(db, user.user_id, job.id)['image_tag'] == original.image_digest_ref
+    job_service.save_vram_estimation(db, job.id, 8, 16, 1.5)
+    assert db.get(Job, job.id).status == JobStatus.RUNNABLE
+    assert db.get(Job, job.id).image_tag == original.image_digest_ref
+
+    assert client.post(url, json={**body, 'revision_id': newer.id}, headers=headers).status_code == 409
+    assert client.post(url, json={**body, 'revision_id': 'missing'},
+                       headers={'Idempotency-Key': 'unknown-revision-key-123'}).status_code == 409
+
+
 def test_from_job_ownership_and_image_states(db):
     a, b = make_user(db), make_user(db)
     job = make_job(db, a.user_id, status=JobStatus.FAILED, image_tag='user/source:build-a')

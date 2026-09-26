@@ -63,6 +63,7 @@ class FromJob(Strict):
 class RevisionTraining(TrainingSubmissionRequest):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1, max_length=120)
+    revision_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator('name')
     @classmethod

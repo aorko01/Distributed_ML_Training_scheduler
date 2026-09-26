@@ -186,7 +186,7 @@ export const interactive = {
   detail: (id: string) => request<Workspace>(`/${encodeURIComponent(id)}`),
   logs: (id: string) => request<{ lines: string[]; state: string }>(`/${encodeURIComponent(id)}/build-logs`),
   cancel: (id: string) => request<Workspace>(`/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  submitRevisionTraining: (workspaceId: string, key: string, settings: { name: string; command: string; resume_command?: string | null }) =>
+  submitRevisionTraining: (workspaceId: string, key: string, settings: { name: string; command: string; resume_command?: string | null; revision_id?: string }) =>
     request<RevisionTrainingJob>(`/${encodeURIComponent(workspaceId)}/training`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
       body: JSON.stringify(settings),

@@ -23,12 +23,12 @@ def main():
     try:
         from app.db.database import Base, engine, legacy_tables, run_migrations, SessionLocal
         from app.models.user_model import User
-        from app.models.job_model import Job
+        from app.models.job_model import Job, JobStatus
         import app.models.worker_model
         import app.models.resource_request_model
         from app.models.interactive_workspace_model import InteractiveWorkspace as Workspace, InteractiveImageRevision as Revision
         from app.services import interactive_workspace_service as service
-        from app.schemas.interactive_workspace_schema import Ready
+        from app.schemas.interactive_workspace_schema import Ready, RevisionTraining
         # Simulate pre-interactive production schema (no composite job constraint).
         Base.metadata.create_all(engine, tables=legacy_tables())
         assert set(inspect(engine).get_table_names()) == {'users', 'jobs', 'workers', 'resource_requests'}, 'Migration-owned tables must not be created before upgrade'
@@ -59,6 +59,15 @@ def main():
             service.mark_ready(db, Ready(builder_id=current['builder_id'], revision_id=revision_id, attempt_id=current['attempt_id'],
                 image_tag=tag, image_digest_ref=tag.split(':')[0]+'@sha256:'+'a'*64, resolved_base_digest='pytorch/pytorch@sha256:'+'b'*64))
             assert db.get(Workspace, workspace_id).current_revision_id == revision_id
+            settings = RevisionTraining(name='Training from session', command='python train.py',
+                                        resume_command='python resume.py', revision_id=revision_id)
+            submission = service.submit_revision_training(db, owner, workspace_id, 'training-request-123', settings)
+            job = db.get(Job, submission['job_id'])
+            assert job.status == JobStatus.VRAM_ESTIMATION_PENDING
+            assert job.image_tag == tag.split(':')[0]+'@sha256:'+'a'*64
+            assert job.docker_base_image == 'pytorch/pytorch@sha256:'+'b'*64
+            assert job.object_key is None and job.source_revision_id == revision_id
+            assert service.submit_revision_training(db, owner, workspace_id, 'training-request-123', settings) == submission
             # Ready image and provenance immutability are database enforced.
             for statement in ('UPDATE interactive_image_revisions SET state=\'QUEUED\' WHERE id=:id',
                               'UPDATE interactive_workspaces SET source_type=\'EXISTING_JOB\' WHERE id=:id'):

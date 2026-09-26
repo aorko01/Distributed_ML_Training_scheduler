@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Save, Wifi, WifiOff } from 'lucide-react';
 import type { ConnPhase } from '../workspaceTypes';
-export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, dirtyCount, saving, onSaveAll, onReconnect, onStop, internetEnabled, packageCapable, developerMode, saveEnabled, submitEnabled, saveState, onSaveForLater, onSubmitTraining }: { workspaceId: string; name: string; runtimeState: string; liveOnly: boolean; phase: ConnPhase; dirtyCount: number; saving: boolean; onSaveAll: () => void; onReconnect: () => void; onStop: () => void; internetEnabled?: boolean; packageCapable?: boolean; developerMode?: boolean; saveEnabled?: boolean; submitEnabled?: boolean; saveState?: string | null; onSaveForLater?: () => void; onSubmitTraining?: () => void }) {
+export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, dirtyCount, saving, onSaveAll, onReconnect, onStop, internetEnabled, packageCapable, developerMode, submitEnabled, onSubmitTraining }: { workspaceId: string; name: string; runtimeState: string; liveOnly: boolean; phase: ConnPhase; dirtyCount: number; saving: boolean; onSaveAll: () => void; onReconnect: () => void; onStop: () => void; internetEnabled?: boolean; packageCapable?: boolean; developerMode?: boolean; submitEnabled?: boolean; onSubmitTraining?: () => void }) {
   const connected = phase === 'connected';
   const internetTitle = internetEnabled === true
     ? 'Operator-enabled egress for this runtime: pip install, datasets and curl work in the web terminal'
@@ -13,12 +13,9 @@ export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, 
     : developerMode === true && internetEnabled !== true
       ? 'Developer runtime without network for this runtime: sudo works but pip downloads fail'
       : 'Packages need a new workspace image built with the developer profile and operator package gates';
-  const saveTitle = saveEnabled === true
-    ? 'Capture the exact workload filesystem (code + installed packages) into a portable revision'
-    : 'Durable snapshot publishing is not yet available on this deployment';
   const submitTitle = submitEnabled === true
-    ? 'Capture a portable revision and queue a training job from it'
-    : 'Training handoff is not yet available on this deployment';
+    ? 'Create a new batch job from the published image; live container changes are not included'
+    : 'Published workspace image is not ready for training';
   return (
     <header className="ide-titlebar">
       <Link className="ide-back" to={`/interactive/${workspaceId}`} aria-label="Back to workspace details" title="Back to workspace details"><ArrowLeft size={16} /><span>Workspaces</span></Link>
@@ -36,11 +33,9 @@ export function IDETitleBar({ workspaceId, name, runtimeState, liveOnly, phase, 
           {packageCapable ? 'packages ready' : 'packages unavailable'}
         </span>
       )}
-      {saveState && <span className="ide-pill" role="status" title={`Durable save state: ${saveState}`}>{saveState}</span>}
       <span className="ide-spacer" />
       {phase !== 'connected' && phase !== 'loading' && phase !== 'connecting' && <button type="button" className="ide-btn ide-btn-primary" onClick={onReconnect}>Reconnect</button>}
       <button type="button" className="ide-btn" onClick={onSaveAll} disabled={!connected || dirtyCount === 0 || saving} title="Save all dirty files (Ctrl/Cmd+Shift+S)"><Save size={14} /> Save All</button>
-      <button type="button" className="ide-btn" disabled={!connected || saveEnabled !== true || !onSaveForLater} onClick={onSaveForLater} title={saveTitle}>Save for Later</button>
       <button type="button" className="ide-btn" disabled={!connected || submitEnabled !== true || !onSubmitTraining} onClick={onSubmitTraining} title={submitTitle}>Submit for Training</button>
       <button type="button" className="ide-btn ide-btn-danger-ghost" onClick={onStop} title="Stop runtime (live container changes may disappear)">Stop</button>
     </header>

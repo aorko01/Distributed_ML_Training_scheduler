@@ -78,7 +78,8 @@ def submit_revision_training(db, owner, workspace_id, key, settings):
             raise HTTPException(409, 'Idempotency key reused for a different request')
         return {'job_id': existing.id, 'status': existing.status.value}
 
-    rev = revision(db, item.id)
+    rev = (db.query(Revision).filter_by(id=settings.revision_id, workspace_id=item.id).first()
+           if settings.revision_id else revision(db, item.id))
     if not rev or rev.state != 'IMAGE_READY' or not rev.image_digest_ref or not rev.resolved_base_digest:
         raise HTTPException(409, 'Workspace image is not ready for training')
     request_digest = hashlib.sha256(json.dumps([rev.id, payload], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
