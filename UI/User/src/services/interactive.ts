@@ -196,6 +196,8 @@ export const interactive = {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
       body: JSON.stringify({ generation, parent_revision_id: parentRevisionId, settings }),
     }, '/interactive'),
+  trainingStatus: (submissionId: string) =>
+    request<TrainingSubmission>(`/training-submissions/${encodeURIComponent(submissionId)}`, {}, '/interactive'),
   create: (input: Creation, key: string) => {
     const { path, init } = creationRequest(input, key);
     return request<Workspace>(path, init);

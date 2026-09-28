@@ -1,6 +1,7 @@
 """Workload-only image builds. No access agents, Docker socket or credentials."""
 import io
 import json
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -16,6 +17,7 @@ from docker_ops import _run_cancellable_docker_build, _get_build_lock, _remove_l
 
 MAX_UPLOAD = 64 * 1024 * 1024
 MAX_SNAPSHOT = 8 * 1024 * 1024 * 1024
+SNAPSHOT_MEMORY_LIMIT = 64 * 1024 * 1024
 # Local staging name for the exact loaded snapshot before it is retagged to
 # the immutable per-revision tag. Never pushed; never-User controlled.
 SNAPSHOT_CLEAN_REFERENCE = 'dml-snapshot-clean'
@@ -316,27 +318,52 @@ def import_snapshot(item, client, platform, user, workdir, training_command=None
     if training_command is not None:
         training_command = validate_training_command(training_command)
     expected_platform = platform
-    # Stream artifact with hash/size verification (never whole image in RAM
-    # beyond this bounded buffer; production artifacts are gzip tarballs).
+    # Verify as bytes arrive. Large snapshots spill to disk and use Docker's
+    # streaming load command, so a multi-gigabyte image cannot exhaust RAM.
     sha = hashlib.sha256()
     size = 0
     data = bytearray()
-    for chunk in download(item):
-        sha.update(chunk)
-        size += len(chunk)
-        if size > MAX_SNAPSHOT:
+    with tempfile.TemporaryDirectory(prefix='dml-snapshot-load-') as temporary:
+        path = Path(temporary) / 'snapshot.tar.gz'
+        output = None
+        try:
+            for chunk in download(item):
+                sha.update(chunk)
+                size += len(chunk)
+                if size > MAX_SNAPSHOT:
+                    raise BuildFailure('system')
+                if output is None and len(data) + len(chunk) > SNAPSHOT_MEMORY_LIMIT:
+                    output = path.open('wb')
+                    output.write(data)
+                    data.clear()
+                if output is None:
+                    data.extend(chunk)
+                else:
+                    output.write(chunk)
+        finally:
+            if output is not None:
+                output.close()
+        if item.get('snapshot_sha256') and sha.hexdigest() != item['snapshot_sha256']:
             raise BuildFailure('system')
-        data.extend(chunk)
-    if item.get('snapshot_sha256') and sha.hexdigest() != item['snapshot_sha256']:
-        raise BuildFailure('system')
-    if item.get('snapshot_size') and size != item['snapshot_size']:
-        raise BuildFailure('system')
-    loaded = client.images.load(bytes(data))
-    if not loaded or len(loaded) != 1:
-        raise BuildFailure('system')
-    loaded_id = getattr(loaded[0], 'id', None) or ''
-    if not loaded_id:
-        raise BuildFailure('system')
+        if item.get('snapshot_size') and size != item['snapshot_size']:
+            raise BuildFailure('system')
+        if output is None:
+            loaded = client.images.load(bytes(data))
+            if not loaded or len(loaded) != 1:
+                raise BuildFailure('system')
+            loaded_id = getattr(loaded[0], 'id', None) or ''
+        else:
+            expected_tag = f"dml-snapshot-{item['snapshot_operation_id']}:capture"
+            try:
+                client.images.remove(expected_tag, force=False)
+            except Exception:
+                pass
+            load_output = run_command(['load', '-i', str(path)], lambda: False)
+            if f'Loaded image: {expected_tag}' not in load_output:
+                raise BuildFailure('system')
+            loaded_id = getattr(client.images.get(expected_tag), 'id', None) or ''
+        if not loaded_id:
+            raise BuildFailure('system')
     image = client.images.get(loaded_id)
     attrs = image.attrs or {}
     if attrs.get('Os', '') + '/' + attrs.get('Architecture', '') != expected_platform:
@@ -347,32 +374,42 @@ def import_snapshot(item, client, platform, user, workdir, training_command=None
     if config.get('Volumes'):
         raise BuildFailure('system')
     profile = developer_profile_of_attrs(attrs)
+    ssh_profile = ssh_profile_of_attrs(attrs)
     # Normalize through the exact staging name so the retag below is exact.
-    client.api.tag(loaded_id, SNAPSHOT_CLEAN_REFERENCE, SNAPSHOT_CLEAN_TAG)
-    staged = client.images.get(SNAPSHOT_CLEAN_REFERENCE + ':' + SNAPSHOT_CLEAN_TAG)
-    if getattr(staged, 'id', loaded_id) != loaded_id:
-        raise BuildFailure('system')
-    if training_command is not None:
-        dockerfile_text = (
-            f'FROM {SNAPSHOT_CLEAN_REFERENCE}:{SNAPSHOT_CLEAN_TAG}\n'
-            'ENTRYPOINT []\n'
-            f'CMD {json.dumps(training_command, separators=(",", ":"))}\n'
-            f'USER {user}\n'
-            f'WORKDIR {workdir}\n'
-        )
-        context = _io.BytesIO(dockerfile_text.encode())
-        client.api.build(fileobj=context, rm=True, forcerm=True, tag=tag_for(item))
-    tag = tag_for(item)
-    repository, tag_name = tag.rsplit(':', 1)
-    client.api.tag(loaded_id, repository, tag_name)
-    run_command(['push', tag], lambda: False)
-    digest = client.images.get_registry_data(tag).attrs['Descriptor']['digest']
-    if not DIGEST.fullmatch(digest):
-        raise BuildFailure('system')
-    result = {'digest_ref': repository + '@' + digest, 'developer_profile': profile}
-    if training_command is not None:
-        return result
-    return result
+    clean_reference = f"{SNAPSHOT_CLEAN_REFERENCE}-{item['id']}-{item['attempt_id']}"
+    try:
+        client.api.tag(loaded_id, clean_reference, SNAPSHOT_CLEAN_TAG)
+        staged = client.images.get(clean_reference + ':' + SNAPSHOT_CLEAN_TAG)
+        if getattr(staged, 'id', loaded_id) != loaded_id:
+            raise BuildFailure('system')
+        if training_command is not None:
+            dockerfile_text = (
+                f'FROM {clean_reference}:{SNAPSHOT_CLEAN_TAG}\n'
+                'ENTRYPOINT []\n'
+                f'CMD {json.dumps(training_command, separators=(",", ":"))}\n'
+                f'USER {user}\n'
+                f'WORKDIR {workdir}\n'
+            )
+            context = _io.BytesIO(dockerfile_text.encode())
+            # Consume build output so Docker errors are surfaced before push.
+            _, build_logs = client.images.build(fileobj=context, rm=True, forcerm=True, tag=tag_for(item))
+            if not build_logs:
+                raise BuildFailure('system')
+        tag = tag_for(item)
+        repository, tag_name = tag.rsplit(':', 1)
+        if training_command is None:
+            client.api.tag(loaded_id, repository, tag_name)
+        run_command(['push', tag], lambda: False)
+        digest = client.images.get_registry_data(tag).attrs['Descriptor']['digest']
+        if not DIGEST.fullmatch(digest):
+            raise BuildFailure('system')
+        return {'digest_ref': repository + '@' + digest, 'developer_profile': profile,
+                'ssh_profile': ssh_profile}
+    finally:
+        with suppress(Exception):
+            client.images.remove(clean_reference + ':' + SNAPSHOT_CLEAN_TAG, force=False)
+        with suppress(Exception):
+            client.images.remove(f"dml-snapshot-{item['snapshot_operation_id']}:capture", force=False)
 
 
 def build(client, item, cancel):
@@ -391,12 +428,14 @@ def build(client, item, cancel):
         # import_snapshot returns a dict; tolerate a legacy plain digest string.
         if isinstance(imported, dict):
             digest_ref, snapshot_profile = imported['digest_ref'], imported.get('developer_profile')
+            snapshot_ssh_profile = imported.get('ssh_profile')
         else:
             digest_ref, snapshot_profile = imported, None
+            snapshot_ssh_profile = None
         check(cancel)
         tag = tag_for(item)
         return {'image_tag': tag, 'image_digest_ref': digest_ref, 'resolved_base_digest': digest_ref,
-                'developer_profile': snapshot_profile}
+                'developer_profile': snapshot_profile, 'ssh_profile': snapshot_ssh_profile}
     tag = tag_for(item)
     with tempfile.TemporaryDirectory(prefix='interactive-build-') as temporary:
         root = Path(temporary)

@@ -154,6 +154,8 @@ async def check_stalled_jobs() -> int:
     try:
         from app.services.interactive_workspace_service import expire
         marked += expire(db)
+        from app.services.snapshot_artifact_service import reconcile_stale
+        marked += reconcile_stale(db)
         _warn_unclaimed_interactive_builds(db)
         return marked
     finally:

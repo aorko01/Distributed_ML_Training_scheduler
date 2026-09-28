@@ -16,3 +16,7 @@ class SnapshotFence(Strict):
 class SnapshotComplete(SnapshotFence):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     size: int = Field(gt=0, le=8 * 1024 * 1024 * 1024)
+
+
+class SnapshotFailure(SnapshotFence):
+    code: str = Field(pattern=r"^[A-Z_]{2,40}$")

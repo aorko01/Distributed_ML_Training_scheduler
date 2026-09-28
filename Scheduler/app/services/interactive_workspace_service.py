@@ -6,7 +6,8 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from app.models.interactive_workspace_model import InteractiveWorkspace as Workspace, InteractiveImageRevision as Revision, new_id
-from app.models.job_model import Job, JobStatus
+from app.models.job_model import Job, JobStatus, JobPriority
+from app.models.interactive_workspace_model import WorkspaceSaveOperation as Save, WorkspaceTrainingSubmission as Submission
 from app.schemas.interactive_workspace_schema import resolve_base_image
 from app.utils.file_utils import save_to_object_store
 from app.utils.interactive_archive import validate_archive, empty_archive
@@ -35,6 +36,22 @@ def owned(db, owner, workspace_id):
 
 def revision(db, workspace_id):
     return db.query(Revision).filter_by(workspace_id=workspace_id).order_by(Revision.revision_number.desc()).first()
+
+
+def _fail_snapshot(db, rev, code, detail):
+    if rev.origin != 'SNAPSHOT':
+        return
+    op = db.query(Save).filter_by(id=rev.snapshot_operation_id).first()
+    if not op:
+        return
+    op.state = 'FAILED'
+    op.failure_code = code
+    op.failure_detail = detail
+    submission = db.query(Submission).filter_by(save_operation_id=op.id).first()
+    if submission:
+        submission.state = 'FAILED'
+        submission.failure_code = code
+        submission.failure_detail = detail
 
 
 def public(db, item):
@@ -168,6 +185,8 @@ def cancel(db, owner, workspace_id):
     item = owned(db, owner, workspace_id)
     rev = revision(db, item.id)
     changed = db.query(Revision).filter(Revision.id == rev.id, Revision.state.in_(['QUEUED', 'BUILDING'])).update({'state': 'CANCELLED', 'lease_until': None}, synchronize_session=False)
+    if changed:
+        _fail_snapshot(db, rev, 'PUBLISH_CANCELLED', 'Workspace image publication was cancelled.')
     db.commit()
     db.expire_all()
     if not changed and revision(db, item.id).state != 'CANCELLED':
@@ -194,6 +213,8 @@ def expire(db, timestamp=None):
             'builder_id': None, 'attempt_id': None, 'started_at': None, 'lease_until': None}, synchronize_session=False)
         count += changed
         if changed:
+            if terminal:
+                _fail_snapshot(db, rev, 'PUBLISH_FAILED', 'Could not publish the workspace image.')
             logger.warning(
                 "interactive_workspace lease_expired revision_id=%s builder_id=%s attempt_id=%s attempt_count=%s next_state=%s",
                 rev.id,
@@ -309,6 +330,42 @@ def mark_ready(db, attempt):
     if workspace.saved_revision_id is None or rev.origin == 'SNAPSHOT':
         values['saved_revision_id'] = rev.id
     db.query(Workspace).filter_by(id=rev.workspace_id).update(values)
+    if rev.origin == 'SNAPSHOT':
+        # Owner requests lock Runtime before Save. Keep that order here while
+        # publishing, so a new request cannot deadlock against the callback.
+        op_ref = db.query(Save).filter_by(id=rev.snapshot_operation_id, target_revision_id=rev.id).first()
+        if not op_ref:
+            raise HTTPException(409, 'Snapshot operation not found')
+        from app.models.interactive_runtime_model import InteractiveRuntime as Runtime
+        runtime = db.query(Runtime).filter_by(id=op_ref.runtime_id).with_for_update().first()
+        op = db.query(Save).filter_by(id=rev.snapshot_operation_id, target_revision_id=rev.id).with_for_update().first()
+        if not op:
+            raise HTTPException(409, 'Snapshot operation not found')
+        op.state = 'SUCCEEDED'
+        submission = db.query(Submission).filter_by(save_operation_id=op.id).with_for_update().first()
+        if submission and submission.job_id is None:
+            settings = submission.settings or {}
+            priority = JobPriority.REQUESTED if settings.get('priority') == 'REQUESTED' else JobPriority.NORMAL
+            job = Job(
+                id=new_id(), user_id=submission.owner_user_id,
+                source_kind='WORKSPACE_REVISION', source_workspace_id=workspace.id,
+                source_revision_id=rev.id, source_image_digest_ref=rev.image_digest_ref,
+                executable_image_digest_ref=rev.image_digest_ref,
+                name=settings['name'], command=settings['command'],
+                resume_command=settings.get('resume_command') or None,
+                docker_base_image=rev.image_digest_ref, image_tag=rev.image_digest_ref,
+                priority=priority, reason_for_priority=settings.get('reason_for_priority'),
+                status=JobStatus.VRAM_ESTIMATION_PENDING,
+            )
+            db.add(job)
+            db.flush()
+            submission.job_id = job.id
+            submission.state = 'JOB_CREATED'
+            # Release the interactive GPU once the immutable training image
+            # and normal batch job have both been recorded.
+            from app.services.scheduling.claims import stop_runtime
+            if runtime and runtime.generation == submission.generation:
+                stop_runtime(runtime)
     db.commit()
     logger.info(
         "interactive_workspace ready workspace_id=%s revision_id=%s builder_id=%s attempt_id=%s",
@@ -329,6 +386,8 @@ def failure(db, attempt):
     rev.excluded_builder_id = rev.builder_id
     rev.excluded_until = now() + timedelta(seconds=LEASE_SECONDS)
     rev.builder_id = rev.attempt_id = rev.started_at = rev.lease_until = None
+    if terminal and rev.origin == 'SNAPSHOT':
+        _fail_snapshot(db, rev, 'PUBLISH_FAILED', 'Could not publish the workspace image.')
     db.commit()
     logger.warning(
         "interactive_workspace build_failed revision_id=%s builder_id=%s attempt_id=%s failure_type=%s attempt_count=%s next_state=%s",

@@ -45,10 +45,18 @@ def submission_public(item):
     )}
 
 
-def create_save(db, owner, runtime_id, request_key, body, purpose="SAVE"):
+def create_save(db, owner, runtime_id, request_key, body, purpose="SAVE", commit=True):
     settings = Settings.from_env()
     if not settings.workspace_save:
         raise HTTPException(503, "Workspace saving is not enabled")
+    # Replays must keep working after TRAIN has stopped the runtime.
+    existing = db.query(Save).filter_by(runtime_id=runtime_id, owner_user_id=owner,
+                                        generation=body.generation, request_key=request_key).first()
+    if existing:
+        request_hash = _hash({"purpose": purpose, **body.model_dump()})
+        if existing.request_hash != request_hash or existing.purpose != purpose:
+            raise HTTPException(409, "Idempotency key reused")
+        return save_public(existing)
     runtime = _owned_runtime(db, owner, runtime_id)
     if body.generation != runtime.generation or body.parent_revision_id != runtime.revision_id:
         raise HTTPException(409, "Workspace source changed; reload before saving")
@@ -75,7 +83,10 @@ def create_save(db, owner, runtime_id, request_key, body, purpose="SAVE"):
         request_hash=request_hash, state="REQUESTED",
     )
     db.add(item)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(item)
     return save_public(item)
 
@@ -94,16 +105,22 @@ def create_submission(db, owner, runtime_id, request_key, body):
     # without the durable snapshot pipeline.
     if not Settings.from_env().workspace_save:
         raise HTTPException(503, "Workspace saving is not enabled")
+    request_hash = _hash(body.model_dump())
+    existing = db.query(Submission).filter_by(runtime_id=runtime_id, owner_user_id=owner,
+                                              generation=body.generation, request_key=request_key).first()
+    if existing:
+        if existing.request_hash != request_hash:
+            raise HTTPException(409, "Idempotency key reused")
+        return submission_public(existing)
     runtime = _owned_runtime(db, owner, runtime_id)
     if body.generation != runtime.generation or body.parent_revision_id != runtime.revision_id:
         raise HTTPException(409, "Workspace source changed; reload before submitting")
-    request_hash = _hash(body.model_dump())
     existing = db.query(Submission).filter_by(runtime_id=runtime.id, generation=runtime.generation, request_key=request_key).first()
     if existing:
         if existing.request_hash != request_hash:
             raise HTTPException(409, "Idempotency key reused")
         return submission_public(existing)
-    save = create_save(db, owner, runtime_id, request_key, body, purpose="TRAIN")
+    save = create_save(db, owner, runtime_id, request_key, body, purpose="TRAIN", commit=False)
     item = Submission(
         id=new_id(), owner_user_id=owner, workspace_id=runtime.workspace_id, runtime_id=runtime.id,
         generation=runtime.generation, save_operation_id=save["id"], request_key=request_key,

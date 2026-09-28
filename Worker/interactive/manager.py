@@ -7,6 +7,7 @@ import secrets
 import shutil
 import threading
 import time
+from scheduler_protocol import Fence
 from Access_Container.interactive_access.protocol import (
     Type,
     json_bytes,
@@ -154,6 +155,47 @@ class Manager:
         )
         self.api.event(record, phase, health, code, ssh if ssh is not None else self.ssh_report)
         return record
+
+    def capture_pending(self, record):
+        """Capture a requested live filesystem and hand it to the image builder."""
+        from . import snapshot
+        from object_store import ObjectStore
+
+        fence = Fence.from_assignment(record).body()
+        offered = self.api.call("saves/pending", fence).get("operation")
+        if not offered:
+            return
+        operation_id = offered["id"]
+        capability = self.api.call(f"saves/{operation_id}/upload-capability", fence)
+        try:
+            snapshot.capture(
+                self.ops, self.coordinator, offered["workspace_id"], operation_id,
+                record, time.monotonic, state_dir=self.coordinator.path,
+            )
+            journal = snapshot.load_snapshot(self.coordinator.path, operation_id) or {}
+            artifact = journal.get("artifact") or {}
+            path = journal.get("artifact_path")
+            if not path or not artifact.get("sha256") or not artifact.get("size"):
+                raise snapshot.CaptureDenied("CAPTURE_FAILED", "artifact missing")
+            if artifact["size"] > 8 * 1024 * 1024 * 1024:
+                raise snapshot.CaptureDenied("SNAPSHOT_TOO_LARGE")
+            key = capability["object_key_prefix"] + artifact["sha256"] + ".tar.gz"
+            if not ObjectStore(bucket=capability["bucket"]).upload_file(key, path):
+                raise snapshot.CaptureDenied("UPLOAD_FAILED")
+            self.api.call(f"saves/{operation_id}/complete", {
+                **fence, "sha256": artifact["sha256"], "size": artifact["size"],
+            })
+        except Exception as exc:
+            logger.exception("Workspace save failed operation_id=%s", operation_id)
+            code = exc.code if isinstance(exc, snapshot.CaptureDenied) else "CAPTURE_FAILED"
+            with suppress(Exception):
+                self.api.call(f"saves/{operation_id}/failure", {**fence, "code": code})
+        finally:
+            journal = snapshot.load_snapshot(self.coordinator.path, operation_id) or {}
+            path = journal.get("artifact_path")
+            if path:
+                with suppress(OSError):
+                    os.unlink(path)
 
     def run(self, record):
         asyncio.run(self.execute(record))
@@ -351,6 +393,7 @@ class Manager:
             self.coordinator.mode = "INTERACTIVE_ACTIVE"
             stage = "healthy"
             session_start = time.monotonic()
+            next_save_check = 0.0
             while authority():
                 limit = max_duration_seconds(ssh_active=bool(self.ssh_report.get("ready")))
                 if limit and time.monotonic() - session_start >= limit:
@@ -390,6 +433,12 @@ class Manager:
                     "access": True,
                     "endpoint": True,
                 }
+                if time.monotonic() >= next_save_check:
+                    next_save_check = time.monotonic() + 3
+                    try:
+                        await asyncio.to_thread(self.capture_pending, record)
+                    except Exception:
+                        logger.warning("Workspace save poll failed assignment_id=%s", assignment_id, exc_info=True)
                 await asyncio.sleep(1)
         except Exception as exc:
             code = exc.code if isinstance(exc, RuntimeFailure) else "START_FAILED"

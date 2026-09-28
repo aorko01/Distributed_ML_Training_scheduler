@@ -466,7 +466,8 @@ class JobExecutor:
         with self._job_logs_lock:
             self._job_logs.pop(job_id, None)
 
-    def handle_training(self, job_id: str, image_name: str, command: str | None = None):
+    def handle_training(self, job_id: str, image_name: str, command: str | None = None,
+                        reset_entrypoint: bool = False):
         started_at = time.time()
         logger.info("Training job received for job %s.", job_id)
         record_event("info", f"Job {job_id} training started")
@@ -504,10 +505,12 @@ class JobExecutor:
             job_id, image_name, job_output_dir, mount_target, store,
             monitor, started_at,
             command_args=["sh", "-c", command] if command else None,
+            **({"reset_entrypoint": True} if reset_entrypoint else {}),
         )
 
     def handle_retry(self, job_id: str, image_name: str,
-                     resume_command: str | None, original_command: str | None):
+                     resume_command: str | None, original_command: str | None,
+                     reset_entrypoint: bool = False):
         started_at = time.time()
         logger.info("Retry job received for job %s.", job_id)
         record_event("info", f"Job {job_id} retry started")
@@ -521,6 +524,7 @@ class JobExecutor:
             resume_result = self._resume_attempt(
                 job_id, image_name, job_output_dir, store,
                 resume_command, started_at,
+                **({"reset_entrypoint": True} if reset_entrypoint else {}),
             )
             if resume_result is None:
                 return
@@ -558,11 +562,13 @@ class JobExecutor:
 
         logger.info("Job %s: starting fresh training run.", job_id)
         record_event("info", f"Job {job_id} starting fresh training run")
-        self.handle_training(job_id, image_name, original_command)
+        self.handle_training(job_id, image_name, original_command,
+                             **({"reset_entrypoint": True} if reset_entrypoint else {}))
 
     def _resume_attempt(self, job_id: str, image_name: str,
                         job_output_dir: str, store: ObjectStore,
-                        resume_command: str, started_at: float):
+                        resume_command: str, started_at: float,
+                        reset_entrypoint: bool = False):
         """Try to continue a job from its last checkpoints.
 
         If the output dir from a previous run is still on disk (this worker
@@ -610,6 +616,7 @@ class JobExecutor:
             monitor, started_at,
             command_args=["sh", "-c", resume_command],
             finalize=False,
+            **({"reset_entrypoint": True} if reset_entrypoint else {}),
         )
 
         if success:
@@ -657,12 +664,14 @@ class JobExecutor:
                               job_output_dir: str, mount_target: str,
                               store: ObjectStore, monitor: OutputFileMonitor,
                               started_at: float, command_args: list[str] | None = None,
-                              finalize: bool = True):
+                              finalize: bool = True, reset_entrypoint: bool = False):
         cmd = [
             "docker", "run", "--rm", "--gpus", "all",
                 *self._managed_launch_args(job_id),
             *self._container_user_args(),
+            *(["-e", "HOME=/home/dml"] if reset_entrypoint else []),
             "-v", f"{_docker_host_path(job_output_dir)}:{mount_target}",
+            *(["--entrypoint", ""] if reset_entrypoint else []),
             image_name,
         ]
         if command_args:
@@ -884,11 +893,13 @@ class JobExecutor:
                 save_running_job(job_id)
                 # The entry command travels with the job: images are built
                 # without one and the command is applied at run time.
-                self.handle_training(job_id, image_name, job.get("command"))
+                self.handle_training(job_id, image_name, job.get("command"),
+                                     **({"reset_entrypoint": True} if job.get("source_kind") == "WORKSPACE_REVISION" else {}))
             elif flag == "retry":
                 save_running_job(job_id)
                 self.handle_retry(job_id, image_name, job.get("resume_command"),
-                                  job.get("command"))
+                                  job.get("command"),
+                                  **({"reset_entrypoint": True} if job.get("source_kind") == "WORKSPACE_REVISION" else {}))
             else:
                 logger.warning("Unknown job flag '%s' for job %s.", flag, job_id)
                 try:
@@ -933,7 +944,8 @@ class JobExecutor:
                 return False
 
             self.handle_retry(job_id, image_name, job.get("resume_command"),
-                              job.get("command"))
+                              job.get("command"),
+                              **({"reset_entrypoint": True} if job.get("source_kind") == "WORKSPACE_REVISION" else {}))
             return True
         except Exception:
             logger.exception("Failed to resume persisted job %s", job_id)

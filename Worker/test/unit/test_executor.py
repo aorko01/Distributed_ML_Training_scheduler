@@ -524,6 +524,24 @@ class TestRunContainer:
         assert mock_final.call_args[0][5] is True
         executor.api.send_logs.assert_called_once_with("j", ["epoch 1"])
 
+    def test_snapshot_training_resets_interactive_entrypoint(self, executor):
+        store = MagicMock()
+        monitor = MagicMock()
+        with (
+            patch.object(executor_module.subprocess, "Popen",
+                         return_value=self._popen([], 0)) as popen,
+            patch.object(JobExecutor, "_finalize_job"),
+        ):
+            executor._run_container("j", "snapshot@sha256:abc", "/tmp/out", "/workspace",
+                                    store, monitor, 0.0,
+                                    command_args=["sh", "-c", "python train.py"],
+                                    reset_entrypoint=True)
+        argv = popen.call_args.args[0]
+        image_at = argv.index("snapshot@sha256:abc")
+        assert ["-e", "HOME=/home/dml"] == argv[argv.index("HOME=/home/dml") - 1:argv.index("HOME=/home/dml") + 1]
+        assert argv[image_at - 2:image_at] == ["--entrypoint", ""]
+        assert argv[image_at + 1:] == ["sh", "-c", "python train.py"]
+
     def test_nonzero_exit_is_user_failure(self, executor):
         store = MagicMock()
         store.download.return_value = None
@@ -751,6 +769,19 @@ class TestProcessJob:
         mock_train.assert_called_once_with(
             "j1", "repo/j1:build-attempt-1", "python train.py"
         )
+
+    def test_snapshot_job_requests_entrypoint_reset(self, executor):
+        with (
+            patch.object(JobExecutor, "pull_docker_image", return_value=True),
+            patch.object(executor_module, "save_running_job"),
+            patch.object(JobExecutor, "handle_training") as train,
+        ):
+            executor.process_job({"id": "j1", "flag": "training",
+                                  "source_kind": "WORKSPACE_REVISION",
+                                  "image_tag": "snapshot@sha256:abc",
+                                  "command": "python train.py"})
+        train.assert_called_once_with("j1", "snapshot@sha256:abc", "python train.py",
+                                      reset_entrypoint=True)
 
     def test_vram_flag(self, executor):
         with (

@@ -298,10 +298,10 @@ export default function InteractiveDetails() {
                 >
                   Check connection
                 </button>
-                <button className="btn btn-secondary" disabled title="Saving is not available in this phase">Save as new revision</button>
+                {runtime?.save_enabled && <Link className="btn btn-secondary" to={`/interactive/${id}/editor`}>Open editor to save or train</Link>}
                 {connectionState && <span role="status" className="iw-muted">{connectionState}</span>}
               </div>
-              <p className="iw-muted"><CheckCircle2 size={13} style={{ verticalAlign: '-2px' }} /> Live only — Stop ends browser + SSH access immediately.</p>
+              <p className="iw-muted"><CheckCircle2 size={13} style={{ verticalAlign: '-2px' }} /> {runtime?.save_enabled ? 'Save or submit the live changes in the editor before stopping.' : 'Live only — Stop ends browser + SSH access immediately.'}</p>
             </section>
           )}
 

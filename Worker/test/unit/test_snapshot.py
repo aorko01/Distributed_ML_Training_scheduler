@@ -86,10 +86,9 @@ def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
     )
     # Exact-label pause: pause called on the labelled workload, never on the daemon.
     ops.get_workload.assert_called_once_with(record())
-    workload.pause.assert_called_once_with(timeout=30)
+    workload.pause.assert_called_once_with()
     workload.commit.assert_called_once()
-    commit_tag = workload.commit.call_args.args[0]
-    assert commit_tag.startswith("dml-snapshot-op1:")
+    assert workload.commit.call_args.kwargs == {"repository": "dml-snapshot-op1", "tag": "capture", "pause": False}
     # Config preserved for the Builder validation step.
     assert result["image_id"] == "sha256:image"
     assert result["config"]["User"] == "10001:10001"
@@ -100,7 +99,7 @@ def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
     # inside _upload unit tests, not here).
     assert result["artifact"]["sha256"] == "f" * 64
     # Gate restored (unpause) even after success since commit completed.
-    assert workload.unpause.called or not workload.paused
+    workload.unpause.assert_called_once_with()
     assert completed == [("op1", "ws1", result["artifact"])]
     # A capture record was journaled with attempt metadata.
     persisted = coordinator.persist.call_args_list[0].args[0]
@@ -174,7 +173,7 @@ def test_capture_timeout_unpauses_and_denies(monkeypatch):
     with pytest.raises(CaptureDenied) as exc:
         capture(ops, coordinator, "ws1", "op1", record(), frozen_time)
     assert exc.value.code == "CAPTURE_TIMEOUT"
-    workload.unpause.assert_called_once_with(timeout=10)
+    workload.unpause.assert_called_once_with()
     workload.commit.assert_not_called()
 
 
@@ -205,3 +204,37 @@ def test_stale_capture_never_publishes(tmp_path):
     assert snapshot.load_snapshot(tmp_path, "op-old")["generation"] == 1
     assert snapshot.load_snapshot(tmp_path, "op-new")["generation"] == 2
 
+
+def test_manager_hands_capture_to_builder_queue(monkeypatch, tmp_path):
+    from interactive.manager import Manager
+    import object_store
+
+    rec = record()
+    rec["instance_id"] = "instance-1"
+    coordinator = MagicMock()
+    coordinator.path = tmp_path
+    api = MagicMock()
+    api.call.side_effect = [
+        {"operation": {"id": "op1", "workspace_id": "ws1", "parent_revision_id": "rev1"}},
+        {"capture_attempt_id": "attempt1", "bucket": "uploads",
+         "object_key_prefix": "snapshots/ws1/rev1/op1/"},
+        {"state": "PUBLISH_QUEUED"},
+    ]
+    ops = MagicMock()
+    monkeypatch.setattr(snapshot, "capture", MagicMock())
+    monkeypatch.setattr(snapshot, "load_snapshot", lambda *_: {
+        "artifact": {"sha256": "a" * 64, "size": 12},
+        "artifact_path": str(tmp_path / "op1.tar.gz"),
+    })
+    (tmp_path / "op1.tar.gz").write_bytes(b"artifact")
+    store = MagicMock()
+    store.upload_file.return_value = True
+    monkeypatch.setattr(object_store, "ObjectStore", lambda bucket: store)
+
+    Manager(coordinator, api, ops).capture_pending(rec)
+
+    assert api.call.call_args_list[0].args[0] == "saves/pending"
+    assert api.call.call_args_list[1].args[0] == "saves/op1/upload-capability"
+    assert store.upload_file.call_args.args[0] == "snapshots/ws1/rev1/op1/" + "a" * 64 + ".tar.gz"
+    assert api.call.call_args_list[2].args[0] == "saves/op1/complete"
+    assert not (tmp_path / "op1.tar.gz").exists()

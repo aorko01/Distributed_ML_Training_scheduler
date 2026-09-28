@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { interactive } from '../../services/interactive';
 import { WorkspaceConnection } from '../../services/workspaceProtocol';
 import { initialSnapshot, reducer } from './workspaceReducer';
@@ -43,6 +43,13 @@ export default function WorkspaceIDE() {
   const [lineCol, setLineCol] = useState('Ln 1, Col 1');
   const [savingAll, setSavingAll] = useState(false);
   const [durableState, setDurableState] = useState<string | null>(null);
+  const [trainingModal, setTrainingModal] = useState(false);
+  const [trainingName, setTrainingName] = useState('');
+  const [trainingCommand, setTrainingCommand] = useState('python train.py');
+  const [resumeCommand, setResumeCommand] = useState('');
+  const [trainingBusy, setTrainingBusy] = useState(false);
+  const [trainingJobId, setTrainingJobId] = useState<string | null>(null);
+  const [submission, setSubmission] = useState<{ runtimeKey: string; id: string } | null>(null);
   const [maxTerm, setMaxTerm] = useState(false);
   const [prompt, setPrompt] = useState<null | { kind: 'createFile' | 'createFolder' | 'rename' | 'delete' | 'closeDirty' | 'conflict' | 'stop'; dir?: string; path?: string }>(null);
   const [promptValue, setPromptValue] = useState('');
@@ -85,6 +92,37 @@ export default function WorkspaceIDE() {
     try { connRef.current?.closePty(); } catch { /* ignore */ }
   }, []);
   const dirtyCount = snap.dirtyCount;
+  useEffect(() => { setTrainingJobId(null); setDurableState(null); }, [id]);
+  useEffect(() => {
+    const rt = snap.runtime;
+    if (!rt) return;
+    const storageKey = `dml-submission-id:${rt.id}:${rt.generation}`;
+    const runtimeKey = `${rt.id}:${rt.generation}`;
+    const id = submission?.runtimeKey === runtimeKey ? submission.id : sessionStorage.getItem(storageKey);
+    if (!id) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const status = await interactive.trainingStatus(id);
+        if (cancelled) return;
+        setDurableState(status.state);
+        if (status.state === 'JOB_CREATED' && status.job_id) {
+          setTrainingJobId(status.job_id);
+          sessionStorage.removeItem(`dml-submit-key:${rt.id}:${rt.generation}`);
+        } else if (status.state === 'FAILED') {
+          sessionStorage.removeItem(`dml-submit-key:${rt.id}:${rt.generation}`);
+          dispatch({ type: 'notice', notice: notice('error', status.failure_detail || 'Training submission failed') });
+        } else {
+          timer = window.setTimeout(() => void poll(), 3000);
+        }
+      } catch {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), 5000);
+      }
+    };
+    void poll();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [snap.runtime?.id, snap.runtime?.generation, submission]);
   useBeforeUnloadDirtyGuard(dirtyCount > 0);
   useRouteDirtyGuard(dirtyCount > 0);
   const connected = snap.phase === 'connected';
@@ -246,7 +284,7 @@ export default function WorkspaceIDE() {
     }
   }, [models, snap.files]);
 
-  const saveAll = useCallback(async () => {
+  const saveAll = useCallback(async (): Promise<boolean> => {
     setSavingAll(true);
     let ok = 0, failed = 0;
     for (const path of Object.keys(snap.files)) {
@@ -254,11 +292,13 @@ export default function WorkspaceIDE() {
       const currentText = models.getText(path) ?? file.savedText;
       if (currentText === file.savedText) continue;
       const done = await doSave(path);
-      if (done) ok += 1; else failed += 1;
+      if (done && models.getText(path) === currentText) ok += 1;
+      else failed += 1;
     }
     setSavingAll(false);
     if (failed > 0) dispatch({ type: 'notice', notice: notice('error', `Save All finished with ${failed} failure(s)`) });
     else if (ok > 0) dispatch({ type: 'notice', notice: notice('success', `Saved ${ok} file(s) to live container`) });
+    return failed === 0;
   }, [doSave, models, snap.files]);
 
   const reconnect = useCallback(() => { dispatch({ type: 'phase', phase: 'reconnecting', message: 'Reconnecting…' }); void connectRef.current?.(snap.attempt + 1); }, [snap.attempt]);
@@ -476,6 +516,7 @@ export default function WorkspaceIDE() {
   const saveForLater = useCallback(async () => {
     const rt = snapRef.current.runtime;
     if (!rt) return;
+    if (!(await saveAll())) return;
     const storageKey = `dml-save-key:${rt.id}:${rt.generation}`;
     let key = sessionStorage.getItem(storageKey);
     if (!key) {
@@ -493,8 +534,10 @@ export default function WorkspaceIDE() {
           if (['REQUESTED', 'CAPTURING', 'UPLOADING', 'PUBLISH_QUEUED', 'PUBLISHING'].includes(st.state)) {
             window.setTimeout(() => void poll(), 3000);
           } else if (st.state === 'SUCCEEDED') {
+            sessionStorage.removeItem(storageKey);
             dispatch({ type: 'notice', notice: notice('success', 'Revision saved. Start a new runtime from it to continue.') });
           } else if (st.state === 'FAILED') {
+            sessionStorage.removeItem(storageKey);
             dispatch({ type: 'notice', notice: notice('error', st.failure_detail || 'Save failed') });
           }
         } catch { /* reload-safe: status stays visible on next load */ }
@@ -504,11 +547,17 @@ export default function WorkspaceIDE() {
       setDurableState(null);
       dispatch({ type: 'notice', notice: notice('error', e instanceof Error ? e.message : 'Save failed') });
     }
-  }, []);
+  }, [saveAll]);
 
   const submitTraining = useCallback(async () => {
     const rt = snapRef.current.runtime;
-    if (!rt) return;
+    if (!rt || trainingBusy) return;
+    if (!trainingName.trim() || !trainingCommand.trim()) {
+      dispatch({ type: 'notice', notice: notice('error', 'Enter a job name and training script command.') });
+      return;
+    }
+    setTrainingBusy(true);
+    if (!(await saveAll())) { setTrainingBusy(false); return; }
     const storageKey = `dml-submit-key:${rt.id}:${rt.generation}`;
     let key = sessionStorage.getItem(storageKey);
     if (!key) {
@@ -518,20 +567,26 @@ export default function WorkspaceIDE() {
     setDurableState('Saving');
     try {
       const sub = await interactive.submitTraining(rt.id, key, rt.generation, rt.revision_id, {
-        name: `${snapRef.current.workspace?.name ?? 'workspace'} training`,
-        command: 'python train.py',
+        name: trainingName.trim(),
+        command: trainingCommand.trim(),
+        resume_command: resumeCommand.trim() || null,
       });
       setDurableState(sub.state);
-      dispatch({ type: 'notice', notice: notice('info', 'Training submission queued. Track it under training submissions.') });
+      setTrainingModal(false);
+      sessionStorage.setItem(`dml-submission-id:${rt.id}:${rt.generation}`, sub.id);
+      setSubmission({ runtimeKey: `${rt.id}:${rt.generation}`, id: sub.id });
     } catch (e) {
       setDurableState(null);
       dispatch({ type: 'notice', notice: notice('error', e instanceof Error ? e.message : 'Submit failed') });
+    } finally {
+      setTrainingBusy(false);
     }
-  }, []);
+  }, [trainingBusy, trainingName, trainingCommand, resumeCommand, saveAll]);
 
   return (
     <div className="ide-shell" data-testid="workspace-ide">
-      <IDETitleBar workspaceId={id ?? ''} name={header.name} runtimeState={header.runtimeState} liveOnly phase={snap.phase} dirtyCount={dirtyCount} saving={savingAll} onSaveAll={() => void saveAll()} onReconnect={reconnect} onStop={() => void stopRuntime()} internetEnabled={snap.runtime?.allow_internet} packageCapable={snap.runtime?.package_capable} developerMode={snap.runtime?.developer_mode} saveEnabled={snap.runtime?.editor_capable === true && snap.runtime?.save_enabled === true} submitEnabled={snap.runtime?.editor_capable === true && snap.runtime?.training_submission_enabled === true} saveState={durableState} onSaveForLater={() => void saveForLater()} onSubmitTraining={() => void submitTraining()} />
+      <IDETitleBar workspaceId={id ?? ''} name={header.name} runtimeState={header.runtimeState} liveOnly phase={snap.phase} dirtyCount={dirtyCount} saving={savingAll} onSaveAll={() => void saveAll()} onReconnect={reconnect} onStop={() => void stopRuntime()} internetEnabled={snap.runtime?.allow_internet} packageCapable={snap.runtime?.package_capable} developerMode={snap.runtime?.developer_mode} saveEnabled={snap.runtime?.editor_capable === true && snap.runtime?.save_enabled === true} submitEnabled={snap.runtime?.editor_capable === true && snap.runtime?.training_submission_enabled === true} saveState={durableState} onSaveForLater={() => void saveForLater()} onSubmitTraining={() => { setTrainingName(`${snapRef.current.workspace?.name ?? 'workspace'} training`); setTrainingModal(true); }} />
+      {trainingJobId && <div className="ide-banner" role="status">Training queued from your saved image. <Link to={`/jobs/${trainingJobId}`}>View job</Link></div>}
       {(snap.phase === 'disconnected' || snap.phase === 'reconnecting' || snap.phase === 'fatal') && (
         <div className="ide-banner" role="alert">
           <span>{snap.message}{snap.closeCode !== null ? ` (code ${snap.closeCode})` : ''} · Unsaved work is kept in memory.</span>
@@ -597,6 +652,13 @@ export default function WorkspaceIDE() {
       </div>
       <StatusBar phase={snap.phase} pty={snap.pty} dirtyCount={dirtyCount} active={snap.active} lineCol={lineCol} readOnly={snap.readOnly} connected={connected} />
       <ToastRegion notices={snap.notices} onDismiss={(nid) => dispatch({ type: 'dismissNotice', id: nid })} />
+      {trainingModal && <Dialog title="Submit for training" onClose={() => { if (!trainingBusy) setTrainingModal(false); }} onConfirm={() => void submitTraining()} confirmLabel={trainingBusy ? 'Submitting…' : 'Save image and start training'}>
+        <p>The current container files and installed packages will be saved into the training image.</p>
+        <label>Job name<input autoFocus value={trainingName} maxLength={120} onChange={(e) => setTrainingName(e.target.value)} /></label>
+        <label>Training script command<input value={trainingCommand} maxLength={1024} onChange={(e) => setTrainingCommand(e.target.value)} placeholder="python train.py --epochs 10" /></label>
+        <label>Resume script command (optional)<input value={resumeCommand} maxLength={1024} onChange={(e) => setResumeCommand(e.target.value)} placeholder="python resume.py --checkpoint checkpoint.pt" /></label>
+        {dirtyCount > 0 && <p>{dirtyCount} editor file(s) will be written to the container before capture.</p>}
+      </Dialog>}
       {prompt?.kind === 'createFile' && <Dialog title="New file" onClose={() => setPrompt(null)} onConfirm={() => void confirmPrompt()} confirmLabel="Create"><label>File name<input autoFocus value={promptValue} onChange={(e) => setPromptValue(e.target.value)} placeholder="example.py" /></label></Dialog>}
       {prompt?.kind === 'createFolder' && <Dialog title="New folder" onClose={() => setPrompt(null)} onConfirm={() => void confirmPrompt()} confirmLabel="Create"><label>Folder name<input autoFocus value={promptValue} onChange={(e) => setPromptValue(e.target.value)} placeholder="src" /></label></Dialog>}
       {prompt?.kind === 'rename' && <Dialog title={`Rename ${prompt.path}`} onClose={() => setPrompt(null)} onConfirm={() => void confirmPrompt()} confirmLabel="Rename"><label>New name<input autoFocus value={promptValue} onChange={(e) => setPromptValue(e.target.value)} /></label></Dialog>}

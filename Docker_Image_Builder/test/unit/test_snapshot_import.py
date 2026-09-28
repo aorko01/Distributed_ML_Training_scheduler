@@ -48,7 +48,9 @@ def client_for(attrs_value):
 
 
 def test_snapshot_import_happy_path_and_portable_tag():
-    client = client_for(attrs())
+    image_attrs = attrs()
+    image_attrs['Config']['Labels'] = {'io.dml.developer-profile': 'v1', 'io.dml.vscode-ssh-profile': 'v1'}
+    client = client_for(image_attrs)
     with patch.object(build, 'download', return_value=iter([b'artifact-bytes'])):
         # hash/size in item() are placeholders; artifact bytes differ so drop
         # verification for the happy path (verified explicitly below).
@@ -58,9 +60,13 @@ def test_snapshot_import_happy_path_and_portable_tag():
         with patch.object(build, 'run_command', return_value=''):
             result = build.import_snapshot(it, client, 'linux/amd64', '10001:10001', '/workspace')
     client.images.load.assert_called_once()
-    client.api.tag.assert_any_call('sha256:' + 'b' * 64, build.SNAPSHOT_CLEAN_REFERENCE, build.SNAPSHOT_CLEAN_TAG)
+    client.api.tag.assert_any_call('sha256:' + 'b' * 64,
+                                   build.SNAPSHOT_CLEAN_REFERENCE + '-' + it['id'] + '-' + it['attempt_id'],
+                                   build.SNAPSHOT_CLEAN_TAG)
     digest = result['digest_ref'] if isinstance(result, dict) else result
     assert digest.endswith('@sha256:' + 'c' * 64)
+    assert result['developer_profile'] == 'v1'
+    assert result['ssh_profile'] == 'v1'
 
 
 def test_snapshot_hash_mismatch_rejected():
@@ -127,6 +133,7 @@ def test_snapshot_unexpected_load_identity_rejected():
 
 def test_training_derivation_sets_exec_form_cmd():
     client = client_for(attrs())
+    client.images.build.return_value = (MagicMock(), [{'stream': 'built'}])
     it = item()
     it.pop('snapshot_sha256')
     it.pop('snapshot_size')
@@ -137,8 +144,8 @@ def test_training_derivation_sets_exec_form_cmd():
                 training_command=['python', 'train.py', '--epochs', '10'],
             )
     assert result is not None
-    client.api.build.assert_called_once()
-    kwargs = client.api.build.call_args.kwargs
+    client.images.build.assert_called_once()
+    kwargs = client.images.build.call_args.kwargs
     context = kwargs['fileobj']
     context.seek(0)
     dockerfile = context.read().decode()
@@ -161,7 +168,27 @@ def test_training_derivation_rejects_non_python_tokens():
                 training_command=['bash', 'train.sh'],
             )
     assert exc.value.kind == 'user'
-    client.api.build.assert_not_called()
+    client.images.build.assert_not_called()
+
+
+def test_large_snapshot_spools_to_disk_for_docker_load(monkeypatch):
+    client = client_for(attrs())
+    it = item()
+    it.pop('snapshot_sha256')
+    it.pop('snapshot_size')
+    monkeypatch.setattr(build, 'SNAPSHOT_MEMORY_LIMIT', 4)
+    def docker_command(args, _cancel):
+        if args[0] == 'load':
+            from pathlib import Path
+            assert Path(args[2]).read_bytes() == b'artifact-bytes'
+            return 'Loaded image: dml-snapshot-op1:capture\n'
+        return ''
+    with patch.object(build, 'download', return_value=iter([b'art', b'ifact-bytes'])), \
+         patch.object(build, 'run_command', side_effect=docker_command) as command:
+        result = build.import_snapshot(it, client, 'linux/amd64', '10001:10001', '/workspace')
+    assert result['digest_ref'].endswith('@sha256:' + 'c' * 64)
+    client.images.load.assert_not_called()
+    assert command.call_args_list[0].args[0][0] == 'load'
 
 
 def test_build_dispatches_snapshot_origin_without_zip_extractor(tmp_path):

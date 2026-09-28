@@ -20,7 +20,6 @@ from pathlib import Path
 logger = logging.getLogger("managed_worker")
 
 CAPTURE_PAUSED_SECONDS = 300
-CAPTURE_UNPAUSE_SECONDS = 10
 UPLOAD_VERIFY_CHUNK = 1 << 20
 HEARTBEAT_GRACE_SECONDS = 20
 
@@ -100,7 +99,7 @@ def _pause_with_timeout(workload, seconds):
 
     def run():
         try:
-            workload.pause(timeout=seconds)
+            workload.pause()
             outcome["ok"] = True
         except Exception as exc:  # noqa: BLE001 - surfaced as CAPTURE_TIMEOUT
             outcome["error"] = exc
@@ -111,7 +110,7 @@ def _pause_with_timeout(workload, seconds):
     thread.start()
     if not done.wait(seconds):
         with suppress(Exception):
-            workload.unpause(timeout=CAPTURE_UNPAUSE_SECONDS)
+            workload.unpause()
         raise CaptureDenied("CAPTURE_TIMEOUT", "workload pause deadline exceeded")
     if not outcome.get("ok"):
         raise CaptureDenied("CAPTURE_TIMEOUT", "workload pause failed")
@@ -189,16 +188,22 @@ def capture(ops, coordinator, workspace_id, operation_id, record, clock,
                          "snapshot_operation_id": operation_id,
                          "snapshot_state": "capturing"})
     paused = False
+    image_id = None
+    tag = staging_tag(operation_id)
     try:
         _pause_with_timeout(workload, CAPTURE_PAUSED_SECONDS)
         paused = True
         attrs = getattr(workload, "attrs", None) or {}
         config = _check_config(dict(attrs.get("Config") or {}))
-        tag = staging_tag(operation_id)
-        image = workload.commit(tag)
+        repository, tag_name = tag.rsplit(":", 1)
+        image = workload.commit(repository=repository, tag=tag_name, pause=False)
         image_id = getattr(image, "id", None) or ""
         if not image_id:
             raise CaptureDenied("CAPTURE_FAILED", "commit returned no image id")
+        # The committed image is immutable. Resume the user's shell before
+        # exporting/compressing what may be several gigabytes of layers.
+        workload.unpause()
+        paused = False
         journal_snapshot(state_dir, operation_id, {"image_id": image_id, "state": "committed"})
         coordinator.persist({**coordinator.get(assignment_id),
                              "snapshot_operation_id": operation_id,
@@ -215,9 +220,6 @@ def capture(ops, coordinator, workspace_id, operation_id, record, clock,
                              "snapshot_state": "uploaded",
                              "snapshot_artifact": artifact})
         complete(ops.client, operation_id, workspace_id, artifact)
-        with suppress(Exception):
-            ops.client.images.remove(tag, force=False)
-        ops.remove_exact(record, image_id)
         if progress:
             with suppress(Exception):
                 progress(record, "SNAPSHOT_UPLOADED")
@@ -225,4 +227,9 @@ def capture(ops, coordinator, workspace_id, operation_id, record, clock,
     finally:
         if paused:
             with suppress(Exception):
-                workload.unpause(timeout=CAPTURE_UNPAUSE_SECONDS)
+                workload.unpause()
+        if image_id:
+            with suppress(Exception):
+                ops.client.images.remove(tag, force=False)
+            with suppress(Exception):
+                ops.client.images.remove(image_id, force=False)

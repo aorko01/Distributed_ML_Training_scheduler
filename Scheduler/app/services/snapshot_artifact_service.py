@@ -1,18 +1,21 @@
-"""Private snapshot artifact handoff (plan.md Phase 2b).
+"""Fenced snapshot artifact handoff between Worker and Builder.
 
-Browser never sees capabilities: only the fenced Worker holding the live
-assignment gets a single-use staging key, and only the Builder reads it back.
-Generic object upload/presign routes are never used for snapshots.
+The browser never receives the object key. A live Worker receives an
+operation-scoped prefix; the Builder receives the immutable hash-addressed
+key only after the Worker reports completion.
 """
 import re
+from datetime import datetime, timezone, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import func
 
 from app.models.interactive_runtime_model import WorkerAssignment as Assignment
+from app.models.interactive_runtime_model import InteractiveRuntime as Runtime
 from app.models.interactive_workspace_model import (
     InteractiveImageRevision as Revision,
     WorkspaceSaveOperation as Save,
+    WorkspaceTrainingSubmission as Submission,
     new_id,
 )
 
@@ -50,13 +53,15 @@ def _fenced_save(db, worker_id, operation_id, assignment_id, attempt_token, gene
         or assignment.generation != generation
         or op.generation != generation
         or assignment.released_at
+        or (assignment.lease_until.replace(tzinfo=timezone.utc)
+            if assignment.lease_until.tzinfo is None else assignment.lease_until) <= datetime.now(timezone.utc)
     ):
         raise HTTPException(409, "Stale assignment")
     return op, assignment
 
 
 def issue_capability(db, worker_id, operation_id, assignment_id, attempt_token, generation):
-    """Return a single-use staging descriptor for the fenced Worker."""
+    """Return an operation-scoped staging descriptor for the fenced Worker."""
     op, _ = _fenced_save(db, worker_id, operation_id, assignment_id, attempt_token, generation)
     if op.state not in ("REQUESTED", "CAPTURING"):
         raise HTTPException(409, "Save is not capturable")
@@ -75,8 +80,67 @@ def issue_capability(db, worker_id, operation_id, assignment_id, attempt_token, 
     }
 
 
+def pending(db, worker_id, assignment_id, attempt_token, generation):
+    """Offer only saves attached to this worker's live, ready assignment."""
+    assignment = db.get(Assignment, assignment_id)
+    if (not assignment or assignment.worker_id != worker_id or
+            assignment.attempt_token != attempt_token or
+            assignment.generation != generation or assignment.released_at):
+        raise HTTPException(409, "Stale assignment")
+    runtime = db.query(Runtime).filter_by(assignment_id=assignment_id, generation=generation,
+                                           state="READY", desired_state="RUNNING").first()
+    from app.services.interactive_runtime_service import ready
+    if not runtime or not ready(db, runtime):
+        return {"operation": None}
+    op = db.query(Save).filter_by(assignment_id=assignment_id, generation=generation).filter(
+        Save.state.in_(("REQUESTED", "CAPTURING"))).order_by(Save.created_at).first()
+    return {"operation": {"id": op.id, "workspace_id": op.workspace_id,
+                           "parent_revision_id": op.parent_revision_id} if op else None}
+
+
+def fail(db, worker_id, operation_id, assignment_id, attempt_token, generation, code):
+    op, _ = _fenced_save(db, worker_id, operation_id, assignment_id, attempt_token, generation)
+    if op.state in ("REQUESTED", "CAPTURING", "UPLOADING"):
+        op.state = "FAILED"
+        op.failure_code = code
+        op.failure_detail = "Could not capture this workspace. Check the session and try again."
+        submission = db.query(Submission).filter_by(save_operation_id=op.id).first()
+        if submission:
+            submission.state = "FAILED"
+            submission.failure_code = code
+            submission.failure_detail = op.failure_detail
+        db.commit()
+    return {"state": op.state}
+
+
+def reconcile_stale(db):
+    """Finish saves whose live assignment disappeared during capture."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
+    changed = 0
+    operations = db.query(Save).filter(Save.state.in_(("REQUESTED", "CAPTURING", "UPLOADING"))).all()
+    for op in operations:
+        assignment = db.get(Assignment, op.assignment_id) if op.assignment_id else None
+        runtime = db.get(Runtime, op.runtime_id)
+        expired = op.created_at and (op.created_at.replace(tzinfo=timezone.utc)
+                                     if op.created_at.tzinfo is None else op.created_at) < cutoff
+        if assignment and not assignment.released_at and runtime and runtime.state not in ("STOPPED", "FAILED", "LOST") and not expired:
+            continue
+        op.state = "FAILED"
+        op.failure_code = "RUNTIME_UNAVAILABLE"
+        op.failure_detail = "Interactive session ended before the workspace was saved."
+        submission = db.query(Submission).filter_by(save_operation_id=op.id).first()
+        if submission:
+            submission.state = "FAILED"
+            submission.failure_code = op.failure_code
+            submission.failure_detail = op.failure_detail
+        changed += 1
+    if changed:
+        db.commit()
+    return changed
+
+
 def complete(db, worker_id, operation_id, assignment_id, attempt_token, generation, sha256, size):
-    """Verify receipt/hash/size, enqueue Builder SNAPSHOT publication."""
+    """Record the fenced upload claim; Builder verifies bytes before publishing."""
     if not isinstance(sha256, str) or not SHA_RE.fullmatch(sha256):
         raise HTTPException(422, "Invalid snapshot hash")
     if not isinstance(size, int) or not 0 < size <= MAX_ARTIFACT:

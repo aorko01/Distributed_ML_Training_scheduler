@@ -17,7 +17,7 @@ class TrainingSettings(Strict):
     name: str = Field(min_length=1, max_length=120)
     command: str = Field(min_length=1, max_length=1024)
     resume_command: str | None = Field(default=None, max_length=1024)
-    priority: Literal["NORMAL", "REQUESTED", "HIGH"] = "NORMAL"
+    priority: Literal["NORMAL", "REQUESTED"] = "NORMAL"
     reason_for_priority: str | None = Field(default=None, max_length=1000)
 
     @field_validator("command", "resume_command")
