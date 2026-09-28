@@ -154,7 +154,7 @@ export default function InteractiveCreate() {
         )}
 
         <div className="iw-create-foot">
-          <span className="ws-hint">Next: pick requirements + machine, then open the editor or copy the VS Code command.</span>
+          <span className="ws-hint">Next: pick requirements + machine, then connect with VS Code Remote-SSH.</span>
           <button className="btn btn-primary" type="submit" disabled={submitting || loading || !name.trim() || !job}>
             {submitting ? 'Creating…' : <>Create session <ArrowRight size={16} /></>}
           </button>

@@ -76,7 +76,7 @@ export function RuntimeWatcher() {
           <p>{t.body}</p>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <Link className="btn btn-secondary" to={`/interactive/${t.workspaceId}`}>View details</Link>
-            {t.id.endsWith('-ready') && <Link className="btn btn-primary" to={`/interactive/${t.workspaceId}/editor`}>Open Editor</Link>}
+            {t.id.endsWith('-ready') && <Link className="btn btn-primary" to={`/interactive/${t.workspaceId}`}>Open VS Code instructions</Link>}
             <button className="btn btn-secondary" onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}>Dismiss</button>
           </div>
         </div>

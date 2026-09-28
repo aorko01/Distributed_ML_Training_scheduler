@@ -277,7 +277,7 @@ const BatchForm: React.FC = () => {
               )}
             </div>
             {!zipFile && (
-              <p className="ws-hint">No archive — interactive-only image. You can add files later inside the running container/editor.</p>
+              <p className="ws-hint">No archive — interactive-only image. You can add files later with VS Code Remote-SSH.</p>
             )}
           </div>
 
@@ -335,7 +335,7 @@ const BatchForm: React.FC = () => {
                   <p>
                     Without an archive this image is interactive-only and cannot be sent
                     directly to training. After the build finishes, open it from the
-                    interactive workspace flow and create files in the container/editor.
+                    interactive workspace flow and create files with VS Code Remote-SSH.
                   </p>
                 </>
               )}
@@ -394,7 +394,7 @@ const BatchForm: React.FC = () => {
                 <p>No packages listed — the base image will be used as-is.</p>
               )}
               <p>This image cannot be sent directly to training.</p>
-              <p>It can be opened interactively so files can be created in the container/editor.</p>
+              <p>It can be opened with VS Code Remote-SSH so files can be created in the container.</p>
             </div>
             {submitError && (
               <div role="alert" style={{ padding: '0.75rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: 'var(--status-failed)', borderRadius: '6px', marginTop: '1rem', fontSize: '0.875rem' }}>

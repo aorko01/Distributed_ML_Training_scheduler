@@ -113,6 +113,11 @@ export interface CapacityPreview {
 }
 const base = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
+export class InteractiveRequestError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) { super(message); this.status = status; }
+}
+
 async function request<T>(path: string, init: RequestInit = {}, prefix = '/interactive/workspaces'): Promise<T> {
   const response = await fetch(base + prefix + path, {
     ...init, headers: { Authorization: `Bearer ${getToken() ?? ''}`, ...init.headers },
@@ -124,7 +129,7 @@ async function request<T>(path: string, init: RequestInit = {}, prefix = '/inter
       window.location.href = '/login';
     }
     const message = typeof body.detail === 'string' ? body.detail : Array.isArray(body.detail) ? body.detail.map((d: { msg?: string }) => d.msg ?? 'Invalid request').join(', ') : `Request failed (${response.status})`;
-    throw new Error(message);
+    throw new InteractiveRequestError(message, response.status);
   }
   return body as T;
 }

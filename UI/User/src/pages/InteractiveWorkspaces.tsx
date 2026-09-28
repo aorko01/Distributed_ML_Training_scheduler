@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, Loader2, MonitorPlay, Plus, Search, SquarePen } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowRight, Loader2, MonitorPlay, Plus, Search } from 'lucide-react';
 import { interactive, type Workspace, type Runtime } from '../services/interactive';
 
 type Filter = 'all' | 'ready' | 'running' | 'building';
@@ -83,7 +83,7 @@ export default function InteractiveWorkspaces() {
         <div>
           <span className="ws-eyebrow"><MonitorPlay size={14} /> Interactive sessions</span>
           <h1>Sessions</h1>
-          <p>Built images you can open on a GPU machine — in the browser or via VS Code.</p>
+          <p>Built images you can open on a GPU machine with VS Code Remote-SSH.</p>
         </div>
         <button className="btn btn-primary" onClick={() => navigate('/interactive/new')}>
           <Plus size={16} /> New session
@@ -137,7 +137,6 @@ export default function InteractiveWorkspaces() {
       <div className="builds-grid">
         {visible.map((item) => {
           const runtime = runtimes[item.id];
-          const ready = runtime?.state === 'READY';
           return (
             <div
               key={item.id}
@@ -168,19 +167,6 @@ export default function InteractiveWorkspaces() {
               <div className="build-card-foot">
                 <span>Rev {item.revision.revision_number}</span>
                 <span className="build-card-link" style={{ display: 'inline-flex', gap: '0.35rem' }}>
-                  {ready ? (
-                    <>
-                      <Link
-                        to={`/interactive/${item.id}/editor`}
-                        onClick={(e) => e.stopPropagation()}
-                        title="Open browser editor"
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
-                      >
-                        <SquarePen size={14} /> Editor
-                      </Link>
-                      <span aria-hidden="true">·</span>
-                    </>
-                  ) : null}
                   Open <ArrowRight size={14} />
                 </span>
               </div>

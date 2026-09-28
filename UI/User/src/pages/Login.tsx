@@ -66,7 +66,7 @@ const Login: React.FC = () => {
           <li><Boxes size={16} /><span><strong>Build once</strong> — PyTorch + CUDA images from a zip</span></li>
           <li><Gauge size={16} /><span><strong>Know before you go</strong> — VRAM estimates before training</span></li>
           <li><Rocket size={16} /><span><strong>Train at scale</strong> — queued, retried, and tracked</span></li>
-          <li><SquarePen size={16} /><span><strong>Debug live</strong> — browser editor or VS Code Remote-SSH</span></li>
+          <li><SquarePen size={16} /><span><strong>Debug live</strong> — connect with VS Code Remote-SSH</span></li>
         </ul>
         <p className="auth-foot">Trusted for overnight runs and deadline-day retries.</p>
       </aside>

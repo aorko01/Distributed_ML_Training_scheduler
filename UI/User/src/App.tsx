@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Register from './pages/Register';
@@ -11,7 +11,6 @@ import BuildDetails from './pages/BuildDetails';
 import InteractiveDetails from './pages/InteractiveDetails';
 import InteractiveWorkspaces from './pages/InteractiveWorkspaces';
 import InteractiveCreate from './pages/InteractiveCreate';
-import InteractiveEditor from './pages/InteractiveEditor';
 import JobDetails from './pages/JobDetails';
 import Training from './pages/Training';
 import { isAuthenticated } from './services/auth';
@@ -24,6 +23,11 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   }
   return <>{children}</>;
 };
+
+function LegacyEditorRedirect() {
+  const { id } = useParams();
+  return <Navigate to={`/interactive/${id}`} replace />;
+}
 
 function App() {
   return (
@@ -45,7 +49,7 @@ function App() {
           <Route path="interactive" element={<InteractiveWorkspaces />} />
           <Route path="interactive/new" element={<InteractiveCreate />} />
           <Route path="interactive/:id" element={<InteractiveDetails />} />
-          <Route path="interactive/:id/editor" element={<InteractiveEditor />} />
+          <Route path="interactive/:id/editor" element={<LegacyEditorRedirect />} />
           <Route path="machines" element={<Navigate to="/interactive" replace />} />
           <Route path="jobs/:id" element={<JobDetails />} />
           <Route path="profile" element={<Profile />} />

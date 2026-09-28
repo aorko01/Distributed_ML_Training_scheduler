@@ -1,12 +1,11 @@
 import React from 'react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, PlusCircle, LogOut, Activity, User, Hammer, Rocket, MonitorPlay } from 'lucide-react';
 import { logout, getUsername } from '../services/auth';
 import { RuntimeWatcher } from '../features/interactive-capacity/RuntimeWatcher';
 
 const Layout: React.FC = () => {
   const navigate = useNavigate();
-  const location = useLocation();
 
   const handleLogout = () => {
     const user = getUsername();
@@ -18,21 +17,6 @@ const Layout: React.FC = () => {
     logout();
     navigate('/login');
   };
-
-  // The in-browser code editor is a full workbench: hide the global app
-  // sidebar/top-header so it fills the whole page like a real editor.
-  const isEditorRoute = /\/interactive\/[^/]+\/editor\/?$/.test(location.pathname);
-  if (isEditorRoute) {
-    return (
-      <div className="app-container app-container--editor fade-in">
-        <main className="main-content main-content--editor">
-          <div className="page-content page-content--editor">
-            <Outlet />
-          </div>
-        </main>
-      </div>
-    );
-  }
 
   return (
     <div className="app-container fade-in">
@@ -115,7 +99,7 @@ const Layout: React.FC = () => {
         </header>
         <div className="page-content">
           <Outlet />
-          {!isEditorRoute && <RuntimeWatcher />}
+          <RuntimeWatcher />
         </div>
       </main>
     </div>

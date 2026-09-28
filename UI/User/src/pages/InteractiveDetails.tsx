@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Boxes, CheckCircle2, Cpu, Loader2, MonitorPlay, SquarePen, TerminalSquare } from 'lucide-react';
+import { ArrowLeft, Boxes, CheckCircle2, Cpu, Loader2, MonitorPlay } from 'lucide-react';
 import { interactive, interactiveCapacity, type Workspace, type Runtime, type CapacityOptions, type ResourceRequirements } from '../services/interactive';
 import { schedulerOrigin } from '../services/api';
 import { ResourceRequirementsForm } from '../features/interactive-capacity/ResourceRequirementsForm';
@@ -8,6 +8,7 @@ import { CapacitySummary } from '../features/interactive-capacity/CapacitySummar
 import { MachineGrid } from '../features/interactive-capacity/MachineGrid';
 import { useCapacityPreview } from '../features/interactive-capacity/useCapacityPreview';
 import { normalizeRequirements, requirementsValid } from '../features/interactive-capacity/requirements';
+import { WorkspaceHandoff } from '../features/interactive-capacity/WorkspaceHandoff';
 import CopyButton from '../components/CopyButton';
 
 import { verifyConnection } from '../services/terminalVerification';
@@ -48,6 +49,7 @@ export default function InteractiveDetails() {
   const [reload, setReload] = useState(0);
   const [cancelling, setCancelling] = useState(false);
   const [copyError, setCopyError] = useState('');
+  const [handoffBusy, setHandoffBusy] = useState(false);
   const [capOptions, setCapOptions] = useState<CapacityOptions | null>(null);
   const [requirements, setRequirements] = useState<ResourceRequirements | null>(null);
   const liveRuntime = runtime && !['STOPPED', 'FAILED'].includes(runtime.state);
@@ -110,7 +112,7 @@ export default function InteractiveDetails() {
     finally { setBusy(false); }
   }
   async function stopRuntime() {
-    if (!runtime || busy) return;
+    if (!runtime || busy || handoffBusy) return;
     const stoppingId = id;
     setBusy(true); connection.current?.abort(); setConnectionState('');
     try { const stopped = await interactive.stop(runtime.id); if (routeId.current !== stoppingId) return; runtimeLatest.current = stopped; setRuntime(stopped); setReload(v => v + 1); }
@@ -133,17 +135,18 @@ export default function InteractiveDetails() {
     } finally { connectionBusy.current = false; }
   }
   const imageReady = workspace?.revision.state === 'IMAGE_READY';
+  const sshPrepared = workspace?.revision.ssh_profile === 'v1';
   const building = workspace && ['QUEUED', 'BUILDING'].includes(workspace.revision.state);
-  const canRequest = imageReady && (!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && valid && !!requirements;
+  const canRequest = imageReady && sshPrepared && (!runtime || ['STOPPED', 'FAILED'].includes(runtime.state)) && valid && !!requirements;
   const noCapable = preview && preview.matching_online === 0;
   const allBusy = preview && preview.matching_online > 0 && preview.available_now === 0;
   const ready = runtime?.state === 'READY';
-  const sshReady = (runtime as unknown as { ssh_ready?: boolean } | null)?.ssh_ready && ready;
+  const sshReady = runtime?.ssh_ready && ready;
   const sshAlias = runtime
-    ? `dml-${runtime.id}-g${(runtime as unknown as { ssh_generation?: number }).ssh_generation ?? runtime.generation}`
+    ? `dml-${runtime.id}-g${runtime.ssh_generation ?? runtime.generation}`
     : '';
   const sshCmd = runtime
-    ? `dml-ssh configure ${runtime.id} --scheduler ${schedulerOrigin()}\ncode --folder-uri vscode-remote://ssh-remote+${sshAlias}/workspace`
+    ? `dml-ssh login --scheduler ${schedulerOrigin()}\ndml-ssh configure ${runtime.id} --scheduler ${schedulerOrigin()}\ncode --folder-uri vscode-remote://ssh-remote+${sshAlias}/workspace`
     : '';
   const assignedJobs = preview?.machines.reduce((n, m) => n + m.workloads.length, 0) ?? 0;
 
@@ -170,10 +173,10 @@ export default function InteractiveDetails() {
             </div>
             <div className="iw-hero-actions">
               {ready && (
-                <Link className="btn btn-primary" to={`/interactive/${id}/editor`}><SquarePen size={16} /> Open editor</Link>
+                <a className="btn btn-primary" href="#remote-access">VS Code Remote-SSH</a>
               )}
               {liveRuntime && (
-                <button className="btn btn-secondary" disabled={busy || runtime?.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop</button>
+                <button className="btn btn-secondary" disabled={busy || handoffBusy || runtime?.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop</button>
               )}
             </div>
           </div>
@@ -194,6 +197,7 @@ export default function InteractiveDetails() {
             </header>
             {workspace.revision.image_tag && <p className="iw-mono">Tag <code>{workspace.revision.image_tag}</code></p>}
             {workspace.revision.failure_reason && <p role="alert" className="error-text">{workspace.revision.failure_reason}</p>}
+            {imageReady && !sshPrepared && <p role="alert" className="error-text">This image does not support VS Code Remote-SSH. Rebuild it before starting a session.</p>}
             <details className="iw-logs">
               <summary>Build logs</summary>
               <pre aria-label="Build logs">{lines.join('\n') || 'No build logs yet.'}</pre>
@@ -253,23 +257,12 @@ export default function InteractiveDetails() {
               </header>
               {runtime?.failure_detail && <p role="alert" className="error-text">{runtime.failure_detail}</p>}
 
-              <div className="iw-connect-grid">
-                <div className="iw-connect-card">
-                  <TerminalSquare size={18} />
-                  <div>
-                    <strong>Browser editor</strong>
-                    <p>Same files, environment and GPU — no setup.</p>
-                    {ready
-                      ? <Link className="btn btn-primary" to={`/interactive/${id}/editor`}><SquarePen size={15} /> Open editor</Link>
-                      : <p className="iw-muted">Editor unlocks once the session is live.</p>}
-                    {runtime && !runtime.editor_capable && <p className="iw-muted">Editor unavailable for this runtime.</p>}
-                  </div>
-                </div>
+              <div className="iw-connect-grid" id="remote-access">
                 <div className="iw-connect-card">
                   <Cpu size={18} />
                   <div>
                     <strong>VS Code Remote-SSH</strong>
-                    <p>Paste in your terminal to open <code>/workspace</code> in VS Code. It uses the same files and Python environment as the browser editor.</p>
+                    <p>Run these commands on your computer to open <code>/workspace</code> in VS Code. Your edits and package installs run inside this container.</p>
                     {sshReady ? (
                       <>
                         <pre className="iw-cmd">{sshCmd}</pre>
@@ -278,6 +271,8 @@ export default function InteractiveDetails() {
                         </div>
                         {copyError && <p role="alert" className="error-text">{copyError}</p>}
                       </>
+                    ) : runtime?.ssh_capable === false ? (
+                      <p className="iw-muted">VS Code Remote-SSH is unavailable for this runtime. Start a session from an image with the SSH profile enabled.</p>
                     ) : (
                       <details className="iw-logs">
                         <summary>How it works</summary>
@@ -290,7 +285,7 @@ export default function InteractiveDetails() {
               </div>
 
               <div className="iw-session-foot">
-                <button className="btn btn-secondary" disabled={busy || runtime?.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop session</button>
+                <button className="btn btn-secondary" disabled={busy || handoffBusy || runtime?.desired_state === 'STOPPED'} onClick={stopRuntime}>Stop session</button>
                 <button
                   className="btn btn-secondary"
                   disabled={busy || runtime?.state !== 'READY' || runtime.desired_state !== 'RUNNING' || connectionState === 'Checking connection…'}
@@ -298,12 +293,13 @@ export default function InteractiveDetails() {
                 >
                   Check connection
                 </button>
-                {runtime?.save_enabled && <Link className="btn btn-secondary" to={`/interactive/${id}/editor`}>Open editor to save or train</Link>}
                 {connectionState && <span role="status" className="iw-muted">{connectionState}</span>}
               </div>
-              <p className="iw-muted"><CheckCircle2 size={13} style={{ verticalAlign: '-2px' }} /> {runtime?.save_enabled ? 'Save or submit the live changes in the editor before stopping.' : 'Live only — Stop ends browser + SSH access immediately.'}</p>
+              <p className="iw-muted"><CheckCircle2 size={13} style={{ verticalAlign: '-2px' }} /> {runtime?.save_enabled ? 'Save files in VS Code, then save the image or submit for training before stopping.' : 'Live only — Stop ends SSH access and discards unsaved container changes.'}</p>
             </section>
           )}
+
+          {runtime && <WorkspaceHandoff key={`${runtime.id}:${runtime.generation}`} runtime={runtime} workspaceName={workspace.name} onActiveChange={setHandoffBusy} />}
 
           {imageReady && !liveRuntime && (runtime as unknown as { ssh_ready?: boolean } | null) !== null && runtime && ['STOPPED', 'FAILED'].includes(runtime.state) && (
             <p className="iw-muted"><Boxes size={13} style={{ verticalAlign: '-2px' }} /> Last session ended — pick a machine above to start again.</p>
