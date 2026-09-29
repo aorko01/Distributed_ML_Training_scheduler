@@ -1,9 +1,14 @@
-"""Unit tests for durable capture: commit, export, cleanup, and gate helpers.
-
-Docker is faked with MagicMock clients, matching test_runtime_docker.py style.
-"""
+"""Unit tests for durable capture: commit, export, cleanup, and gate helpers."""
+from http.server import BaseHTTPRequestHandler
+import json
+import socketserver
+import threading
+import time
 from unittest.mock import MagicMock
+
+import docker
 import pytest
+from requests.exceptions import ReadTimeout
 from interactive import snapshot
 from interactive.snapshot import CaptureDenied, capture
 
@@ -59,6 +64,7 @@ def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
     coordinator.get.return_value = record()
     workload = MagicMock()
     labelled(workload)
+    workload.id = "container-1"
     workload.attrs = {"Config": {"User": "10001:10001", "WorkingDir": "/workspace"}}
     image = MagicMock()
     image.id = "sha256:image"
@@ -67,6 +73,8 @@ def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
     ops.authority.return_value = True
     ops.get_workload.return_value = workload
     ops.client = MagicMock()
+    capture_client = ops.capture_client.return_value
+    capture_client.containers.get.return_value = workload
     progress = MagicMock()
     completed = []
 
@@ -88,6 +96,9 @@ def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
     ops.get_workload.assert_called_once_with(record())
     workload.pause.assert_called_once_with()
     workload.commit.assert_called_once()
+    assert ops.capture_client.call_args.kwargs["timeout"] > 10
+    capture_client.containers.get.assert_called_once_with("container-1")
+    capture_client.close.assert_called_once_with()
     assert workload.commit.call_args.kwargs == {"repository": "dml-snapshot-op1", "tag": "capture", "pause": False}
     # Config preserved for the Builder validation step.
     assert result["image_id"] == "sha256:image"
@@ -104,6 +115,69 @@ def test_capture_happy_path_pauses_commits_and_cleans_up(monkeypatch, tmp_path):
     # A capture record was journaled with attempt metadata.
     persisted = coordinator.persist.call_args_list[0].args[0]
     assert persisted["snapshot_operation_id"] == "op1"
+
+
+def test_docker_py_commit_needs_capture_timeout(tmp_path):
+    """Exercise docker-py's real commit HTTP call with a slow daemon reply."""
+    socket_path = str(tmp_path / "docker.sock")
+
+    class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            if "/containers/" in self.path:
+                body = {"Id": "container-1", "Config": {"Labels": {}}, "Name": "/test"}
+            elif "/images/" in self.path:
+                body = {"Id": "sha256:image", "RepoTags": []}
+            else:
+                self.send_error(404)
+                return
+            self.reply(body)
+
+        def do_POST(self):
+            assert "/commit?" in self.path
+            time.sleep(0.12)
+            self.reply({"Id": "sha256:image"})
+
+        def reply(self, body):
+            payload = json.dumps(body).encode()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            except BrokenPipeError:
+                pass  # The short-timeout client has already cancelled.
+
+    server = Server(socket_path, Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        short = docker.DockerClient(base_url=f"unix://{socket_path}", version="1.55", timeout=0.03)
+        try:
+            with pytest.raises(ReadTimeout):
+                short.containers.get("container-1").commit(
+                    repository="dml-snapshot-op1", tag="capture", pause=False,
+                )
+        finally:
+            short.close()
+        capture_client = docker.DockerClient(base_url=f"unix://{socket_path}", version="1.55", timeout=0.5)
+        try:
+            image = capture_client.containers.get("container-1").commit(
+                repository="dml-snapshot-op1", tag="capture", pause=False,
+            )
+            assert image.id == "sha256:image"
+        finally:
+            capture_client.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 def test_capture_labels_must_match_workload():

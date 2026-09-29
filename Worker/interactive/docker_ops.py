@@ -155,6 +155,10 @@ class DockerOps:
         self.client = client or docker.from_env(timeout=10)
         self.pull_lock = __import__("threading").Lock()
 
+    def capture_client(self, timeout):
+        """Use a separate Docker connection for potentially slow image operations."""
+        return docker.from_env(timeout=timeout)
+
     def authority(self, record):
         if not self.coordinator.authoritative(record["assignment_id"]):
             raise RuntimeFailure("LEASE_LOST")

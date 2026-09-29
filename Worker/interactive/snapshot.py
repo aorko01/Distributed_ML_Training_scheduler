@@ -7,7 +7,7 @@ before it runs.  The module never talks to a registry and never prunes.
 """
 
 import concurrent.futures
-from contextlib import suppress
+from contextlib import closing, suppress
 import hashlib
 import json
 import logging
@@ -175,14 +175,15 @@ def capture(ops, coordinator, workspace_id, operation_id, record, clock,
         raise CaptureDenied("WORKLOAD_MISSING", "workload container is gone")
     _check_labels(workload, record)
     ops.authority(record)
+    started = clock()
     journal_snapshot(state_dir, operation_id, {
         "workspace_id": workspace_id,
         "operation_id": operation_id,
         "state": "capturing",
         "attempt_token": record.get("attempt_token"),
         "generation": record.get("generation"),
-        "started_at_monotonic": clock(),
-        "paused_deadline": clock() + CAPTURE_PAUSED_SECONDS + HEARTBEAT_GRACE_SECONDS,
+        "started_at_monotonic": started,
+        "paused_deadline": started + CAPTURE_PAUSED_SECONDS + HEARTBEAT_GRACE_SECONDS,
     })
     coordinator.persist({**coordinator.get(assignment_id),
                          "snapshot_operation_id": operation_id,
@@ -195,24 +196,34 @@ def capture(ops, coordinator, workspace_id, operation_id, record, clock,
         paused = True
         attrs = getattr(workload, "attrs", None) or {}
         config = _check_config(dict(attrs.get("Config") or {}))
-        repository, tag_name = tag.rsplit(":", 1)
-        image = workload.commit(repository=repository, tag=tag_name, pause=False)
-        image_id = getattr(image, "id", None) or ""
-        if not image_id:
-            raise CaptureDenied("CAPTURE_FAILED", "commit returned no image id")
-        # The committed image is immutable. Resume the user's shell before
-        # exporting/compressing what may be several gigabytes of layers.
-        workload.unpause()
-        paused = False
-        journal_snapshot(state_dir, operation_id, {"image_id": image_id, "state": "committed"})
-        coordinator.persist({**coordinator.get(assignment_id),
-                             "snapshot_operation_id": operation_id,
-                             "snapshot_state": "committed",
-                             "snapshot_image_id": image_id})
-        ops.authority(record)
-        destination = str(_snapshot_dir(state_dir) / (operation_id + ".tar.gz"))
-        artifact = _upload(ops.client, assignment_id, image_id, destination,
-                           clock() + CAPTURE_PAUSED_SECONDS)
+        # The ordinary Docker client has a 10-second read timeout. A real
+        # workspace commit can take much longer, so give this capture its own
+        # client without changing the timeout of concurrent Worker calls.
+        remaining = CAPTURE_PAUSED_SECONDS + HEARTBEAT_GRACE_SECONDS - (clock() - started)
+        if remaining <= 0:
+            raise CaptureDenied("CAPTURE_TIMEOUT", "paused capture deadline exceeded")
+        with closing(ops.capture_client(timeout=remaining)) as capture_client:
+            capture_workload = capture_client.containers.get(workload.id)
+            _check_labels(capture_workload, record)
+            ops.authority(record)
+            repository, tag_name = tag.rsplit(":", 1)
+            image = capture_workload.commit(repository=repository, tag=tag_name, pause=False)
+            image_id = getattr(image, "id", None) or ""
+            if not image_id:
+                raise CaptureDenied("CAPTURE_FAILED", "commit returned no image id")
+            # The committed image is immutable. Resume the user's shell before
+            # exporting/compressing what may be several gigabytes of layers.
+            workload.unpause()
+            paused = False
+            journal_snapshot(state_dir, operation_id, {"image_id": image_id, "state": "committed"})
+            coordinator.persist({**coordinator.get(assignment_id),
+                                 "snapshot_operation_id": operation_id,
+                                 "snapshot_state": "committed",
+                                 "snapshot_image_id": image_id})
+            ops.authority(record)
+            destination = str(_snapshot_dir(state_dir) / (operation_id + ".tar.gz"))
+            artifact = _upload(capture_client, assignment_id, image_id, destination,
+                               clock() + CAPTURE_PAUSED_SECONDS)
         journal_snapshot(state_dir, operation_id, {
             "artifact": artifact, "artifact_path": destination, "state": "uploaded"})
         coordinator.persist({**coordinator.get(assignment_id),
