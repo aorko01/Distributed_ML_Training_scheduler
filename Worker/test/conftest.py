@@ -77,4 +77,8 @@ def executor(mock_api):
         from executor import JobExecutor
 
         ex = JobExecutor(mock_api)
+        if hasattr(os, "getuid"):
+            ex.docker_client.images.get.return_value.attrs = {
+                "Config": {"User": f"{os.getuid()}:{os.getgid()}"}
+            }
     return ex

@@ -26,6 +26,8 @@ import runtime_config
 
 logger = logging.getLogger("executor")
 
+VRAM_LOG_TAIL_CHARS = 4000
+
 
 class _JobLogState:
     def __init__(self):
@@ -359,6 +361,60 @@ class JobExecutor:
                 continue
         return tempfile.gettempdir()
 
+    def _image_effective_ids(self, image_name: str) -> tuple[int, int]:
+        """Resolve the UID/GID Docker will use for the estimator image.
+
+        Numeric ``Config.User`` values are handled without starting a helper.
+        User names and UID-only values need the image's passwd/group database,
+        so ask a short-lived Python process running as the image's default user.
+        """
+        if self.docker_client is None:
+            raise RuntimeError("Docker client is unavailable")
+        with self._docker_client_lock:
+            image = self.docker_client.images.get(image_name)
+            user = str((image.attrs.get("Config", {}) or {}).get("User") or "0:0")
+            parts = user.split(":", 1)
+            if len(parts) == 2 and all(part.isdigit() for part in parts):
+                return int(parts[0]), int(parts[1])
+            output = self.docker_client.containers.run(
+                image_name,
+                ["-S", "-c", 'import os; print(f"{os.getuid()}:{os.getgid()}")'],
+                entrypoint="python",
+                network_mode="none",
+                remove=True,
+            )
+        resolved = output.decode("ascii", "strict").strip().splitlines()[-1]
+        uid_text, separator, gid_text = resolved.partition(":")
+        if separator != ":" or not uid_text.isdigit() or not gid_text.isdigit():
+            raise RuntimeError(f"invalid effective user from image: {resolved!r}")
+        return int(uid_text), int(gid_text)
+
+    @staticmethod
+    def _prepare_vram_report_dir(report_dir: str, uid: int, gid: int):
+        """Make an attempt's report mount private and writable to its image user."""
+        os.chown(report_dir, uid, gid)
+        os.chmod(report_dir, 0o700)
+
+    @staticmethod
+    def _bounded_vram_output(value: str | None) -> str:
+        value = value or ""
+        if len(value) <= VRAM_LOG_TAIL_CHARS:
+            return value
+        return "<truncated>\n" + value[-VRAM_LOG_TAIL_CHARS:]
+
+    @staticmethod
+    def _is_report_access_failure(stderr: str | None) -> bool:
+        text = (stderr or "").lower()
+        report_reference = "/report" in text or "report.json" in text
+        access_error = any(marker in text for marker in (
+            "permission denied",
+            "read-only file system",
+            "invalid mount config",
+            "mounts denied",
+            "error while creating mount source path",
+        ))
+        return report_reference and access_error
+
     def handle_vram_estimation(self, job_id: str, image_name: str, command: str):
         started_at = time.time()
         target_command = self._parse_python_command(command)
@@ -375,6 +431,19 @@ class JobExecutor:
         ) as report_dir:
             report_dir = os.path.realpath(report_dir)
             report_path = os.path.join(report_dir, "report.json")
+            try:
+                report_uid, report_gid = self._image_effective_ids(image_name)
+                self._prepare_vram_report_dir(report_dir, report_uid, report_gid)
+            except Exception as e:
+                logger.error(
+                    "Failed to prepare VRAM report mount for job %s: %s",
+                    job_id, e, exc_info=True,
+                )
+                self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
+                self.api.mark_job_failed(
+                    job_id, "system", f"Failed to prepare VRAM report mount: {e}"
+                )
+                return
             cmd = [
                 "docker", "run", "--rm", "--gpus", "all",
                 *self._managed_launch_args(job_id),
@@ -401,18 +470,28 @@ class JobExecutor:
                 return
             
             if result.returncode != 0:
-                reason = result.stderr.strip() or f"VRAM estimation exited with code {result.returncode}"
-                logger.error("VRAM estimation failed for job %s: %s", job_id, reason)
+                stderr_tail = self._bounded_vram_output(result.stderr)
+                stdout_tail = self._bounded_vram_output(result.stdout)
+                report_failure = self._is_report_access_failure(result.stderr)
+                failure_type = "system" if report_failure else "user"
+                reason = (
+                    "VRAM estimator could not write its report"
+                    if report_failure else
+                    (stderr_tail.strip() or f"VRAM estimation exited with code {result.returncode}")
+                )
+                logger.error(
+                    "VRAM estimation failed for job %s (rc=%s type=%s "
+                    "stdout_tail=%r stderr_tail=%r)",
+                    job_id, result.returncode, failure_type, stdout_tail, stderr_tail,
+                )
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
-                self.api.mark_job_failed(job_id, "user", reason)
+                self.api.mark_job_failed(job_id, failure_type, reason)
                 return
             
             try:
                 with open(report_path, encoding="utf-8") as report_file:
                     report = json.load(report_file)
-                if report.get("step_wall_time") is None:
-                    raise ValueError("No optimizer steps were observed")
-            except (OSError, ValueError, json.JSONDecodeError) as e:
+            except (OSError, json.JSONDecodeError) as e:
                 try:
                     dir_listing = sorted(os.listdir(report_dir))
                 except OSError as list_err:
@@ -430,8 +509,15 @@ class JobExecutor:
                 )
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
                 self.api.mark_job_failed(
-                    job_id, "user", f"Invalid VRAM estimation report: {e}"
+                    job_id, "system", f"Invalid VRAM estimation report: {e}"
                 )
+                return
+
+            if report.get("step_wall_time") is None:
+                reason = "No optimizer steps were observed"
+                logger.error("Invalid VRAM estimation report for job %s: %s", job_id, reason)
+                self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
+                self.api.mark_job_failed(job_id, "user", reason)
                 return
 
         self.api.save_vram_estimation(job_id, report)

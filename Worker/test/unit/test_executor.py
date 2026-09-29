@@ -153,6 +153,28 @@ class TestParsePythonCommand:
 
 
 class TestHandleVramEstimation:
+    def test_numeric_image_user_is_used_for_private_report_mount(self, executor, tmp_path):
+        executor.docker_client.images.get.return_value.attrs = {
+            "Config": {"User": "10001:10002"}
+        }
+        assert executor._image_effective_ids("img") == (10001, 10002)
+        executor.docker_client.containers.run.assert_not_called()
+
+        with patch.object(executor_module.os, "chown") as chown, patch.object(
+            executor_module.os, "chmod"
+        ) as chmod:
+            executor._prepare_vram_report_dir(str(tmp_path), 10001, 10002)
+        chown.assert_called_once_with(str(tmp_path), 10001, 10002)
+        chmod.assert_called_once_with(str(tmp_path), 0o700)
+
+    def test_named_image_user_is_resolved_inside_image(self, executor):
+        executor.docker_client.images.get.return_value.attrs = {
+            "Config": {"User": "dml"}
+        }
+        executor.docker_client.containers.run.return_value = b"10001:10001\n"
+        assert executor._image_effective_ids("img") == (10001, 10001)
+        assert executor.docker_client.containers.run.call_args.kwargs["network_mode"] == "none"
+
     def test_non_python_command_fails_user(self, executor):
         executor.api.mark_job_failed = MagicMock()
         with (
@@ -186,7 +208,22 @@ class TestHandleVramEstimation:
             executor.handle_vram_estimation("j1", "img", "python train.py")
         assert executor.api.mark_job_failed.call_args[0][1] == "user"
 
-    def test_missing_report_is_user_failure(self, executor, tmp_path):
+    def test_report_permission_error_is_system_failure(self, executor, caplog):
+        stderr = "x" * 5000 + "\nPermissionError: [Errno 13] Permission denied: '/report/report.json'"
+        result = SimpleNamespace(returncode=1, stderr=stderr, stdout="")
+        executor.api.mark_job_failed = MagicMock()
+        with (
+            patch.object(JobExecutor, "_parse_python_command", return_value=["train.py"]),
+            patch.object(executor_module.subprocess, "run", return_value=result),
+            patch.object(JobExecutor, "_record_job"),
+            caplog.at_level("ERROR", logger="executor"),
+        ):
+            executor.handle_vram_estimation("j1", "img", "python train.py")
+        assert executor.api.mark_job_failed.call_args[0][1] == "system"
+        assert "<truncated>" in caplog.text
+        assert "x" * 4500 not in caplog.text
+
+    def test_missing_report_is_system_failure(self, executor, tmp_path):
         result = SimpleNamespace(returncode=0, stderr="", stdout="")
         executor.api.mark_job_failed = MagicMock()
         import contextlib
@@ -203,6 +240,7 @@ class TestHandleVramEstimation:
         ):
             executor.handle_vram_estimation("j1", "img", "python train.py")
         assert "Invalid VRAM estimation report" in executor.api.mark_job_failed.call_args[0][2]
+        assert executor.api.mark_job_failed.call_args[0][1] == "system"
 
     def test_success_saves_report(self, executor, tmp_path):
         import contextlib
