@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, LogOut, Activity, User, Hammer, Rocket, MonitorPlay } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, LogOut, Activity, User, Hammer, Rocket, MonitorPlay, History } from 'lucide-react';
 import { logout, getUsername } from '../services/auth';
 import { RuntimeWatcher } from '../features/interactive-capacity/RuntimeWatcher';
 
@@ -34,6 +34,13 @@ const Layout: React.FC = () => {
           >
             <LayoutDashboard size={20} />
             Dashboard
+          </NavLink>
+          <NavLink
+            to="/job-history"
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+          >
+            <History size={20} />
+            Job History
           </NavLink>
           <NavLink 
             to="/submit" 

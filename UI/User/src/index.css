@@ -380,6 +380,131 @@ tr.job-row:hover {
   flex-direction: column;
 }
 
+.metric-card-heading {
+  display: flex;
+  justify-content: space-between;
+}
+
+.jobs-page-heading,
+.jobs-section-heading,
+.jobs-history-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.jobs-page-heading {
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.jobs-page-heading h1 {
+  margin-bottom: 0.35rem;
+}
+
+.jobs-history-link {
+  gap: 0.5rem;
+  text-decoration: none;
+}
+
+.jobs-section-heading {
+  margin-bottom: 1rem;
+}
+
+.jobs-section-heading h2 {
+  margin-bottom: 0.25rem;
+}
+
+.jobs-section-heading p,
+.jobs-page-heading p {
+  font-size: 0.875rem;
+}
+
+.jobs-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.jobs-filters label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.jobs-filters .form-select {
+  min-width: 150px;
+  padding: 0.55rem 2.25rem 0.55rem 0.75rem;
+}
+
+.jobs-history-toolbar {
+  align-items: flex-end;
+  margin-bottom: 1rem;
+  padding: 1rem;
+}
+
+.jobs-search {
+  flex: 1 1 260px;
+  max-width: 480px;
+}
+
+.jobs-search-control {
+  position: relative;
+  display: block;
+}
+
+.jobs-search-control svg {
+  position: absolute;
+  top: 50%;
+  left: 0.85rem;
+  z-index: 1;
+  color: var(--text-secondary);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.jobs-search-control .form-input {
+  padding-left: 2.5rem;
+}
+
+.jobs-empty-cell {
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.jobs-mono,
+.jobs-id {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.jobs-id {
+  display: block;
+  max-width: 230px;
+  margin-top: 0.25rem;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .jobs-filters,
+  .jobs-filters label,
+  .jobs-filters .form-select,
+  .jobs-search {
+    width: 100%;
+    max-width: none;
+  }
+}
+
 .metric-title {
   color: var(--text-secondary);
   font-size: 0.875rem;

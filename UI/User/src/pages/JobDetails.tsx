@@ -11,6 +11,7 @@ import {
 } from "../services/jobs";
 import LogTerminal from "../components/LogTerminal";
 import CopyButton from "../components/CopyButton";
+import StatusBadge from "../components/StatusBadge";
 import { ArrowLeft, Download, Loader2, Rocket, MonitorPlay, X } from "lucide-react";
 import type { DownloadProgress } from "../services/jobDownload";
 
@@ -160,27 +161,10 @@ const JobDetails: React.FC = () => {
     );
   }
 
-  const getStatusBadge = (status: string) => {    switch (status) {
-      case "Pending":
-        return <span className="badge badge-pending">Queued</span>;
-      case "Building":
-        return <span className="badge badge-building">Building</span>;
-      case "ImageReady":
-        return <span className="badge badge-ready">Image ready</span>;
-      case "Estimating":
-        return <span className="badge badge-building">Estimating VRAM</span>;
-      case "Running":
-        return <span className="badge badge-running">Training</span>;
-      case "Retrying":
-        return <span className="badge badge-retrying">Retrying</span>;
-      case "Completed":
-        return <span className="badge badge-success">Completed</span>;
-      case "Failed":
-        return <span className="badge badge-failed">Failed</span>;
-      default:
-        return null;
-    }
-  };
+  const displayedStatus = liveStatus ?? job.status;
+  const backPath = displayedStatus === "Completed" || displayedStatus === "Failed"
+    ? "/job-history"
+    : "/";
 
   return (
     <div
@@ -198,12 +182,13 @@ const JobDetails: React.FC = () => {
         <button
           className="btn btn-secondary"
           style={{ padding: "0.5rem", borderRadius: "50%" }}
-          onClick={() => navigate("/")}
+          onClick={() => navigate(backPath)}
+          aria-label={backPath === "/job-history" ? "Back to Job History" : "Back to Dashboard"}
         >
           <ArrowLeft size={20} />
         </button>
         <h1 style={{ margin: 0 }}>Job: {job.name}</h1>
-        {getStatusBadge(liveStatus ?? job.status)}
+        <StatusBadge status={displayedStatus} />
         <div
           style={{
             marginLeft: "auto",

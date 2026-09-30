@@ -5,6 +5,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Profile from './pages/Profile';
 import Dashboard from './pages/Dashboard';
+import JobHistory from './pages/JobHistory';
 import SubmitJob from './pages/SubmitJob';
 import Builds from './pages/Builds';
 import BuildDetails from './pages/BuildDetails';
@@ -42,6 +43,7 @@ function App() {
           </ProtectedRoute>
         }>
           <Route index element={<Dashboard />} />
+          <Route path="job-history" element={<JobHistory />} />
           <Route path="submit" element={<SubmitJob />} />
           <Route path="training" element={<Training />} />
           <Route path="builds" element={<Builds />} />

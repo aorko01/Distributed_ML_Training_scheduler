@@ -1,17 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { fetchClusterStats, type ClusterStats } from '../services/stats';
 import { fetchJobs, type Job } from '../services/jobs';
 import StatusBadge from '../components/StatusBadge';
-import { Activity, Clock, Server, CheckCircle2, Loader2 } from 'lucide-react';
+import { Activity, Clock, Server, PlayCircle, Loader2, History } from 'lucide-react';
 
-type TrainingStatus = 'Estimating' | 'Running' | 'Retrying' | 'Completed' | 'Failed';
-type StatusFilter = 'All' | TrainingStatus;
+type ActiveTrainingStatus = 'Estimating' | 'Running' | 'Retrying';
+type StatusFilter = 'All' | ActiveTrainingStatus;
 type SortKey = 'newest' | 'oldest' | 'name' | 'gpuHours';
 
-// Dashboard lists only jobs that reached batch training in some form.
-// Build-only phases (Queued / Building / Image ready) live on the Builds page.
-const TRAINING_STATUSES: TrainingStatus[] = ['Estimating', 'Running', 'Retrying', 'Completed', 'Failed'];
+const ACTIVE_TRAINING_STATUSES: ActiveTrainingStatus[] = ['Estimating', 'Running', 'Retrying'];
+const REFRESH_INTERVAL_MS = 5_000;
 
 const Dashboard: React.FC = () => {
   const [stats, setStats] = useState<ClusterStats | null>(null);
@@ -22,26 +21,45 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const loadData = async () => {
+    let active = true;
+
+    const loadInitialData = async () => {
       try {
         const [statsData, jobsData] = await Promise.all([
           fetchClusterStats(),
-          fetchJobs()
+          fetchJobs(),
         ]);
+        if (!active) return;
         setStats(statsData);
         setJobs(jobsData);
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
-    loadData();
+
+    const refreshJobs = async () => {
+      const jobsData = await fetchJobs();
+      if (active) setJobs(jobsData);
+    };
+
+    void loadInitialData();
+    const interval = window.setInterval(() => { void refreshJobs(); }, REFRESH_INTERVAL_MS);
+
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
   }, []);
 
+  const activeJobs = useMemo(
+    () => jobs.filter(job => (ACTIVE_TRAINING_STATUSES as string[]).includes(job.status)),
+    [jobs],
+  );
+
   const visibleJobs = useMemo(() => {
-    const trainingOnly = jobs.filter(job => (TRAINING_STATUSES as string[]).includes(job.status));
     const filtered = statusFilter === 'All'
-      ? trainingOnly
-      : trainingOnly.filter(job => job.status === statusFilter);
+      ? activeJobs
+      : activeJobs.filter(job => job.status === statusFilter);
 
     return [...filtered].sort((a, b) => {
       switch (sortBy) {
@@ -52,12 +70,10 @@ const Dashboard: React.FC = () => {
         default: return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
       }
     });
-  }, [jobs, statusFilter, sortBy]);
+  }, [activeJobs, statusFilter, sortBy]);
 
-  const formatDate = (isoString: string) => {
-    const d = new Date(isoString);
-    return `${d.toLocaleDateString()} ${d.toLocaleTimeString()}`;
-  };
+  const runningCount = activeJobs.filter(job => job.status === 'Running').length;
+  const formatDate = (isoString: string) => new Date(isoString).toLocaleString();
 
   if (loading) {
     return (
@@ -69,34 +85,42 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="fade-in">
-      <h1>Dashboard Overview</h1>
+      <div className="jobs-page-heading">
+        <div>
+          <h1>Dashboard Overview</h1>
+          <p>Follow training jobs that are currently active. Statuses refresh automatically.</p>
+        </div>
+        <Link className="btn btn-secondary jobs-history-link" to="/job-history">
+          <History size={17} /> Job History
+        </Link>
+      </div>
 
       {stats && (
         <div className="metrics-grid">
           <div className="metric-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div className="metric-card-heading">
               <div className="metric-title">Queue Length</div>
               <Activity size={20} color="var(--text-secondary)" />
             </div>
             <div className="metric-value">{stats.queueLength}</div>
           </div>
           <div className="metric-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div className="metric-card-heading">
               <div className="metric-title">GPU Hours Used</div>
               <Clock size={20} color="var(--text-secondary)" />
             </div>
             <div className="metric-value">{stats.gpuHoursUsed.toFixed(1)}</div>
           </div>
           <div className="metric-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <div className="metric-title">Job Count</div>
-              <CheckCircle2 size={20} color="var(--text-secondary)" />
+            <div className="metric-card-heading">
+              <div className="metric-title">Training Now</div>
+              <PlayCircle size={20} color="var(--text-secondary)" />
             </div>
-            <div className="metric-value">{stats.jobCount}</div>
+            <div className="metric-value">{runningCount}</div>
           </div>
           <div className="metric-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <div className="metric-title">Total Nodes</div>
+            <div className="metric-card-heading">
+              <div className="metric-title">Total GPUs</div>
               <Server size={20} color="var(--text-secondary)" />
             </div>
             <div className="metric-value">{stats.totalNodes}</div>
@@ -104,42 +128,38 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+      <div className="jobs-section-heading">
         <div>
-          <h2 style={{ margin: 0 }}>Training jobs</h2>
-          <p style={{ margin: '0.25rem 0 0', fontSize: '0.85rem' }}>Estimating, running, retried, completed or failed — builds live on the Builds page.</p>
+          <h2>Current training jobs</h2>
+          <p>VRAM estimation, active training, and jobs waiting to retry.</p>
         </div>
-        <div style={{ display: 'flex', gap: '1rem' }}>
-          <div>
-            <label className="form-label">Filter</label>
+        <div className="jobs-filters">
+          <label>
+            Status
             <select
               className="form-select"
-              style={{ width: 'auto', padding: '0.5rem 1rem' }}
               value={statusFilter}
               onChange={e => setStatusFilter(e.target.value as StatusFilter)}
             >
-              <option value="All">All training</option>
+              <option value="All">All active</option>
               <option value="Estimating">Estimating VRAM</option>
               <option value="Running">Training</option>
               <option value="Retrying">Retrying</option>
-              <option value="Completed">Completed</option>
-              <option value="Failed">Failed</option>
             </select>
-          </div>
-          <div>
-            <label className="form-label">Sort By</label>
+          </label>
+          <label>
+            Sort by
             <select
               className="form-select"
-              style={{ width: 'auto', padding: '0.5rem 1rem' }}
               value={sortBy}
               onChange={e => setSortBy(e.target.value as SortKey)}
             >
-              <option value="newest">Newest First</option>
-              <option value="oldest">Oldest First</option>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
               <option value="name">Name (A-Z)</option>
-              <option value="gpuHours">GPU Hours</option>
+              <option value="gpuHours">GPU hours</option>
             </select>
-          </div>
+          </label>
         </div>
       </div>
 
@@ -158,8 +178,10 @@ const Dashboard: React.FC = () => {
           <tbody>
             {visibleJobs.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
-                  No training jobs yet — submit training from the Training page once a build is ready.
+                <td colSpan={6} className="jobs-empty-cell">
+                  {statusFilter === 'All'
+                    ? 'No training jobs are active right now. Completed and failed jobs are available in Job History.'
+                    : `No jobs currently have the ${statusFilter.toLowerCase()} status.`}
                 </td>
               </tr>
             )}
@@ -169,15 +191,13 @@ const Dashboard: React.FC = () => {
                 className="job-row"
                 onClick={() => navigate(`/jobs/${job.id}`)}
               >
-                <td style={{ fontWeight: 500 }}>{job.name}{(job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY') && (
-                  <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Interactive only</span>
-                )}</td>
+                <td style={{ fontWeight: 500 }}>{job.name}</td>
                 <td><StatusBadge status={job.status} /></td>
-                 <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
-                 <td><span style={{ fontFamily: 'monospace' }}>{job.status === 'Running' || job.status === 'Completed' ? job.device : 'N/A'}</span></td>
-                 <td>{formatDate(job.submittedAt)}</td>
-                 <td>{job.gpuHours.toFixed(2)}</td>
-               </tr>
+                <td>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</td>
+                <td><span className="jobs-mono">{job.device}</span></td>
+                <td>{formatDate(job.submittedAt)}</td>
+                <td>{job.gpuHours.toFixed(2)}</td>
+              </tr>
             ))}
           </tbody>
         </table>
