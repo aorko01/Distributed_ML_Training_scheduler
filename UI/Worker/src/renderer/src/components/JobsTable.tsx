@@ -1,10 +1,13 @@
 import React from 'react'
-import { CheckCircle2, ListVideo, XCircle } from 'lucide-react'
+import { CheckCircle2, ListVideo, Radio, XCircle } from 'lucide-react'
 import { formatDuration, type JobRecord } from '../types'
 
 interface JobsTableProps {
   jobs: JobRecord[]
   connected: boolean
+  title?: string
+  description?: string
+  emptyMessage?: string
 }
 
 const STATUS_BADGE: Record<JobRecord['status'], string> = {
@@ -13,15 +16,27 @@ const STATUS_BADGE: Record<JobRecord['status'], string> = {
   failed: 'badge-failed'
 }
 
-const JobsTable: React.FC<JobsTableProps> = ({ jobs, connected }) => (
-  <div className="card">
-    <div className="card-header">
-      <ListVideo size={20} color="var(--text-secondary)" />
-      <h3 style={{ margin: 0 }}>Recent Jobs</h3>
+const JobsTable: React.FC<JobsTableProps> = ({
+  jobs,
+  connected,
+  title = 'Jobs',
+  description,
+  emptyMessage = 'No jobs to show.'
+}) => (
+  <section className="card jobs-card">
+    <div className="card-header jobs-card-header">
+      <div className="section-icon">
+        <ListVideo size={19} />
+      </div>
+      <div className="section-heading">
+        <h3>{title}</h3>
+        {description ? <p>{description}</p> : null}
+      </div>
+      <span className="jobs-count mono">{jobs.length}</span>
     </div>
 
     {connected && jobs.length > 0 ? (
-      <div className="table-container" style={{ marginTop: '1rem' }}>
+      <div className="table-container jobs-table-wrap">
         <table>
           <thead>
             <tr>
@@ -44,6 +59,7 @@ const JobsTable: React.FC<JobsTableProps> = ({ jobs, connected }) => (
                 <td>{job.vramEstimateGb > 0 ? `${job.vramEstimateGb} GB` : '—'}</td>
                 <td>
                   <span className={`badge ${STATUS_BADGE[job.status]}`}>
+                    {job.status === 'running' ? <Radio size={12} /> : null}
                     {job.status === 'completed' ? <CheckCircle2 size={12} /> : null}
                     {job.status === 'failed' ? <XCircle size={12} /> : null}
                     {job.status}
@@ -58,12 +74,17 @@ const JobsTable: React.FC<JobsTableProps> = ({ jobs, connected }) => (
         </table>
       </div>
     ) : (
-      <div className="empty-state" style={{ padding: '2rem' }}>
-        <XCircle size={28} />
-        <span>{connected ? 'No jobs have run on this worker yet.' : 'Worker service is offline.'}</span>
+      <div className="empty-state jobs-empty-state">
+        {connected ? <CheckCircle2 size={28} /> : <XCircle size={28} />}
+        <strong>{connected ? emptyMessage : 'Worker service is offline.'}</strong>
+        <span>
+          {connected
+            ? 'This view updates automatically when job activity changes.'
+            : 'Job activity will return when the local worker API is available.'}
+        </span>
       </div>
     )}
-  </div>
+  </section>
 )
 
 export default JobsTable

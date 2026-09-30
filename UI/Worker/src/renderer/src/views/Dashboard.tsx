@@ -1,7 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React from 'react'
 import {
   Activity,
-  Clock3,
   Cpu,
   Database,
   Gauge,
@@ -11,8 +10,7 @@ import {
   MemoryStick,
   Network,
   Server,
-  ShieldCheck,
-  TerminalSquare
+  ShieldCheck
 } from 'lucide-react'
 import TopBar from '../components/TopBar'
 import StatCard from '../components/StatCard'
@@ -28,7 +26,6 @@ const Dashboard: React.FC<WorkerData> = ({
   metrics,
   gpus,
   jobs,
-  logs,
   status,
   connected,
   apiReachable,
@@ -58,21 +55,7 @@ const Dashboard: React.FC<WorkerData> = ({
   const vramPct = vramTotalGb > 0 ? Math.round((vramUsedGb / vramTotalGb) * 100) : 0
   const diskUsedPct = diskTotalGb > 0 ? ((diskTotalGb - diskFreeGb) / diskTotalGb) * 100 : 0
   const live = apiReachable
-  const logBodyRef = useRef<HTMLDivElement>(null)
-  const [logAutoScroll, setLogAutoScroll] = useState(true)
-
-  useEffect(() => {
-    if (logBodyRef.current && logAutoScroll) {
-      logBodyRef.current.scrollTop = logBodyRef.current.scrollHeight
-    }
-  }, [logs, logAutoScroll])
-
-  const handleLogScroll = () => {
-    if (logBodyRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = logBodyRef.current
-      setLogAutoScroll(scrollHeight - scrollTop - clientHeight < 12)
-    }
-  }
+  const runningJobs = jobs.filter((job) => job.status === 'running')
 
   return (
     <div className="dashboard">
@@ -91,7 +74,7 @@ const Dashboard: React.FC<WorkerData> = ({
           <div>
             <span className="eyebrow">LOCAL NODE OBSERVABILITY</span>
             <h1>Worker command center</h1>
-            <p>Live hardware, scheduler assignments, and worker-service logs from this machine.</p>
+            <p>Live hardware and active scheduler assignments from this machine.</p>
           </div>
           <div className="hero-state">
             <span className={`hero-orb ${connected ? 'hero-orb-online' : ''}`} />
@@ -257,40 +240,13 @@ const Dashboard: React.FC<WorkerData> = ({
           </div>
         </div>
 
-        <JobsTable jobs={jobs} connected={apiReachable} />
-
-        <section className="card service-log-card terminal-window">
-          <div className="terminal-header service-log-header">
-            <div className="mac-btns" aria-hidden="true">
-              <span className="mac-btn close" />
-              <span className="mac-btn minimize" />
-              <span className="mac-btn maximize" />
-            </div>
-            <TerminalSquare size={20} color="var(--accent-primary)" />
-            <div className="terminal-title-wrap">
-              <h3>Worker service logs</h3>
-              <p>Python worker activity only — training container output is intentionally excluded.</p>
-            </div>
-            <span className="badge badge-running">{logs.length} lines</span>
-          </div>
-          <div ref={logBodyRef} onScroll={handleLogScroll} className="service-log-body terminal-body mono">
-            {logs.length === 0 ? (
-              <div className="empty-state">
-                <Clock3 size={24} />
-                <span>{apiReachable ? 'Waiting for worker log activity.' : 'Worker service is offline.'}</span>
-              </div>
-            ) : (
-              logs.map((entry, index) => (
-                <div key={`${entry.timestamp}-${index}`} className={`service-log-line log-${entry.level}`}>
-                  <span className="service-log-time">{entry.timestamp.slice(11, 19)}</span>
-                  <span className="service-log-level">{entry.level.toUpperCase()}</span>
-                  <span className="service-log-source">{entry.logger}</span>
-                  <span className="service-log-message">{entry.message}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
+        <JobsTable
+          jobs={runningJobs}
+          connected={apiReachable}
+          title="Running jobs"
+          description="Assignments currently executing on this worker."
+          emptyMessage="No jobs are running right now."
+        />
       </div>
     </div>
   )

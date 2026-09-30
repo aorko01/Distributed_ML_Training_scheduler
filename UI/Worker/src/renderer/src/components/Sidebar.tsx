@@ -1,20 +1,35 @@
 import React from 'react'
-import { Cpu, LayoutDashboard, Wifi, WifiOff } from 'lucide-react'
+import { Cpu, History, LayoutDashboard, ScrollText, Wifi, WifiOff } from 'lucide-react'
 
-export type View = 'dashboard'
+export type View = 'dashboard' | 'past-jobs' | 'worker-logs'
 
 interface SidebarProps {
   view: View
+  onViewChange: (view: View) => void
+  counts: {
+    running: number
+    past: number
+    logs: number
+  }
   connected: boolean
   apiReachable: boolean
   platform: string
 }
 
-const NAV_ITEMS: { key: View; label: string; icon: typeof LayoutDashboard }[] = [
-  { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }
+const NAV_ITEMS: { key: View; label: string; icon: typeof LayoutDashboard; count: keyof SidebarProps['counts'] }[] = [
+  { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, count: 'running' },
+  { key: 'past-jobs', label: 'Past jobs', icon: History, count: 'past' },
+  { key: 'worker-logs', label: 'Worker logs', icon: ScrollText, count: 'logs' }
 ]
 
-const Sidebar: React.FC<SidebarProps> = ({ view, connected, apiReachable, platform }) => (
+const Sidebar: React.FC<SidebarProps> = ({
+  view,
+  onViewChange,
+  counts,
+  connected,
+  apiReachable,
+  platform
+}) => (
   <aside className="sidebar">
     <div className="sidebar-header">
       <div className="logo-mark">
@@ -27,13 +42,17 @@ const Sidebar: React.FC<SidebarProps> = ({ view, connected, apiReachable, platfo
 
     <div className="nav-section-label">Monitoring</div>
     <nav className="sidebar-nav">
-      {NAV_ITEMS.map(({ key, label, icon: Icon }) => (
+      {NAV_ITEMS.map(({ key, label, icon: Icon, count }) => (
         <button
           key={key}
+          type="button"
           className={`nav-item${view === key ? ' active' : ''}`}
+          aria-current={view === key ? 'page' : undefined}
+          onClick={() => onViewChange(key)}
         >
           <Icon size={17} />
-          {label}
+          <span>{label}</span>
+          <span className="nav-count">{counts[count]}</span>
         </button>
       ))}
     </nav>
