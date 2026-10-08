@@ -12,7 +12,14 @@ import {
 import LogTerminal from "../components/LogTerminal";
 import CopyButton from "../components/CopyButton";
 import StatusBadge from "../components/StatusBadge";
-import { ArrowLeft, Download, Loader2, Rocket, MonitorPlay, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Download,
+  Loader2,
+  Rocket,
+  MonitorPlay,
+  X,
+} from "lucide-react";
 import type { DownloadProgress } from "../services/jobDownload";
 
 const JobDetails: React.FC = () => {
@@ -21,7 +28,9 @@ const JobDetails: React.FC = () => {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [liveStatus, setLiveStatus] = useState<JobStatus | undefined>(undefined);
+  const [liveStatus, setLiveStatus] = useState<JobStatus | undefined>(
+    undefined,
+  );
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] =
@@ -48,7 +57,11 @@ const JobDetails: React.FC = () => {
     downloadAbortRef.current = controller;
     setDownloading(true);
     setDownloadError(null);
-    setDownloadProgress({ phase: "preparing", loadedBytes: 0, totalBytes: null });
+    setDownloadProgress({
+      phase: "preparing",
+      loadedBytes: 0,
+      totalBytes: null,
+    });
     try {
       await downloadJobOutput(job.id, job.name, {
         signal: controller.signal,
@@ -145,7 +158,7 @@ const JobDetails: React.FC = () => {
           height: "100%",
         }}
       >
-        <Loader2 className="animate-spin text-blue-500" size={32} />
+        <Loader2 className="animate-spin text-accent" size={32} />
       </div>
     );
   }
@@ -162,32 +175,30 @@ const JobDetails: React.FC = () => {
   }
 
   const displayedStatus = liveStatus ?? job.status;
-  const backPath = displayedStatus === "Completed" || displayedStatus === "Failed"
-    ? "/job-history"
-    : "/";
+  const backPath =
+    displayedStatus === "Completed" || displayedStatus === "Failed"
+      ? "/job-history"
+      : "/";
 
   return (
     <div
       className="fade-in"
       style={{ display: "flex", flexDirection: "column", height: "100%" }}
     >
-      <div
-        style={{
-          marginBottom: "2rem",
-          display: "flex",
-          alignItems: "center",
-          gap: "1rem",
-        }}
-      >
+      <div className="detail-header">
         <button
           className="btn btn-secondary"
           style={{ padding: "0.5rem", borderRadius: "50%" }}
           onClick={() => navigate(backPath)}
-          aria-label={backPath === "/job-history" ? "Back to Job History" : "Back to Dashboard"}
+          aria-label={
+            backPath === "/job-history"
+              ? "Back to Job History"
+              : "Back to Dashboard"
+          }
         >
           <ArrowLeft size={20} />
         </button>
-        <h1 style={{ margin: 0 }}>Job: {job.name}</h1>
+        <h1 style={{ margin: 0 }}>{job.name}</h1>
         <StatusBadge status={displayedStatus} />
         <div
           style={{
@@ -254,7 +265,9 @@ const JobDetails: React.FC = () => {
             downloadProgress?.phase === "downloading" &&
             downloadProgress.totalBytes == null &&
             downloadProgress.loadedBytes > 0 && (
-              <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+              <span
+                style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}
+              >
                 {formatBytes(downloadProgress.loadedBytes)} received…
               </span>
             )}
@@ -269,43 +282,46 @@ const JobDetails: React.FC = () => {
         </div>
       </div>
 
-      {job.status === "ImageReady" && (job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY') && (
-        <div className="card ws-next-step" style={{ marginBottom: "1.5rem" }}>
-          <MonitorPlay size={18} />
-          <div>
-            <strong>Interactive only · no workspace files</strong>
-            <p>
-              This image has no workspace files and is interactive-only. Open it as an{" "}
-              <Link to={`/interactive/new?job=${encodeURIComponent(job.id)}`}>interactive workspace</Link>,
-              add and save files, then submit the saved workspace for training.
-            </p>
+      {job.status === "ImageReady" &&
+        (job.trainingEligible === false ||
+          job.sourceKind === "PACKAGES_ONLY") && (
+          <div className="card ws-next-step" style={{ marginBottom: "1.5rem" }}>
+            <MonitorPlay size={18} />
+            <div>
+              <strong>Interactive only · no workspace files</strong>
+              <p>
+                This image has no workspace files and is interactive-only. Open
+                it as an{" "}
+                <Link to={`/interactive/new?job=${encodeURIComponent(job.id)}`}>
+                  interactive workspace
+                </Link>
+                , add and save files, then submit the saved workspace for
+                training.
+              </p>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {job.status === "ImageReady" && job.trainingEligible !== false && job.sourceKind !== 'PACKAGES_ONLY' && (
-        <div className="card ws-next-step" style={{ marginBottom: "1.5rem" }}>
-          <Rocket size={18} />
-          <div>
-            <strong>Image ready — no training command yet</strong>
-            <p>
-              This workspace was built without an entry command. Provide the entry and
-              resume commands on the <Link to={`/training?job=${encodeURIComponent(job.id)}`}>Training page</Link>{" "}
-              to run VRAM estimation and start training.
-            </p>
+      {job.status === "ImageReady" &&
+        job.trainingEligible !== false &&
+        job.sourceKind !== "PACKAGES_ONLY" && (
+          <div className="card ws-next-step" style={{ marginBottom: "1.5rem" }}>
+            <Rocket size={18} />
+            <div>
+              <strong>Image ready — no training command yet</strong>
+              <p>
+                This workspace was built without an entry command. Provide the
+                entry and resume commands on the{" "}
+                <Link to={`/training?job=${encodeURIComponent(job.id)}`}>
+                  Training page
+                </Link>{" "}
+                to run VRAM estimation and start training.
+              </p>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "300px 1fr",
-          gap: "2rem",
-          flex: 1,
-          minHeight: 0,
-        }}
-      >
+      <div className="detail-grid">
         {/* Job Details Sidebar */}
         <div className="card" style={{ height: "fit-content" }}>
           <h3>Details</h3>
@@ -338,7 +354,14 @@ const JobDetails: React.FC = () => {
                 ID
               </div>
               <div className="build-detail-id">
-                <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{job.id}</span>
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {job.id}
+                </span>
                 <CopyButton value={job.id} title={`Copy job id ${job.id}`} />
               </div>
             </div>
@@ -423,7 +446,9 @@ const JobDetails: React.FC = () => {
                 >
                   Packages
                 </div>
-                <div style={{ fontSize: "0.85rem", wordBreak: "break-word" }}>{job.packages}</div>
+                <div style={{ fontSize: "0.85rem", wordBreak: "break-word" }}>
+                  {job.packages}
+                </div>
               </div>
             )}
             <Link
@@ -445,7 +470,11 @@ const JobDetails: React.FC = () => {
           }}
         >
           <h3 style={{ marginBottom: "1rem" }}>Training logs</h3>
-          <LogTerminal logs={logs} jobId={job.id} title={`training — job ${job.id}`} />
+          <LogTerminal
+            logs={logs}
+            jobId={job.id}
+            title={`training — job ${job.id}`}
+          />
         </div>
       </div>
     </div>

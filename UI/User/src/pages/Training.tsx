@@ -1,11 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { fetchJobById, submitTraining, type Job } from '../services/jobs';
-import CopyButton from '../components/CopyButton';
-import StatusBadge from '../components/StatusBadge';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { fetchJobById, submitTraining, type Job } from "../services/jobs";
+import CopyButton from "../components/CopyButton";
+import StatusBadge from "../components/StatusBadge";
 import {
-  ClipboardList, Rocket, Loader2, TerminalSquare, FileArchive, AlertTriangle, ArrowRight,
-} from 'lucide-react';
+  ClipboardList,
+  Rocket,
+  Loader2,
+  TerminalSquare,
+  FileArchive,
+  AlertTriangle,
+  ArrowRight,
+} from "lucide-react";
 
 /**
  * Training page - the second half of the decoupled workflow.
@@ -17,16 +23,16 @@ import {
  */
 const Training: React.FC = () => {
   const [params] = useSearchParams();
-  const [jobId, setJobId] = useState(params.get('job') ?? '');
+  const [jobId, setJobId] = useState(params.get("job") ?? "");
   const [job, setJob] = useState<Job | null>(null);
   const [looking, setLooking] = useState(false);
-  const [lookupError, setLookupError] = useState('');
-  const [command, setCommand] = useState('');
-  const [resumeCommand, setResumeCommand] = useState('');
+  const [lookupError, setLookupError] = useState("");
+  const [command, setCommand] = useState("");
+  const [resumeCommand, setResumeCommand] = useState("");
   const [requestPriority, setRequestPriority] = useState(false);
-  const [priorityReason, setPriorityReason] = useState('');
+  const [priorityReason, setPriorityReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
+  const [submitError, setSubmitError] = useState("");
   const submittingRef = useRef(false);
   const navigate = useNavigate();
 
@@ -36,8 +42,8 @@ const Training: React.FC = () => {
   // the built image contains and whether it is ready to be armed.
   useEffect(() => {
     setJob(null);
-    setLookupError('');
-    setSubmitError('');
+    setLookupError("");
+    setSubmitError("");
     if (!trimmedId) {
       setLooking(false);
       return;
@@ -52,37 +58,56 @@ const Training: React.FC = () => {
           return;
         }
         setJob(data);
-        setCommand((current) => current || data.command || '');
-        setResumeCommand((current) => current || data.resumeCommand || '');
+        setCommand((current) => current || data.command || "");
+        setResumeCommand((current) => current || data.resumeCommand || "");
       })
       .catch((err) => {
-        if (active) setLookupError(err instanceof Error ? err.message : 'Lookup failed');
+        if (active)
+          setLookupError(err instanceof Error ? err.message : "Lookup failed");
       })
-      .finally(() => { if (active) setLooking(false); });
-    return () => { active = false; };
+      .finally(() => {
+        if (active) setLooking(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [trimmedId]);
 
   const readiness = useMemo(() => {
-    if (!trimmedId) return { ready: false, reason: 'Paste the job id of a built workspace.' };
-    if (looking) return { ready: false, reason: 'Looking up the workspace...' };
+    if (!trimmedId)
+      return { ready: false, reason: "Paste the job id of a built workspace." };
+    if (looking) return { ready: false, reason: "Looking up the workspace..." };
     if (lookupError) return { ready: false, reason: lookupError };
-    if (!job) return { ready: false, reason: 'Workspace not loaded yet.' };
-    if (job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY') {
-      return { ready: false, reason: 'This image has no workspace files and is interactive-only. Open it as an interactive workspace, add and save files, then submit the saved workspace for training.' };
+    if (!job) return { ready: false, reason: "Workspace not loaded yet." };
+    if (job.trainingEligible === false || job.sourceKind === "PACKAGES_ONLY") {
+      return {
+        ready: false,
+        reason:
+          "This image has no workspace files and is interactive-only. Open it as an interactive workspace, add and save files, then submit the saved workspace for training.",
+      };
     }
     switch (job.status) {
-      case 'ImageReady':
-        return { ready: true, reason: '' };
-      case 'Pending':
-        return { ready: false, reason: 'The image is still queued for building.' };
-      case 'Building':
-        return { ready: false, reason: 'The image is still building.' };
-      case 'Estimating':
-        return { ready: false, reason: 'Training was already submitted; VRAM estimation is running.' };
-      case 'Running':
-        return { ready: false, reason: 'This workspace is already training.' };
+      case "ImageReady":
+        return { ready: true, reason: "" };
+      case "Pending":
+        return {
+          ready: false,
+          reason: "The image is still queued for building.",
+        };
+      case "Building":
+        return { ready: false, reason: "The image is still building." };
+      case "Estimating":
+        return {
+          ready: false,
+          reason: "Training was already submitted; VRAM estimation is running.",
+        };
+      case "Running":
+        return { ready: false, reason: "This workspace is already training." };
       default:
-        return { ready: false, reason: `This workspace is ${job.status}; its image cannot be armed.` };
+        return {
+          ready: false,
+          reason: `This workspace is ${job.status}; its image cannot be armed.`,
+        };
     }
   }, [job, looking, lookupError, trimmedId]);
 
@@ -93,7 +118,7 @@ const Training: React.FC = () => {
     if (submittingRef.current || !canSubmit) return;
     submittingRef.current = true;
     setSubmitting(true);
-    setSubmitError('');
+    setSubmitError("");
     try {
       await submitTraining(trimmedId, {
         command: command.trim(),
@@ -104,7 +129,9 @@ const Training: React.FC = () => {
       // VRAM estimation starts immediately; the job view shows both phases.
       navigate(`/jobs/${trimmedId}`);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Training submission failed');
+      setSubmitError(
+        err instanceof Error ? err.message : "Training submission failed",
+      );
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -124,7 +151,7 @@ const Training: React.FC = () => {
               looking={looking}
               lookupError={lookupError}
               job={job}
-              readinessReason={readiness.ready ? '' : readiness.reason}
+              readinessReason={readiness.ready ? "" : readiness.reason}
             />
             <CommandFields
               command={command}
@@ -138,17 +165,31 @@ const Training: React.FC = () => {
               priorityReason={priorityReason}
               setPriorityReason={setPriorityReason}
             />
-            {submitError && <div className="training-error" role="alert">{submitError}</div>}
-            {(job?.trainingEligible === false || job?.sourceKind === 'PACKAGES_ONLY') && job && (
+            {submitError && (
               <div className="training-error" role="alert">
-                This image has no workspace files and is interactive-only. Open it as an{' '}
-                <Link to={`/interactive/new?job=${encodeURIComponent(job.id)}`}>
-                  interactive workspace
-                </Link>
-                , add and save files, then submit the saved workspace for training.
+                {submitError}
               </div>
             )}
-            <SubmitRow canSubmit={canSubmit} submitting={submitting} jobId={job?.id} />
+            {(job?.trainingEligible === false ||
+              job?.sourceKind === "PACKAGES_ONLY") &&
+              job && (
+                <div className="training-error" role="alert">
+                  This image has no workspace files and is interactive-only.
+                  Open it as an{" "}
+                  <Link
+                    to={`/interactive/new?job=${encodeURIComponent(job.id)}`}
+                  >
+                    interactive workspace
+                  </Link>
+                  , add and save files, then submit the saved workspace for
+                  training.
+                </div>
+              )}
+            <SubmitRow
+              canSubmit={canSubmit}
+              submitting={submitting}
+              jobId={job?.id}
+            />
           </fieldset>
         </form>
       </div>
@@ -164,31 +205,49 @@ interface TrainingHeroProps {
 const TrainingHero: React.FC<TrainingHeroProps> = ({ job }) => (
   <div className="ws-hero">
     <div className="ws-hero-copy">
-      <span className="ws-eyebrow"><Rocket size={14} /> Training</span>
-      <h1>Start Training</h1>
+      <span className="ws-eyebrow">
+        <Rocket size={14} /> Training
+      </span>
+      <h1>Put an idea in motion.</h1>
       <p>
-        Workspace images are built without a command. Paste the job id copied from the
-        Builds page, provide the entry and resume commands, and submit - the scheduler
-        estimates VRAM and then runs the training on a worker.
+        Your image is built. Now give it a direction. Paste its job id, add your
+        training command, and we’ll estimate VRAM before finding a worker. Add a
+        resume command to pick up from a checkpoint on a retry.
       </p>
       <div className="ws-steps">
-        <span className="ws-step"><ClipboardList size={14} /> 1 - Job id</span>
-        <span className="ws-step"><TerminalSquare size={14} /> 2 - Entry command</span>
-        <span className="ws-step"><FileArchive size={14} /> 3 - Resume command</span>
-        <span className="ws-step"><Rocket size={14} /> 4 - Submit</span>
+        <span className="ws-step">
+          <ClipboardList size={14} /> 1 - Job id
+        </span>
+        <span className="ws-step">
+          <TerminalSquare size={14} /> 2 - Entry command
+        </span>
+        <span className="ws-step">
+          <FileArchive size={14} /> 3 - Resume command
+        </span>
+        <span className="ws-step">
+          <Rocket size={14} /> 4 - Submit
+        </span>
       </div>
     </div>
     <div className="ws-hero-card">
       <div className="ws-hero-row">
-        <ClipboardList size={16} /><span>Workspace</span><strong>{job ? job.name : 'Not loaded'}</strong>
+        <ClipboardList size={16} />
+        <span>Workspace</span>
+        <strong>{job ? job.name : "Not loaded"}</strong>
       </div>
       <div className="ws-hero-row">
-        <TerminalSquare size={16} /><span>Status</span>
-        <strong>{job ? <StatusBadge status={job.status} /> : 'Unknown'}</strong>
+        <TerminalSquare size={16} />
+        <span>Status</span>
+        <strong>{job ? <StatusBadge status={job.status} /> : "Unknown"}</strong>
       </div>
       <div className="ws-hero-row">
-        <FileArchive size={16} /><span>Environment</span>
-        <strong>{job ? `PT ${job.pytorchVersion} / CUDA ${job.cudaVersion}` : 'Unknown'}</strong>
+        <FileArchive size={16} />
+        <span>Environment</span>
+        <strong>
+          {job
+            ? `PT ${job.pytorchVersion} / CUDA ${job.cudaVersion}`
+            : "Unknown"}
+        </strong>
       </div>
     </div>
   </div>
@@ -206,10 +265,18 @@ interface JobIdFieldProps {
 
 /** Job id entry field with copy support and a live readiness hint. */
 const JobIdField: React.FC<JobIdFieldProps> = ({
-  jobId, setJobId, trimmedId, looking, lookupError, job, readinessReason,
+  jobId,
+  setJobId,
+  trimmedId,
+  looking,
+  lookupError,
+  job,
+  readinessReason,
 }) => (
   <div className="form-group">
-    <label className="form-label" htmlFor="training-job-id">Workspace job id</label>
+    <label className="form-label" htmlFor="training-job-id">
+      Workspace job id
+    </label>
     <div className="training-id-row">
       <input
         id="training-job-id"
@@ -224,7 +291,8 @@ const JobIdField: React.FC<JobIdFieldProps> = ({
       <CopyButton value={trimmedId} label="Copy" title="Copy this job id" />
     </div>
     <p className="ws-hint">
-      Copy the id from <strong>Builds</strong> (or from a build detail page) and paste it here.
+      Copy the id from <strong>Builds</strong> (or from a build detail page) and
+      paste it here.
     </p>
     {looking && (
       <p role="status" className="ws-hint training-inline">
@@ -232,10 +300,14 @@ const JobIdField: React.FC<JobIdFieldProps> = ({
       </p>
     )}
     {!looking && lookupError && (
-      <p role="alert" className="training-warning"><AlertTriangle size={14} /> {lookupError}</p>
+      <p role="alert" className="training-warning">
+        <AlertTriangle size={14} /> {lookupError}
+      </p>
     )}
     {!looking && job && readinessReason && (
-      <p role="status" className="training-warning"><AlertTriangle size={14} /> {readinessReason}</p>
+      <p role="status" className="training-warning">
+        <AlertTriangle size={14} /> {readinessReason}
+      </p>
     )}
   </div>
 );
@@ -248,11 +320,16 @@ interface CommandFieldsProps {
 }
 
 const CommandFields: React.FC<CommandFieldsProps> = ({
-  command, setCommand, resumeCommand, setResumeCommand,
+  command,
+  setCommand,
+  resumeCommand,
+  setResumeCommand,
 }) => (
   <>
     <div className="form-group">
-      <label className="form-label" htmlFor="training-command">Entry command (Bash)</label>
+      <label className="form-label" htmlFor="training-command">
+        Entry command (Bash)
+      </label>
       <textarea
         id="training-command"
         className="form-textarea"
@@ -262,10 +339,15 @@ const CommandFields: React.FC<CommandFieldsProps> = ({
         spellCheck={false}
         required
       />
-      <p className="ws-hint">Single line, executed inside the container root of your built workspace image.</p>
+      <p className="ws-hint">
+        Single line, executed inside the container root of your built workspace
+        image.
+      </p>
     </div>
     <div className="form-group">
-      <label className="form-label" htmlFor="training-resume-command">Resume checkpoint command (Bash)</label>
+      <label className="form-label" htmlFor="training-resume-command">
+        Resume checkpoint command (Bash)
+      </label>
       <textarea
         id="training-resume-command"
         className="form-textarea"
@@ -274,7 +356,10 @@ const CommandFields: React.FC<CommandFieldsProps> = ({
         placeholder="python train.py --resume checkpoint.pt"
         spellCheck={false}
       />
-      <p className="ws-hint">Optional. Used to resume from the last saved checkpoint when a run is retried.</p>
+      <p className="ws-hint">
+        Optional. Used to resume from the last saved checkpoint when a run is
+        retried.
+      </p>
     </div>
   </>
 );
@@ -288,7 +373,10 @@ interface PriorityFieldProps {
 
 /** Priority request moved here from Add Workspace: it affects training scheduling only. */
 const PriorityField: React.FC<PriorityFieldProps> = ({
-  requestPriority, setRequestPriority, priorityReason, setPriorityReason,
+  requestPriority,
+  setRequestPriority,
+  priorityReason,
+  setPriorityReason,
 }) => (
   <div className="form-group training-priority">
     <label className="training-checkbox">
@@ -301,7 +389,9 @@ const PriorityField: React.FC<PriorityFieldProps> = ({
     </label>
     {requestPriority && (
       <div className="training-priority-reason">
-        <label className="form-label" htmlFor="training-priority-reason">Reason for priority</label>
+        <label className="form-label" htmlFor="training-priority-reason">
+          Reason for priority
+        </label>
         <textarea
           id="training-priority-reason"
           className="form-input"
@@ -320,13 +410,17 @@ interface SubmitRowProps {
   jobId?: string;
 }
 
-const SubmitRow: React.FC<SubmitRowProps> = ({ canSubmit, submitting, jobId }) => (
+const SubmitRow: React.FC<SubmitRowProps> = ({
+  canSubmit,
+  submitting,
+  jobId,
+}) => (
   <div className="training-submit-row">
     <span className="ws-hint">
       Submitting arms the built image - the image is never rebuilt.
       {jobId && (
         <>
-          {' '}
+          {" "}
           <Link to={`/builds/${jobId}`} className="training-build-link">
             Inspect build log <ArrowRight size={12} />
           </Link>
@@ -334,8 +428,12 @@ const SubmitRow: React.FC<SubmitRowProps> = ({ canSubmit, submitting, jobId }) =
       )}
     </span>
     <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
-      {submitting ? <Loader2 size={16} className="animate-spin" /> : <Rocket size={16} />}
-      {submitting ? 'Submitting...' : 'Start training'}
+      {submitting ? (
+        <Loader2 size={16} className="animate-spin" />
+      ) : (
+        <Rocket size={16} />
+      )}
+      {submitting ? "Submitting..." : "Start training"}
     </button>
   </div>
 );

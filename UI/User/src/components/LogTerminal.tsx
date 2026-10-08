@@ -1,7 +1,8 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from "react";
+import { Terminal } from "lucide-react";
 
 interface LogLine {
-  type: 'info' | 'warn' | 'error' | 'success';
+  type: "info" | "warn" | "error" | "success";
   text: string;
   timestamp: string;
 }
@@ -32,33 +33,37 @@ const LogTerminal: React.FC<LogTerminalProps> = ({ logs, jobId, title }) => {
 
   const getLogClass = (type: string) => {
     switch (type) {
-      case 'info': return 'term-info';
-      case 'warn': return 'term-warn';
-      case 'error': return 'term-error';
-      case 'success': return 'term-success';
-      default: return 'term-info';
+      case "info":
+        return "term-info";
+      case "warn":
+        return "term-warn";
+      case "error":
+        return "term-error";
+      case "success":
+        return "term-success";
+      default:
+        return "term-info";
     }
   };
 
   const formatTime = (isoString: string) => {
     const d = new Date(isoString);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+    return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;
   };
 
   return (
     <div className="terminal-window">
       <div className="terminal-header">
-        <div className="mac-btns">
-          <div className="mac-btn close"></div>
-          <div className="mac-btn minimize"></div>
-          <div className="mac-btn maximize"></div>
-        </div>
+        <Terminal size={14} aria-hidden="true" />
         <div className="terminal-title">{title ?? `bash - job ${jobId}`}</div>
+        <span className="terminal-count">{logs.length} lines</span>
       </div>
       <div className="terminal-body" ref={bodyRef} onScroll={handleScroll}>
         {logs.map((log, index) => (
           <div key={index} className="term-line">
-            <span className="term-timestamp">[{formatTime(log.timestamp)}]</span>
+            <span className="term-timestamp">
+              [{formatTime(log.timestamp)}]
+            </span>
             <span className={getLogClass(log.type)}>{log.text}</span>
           </div>
         ))}

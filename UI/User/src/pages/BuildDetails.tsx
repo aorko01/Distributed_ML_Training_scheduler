@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import React, { useEffect, useState } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   fetchJobById,
   fetchJobBuildLogs,
@@ -7,11 +7,18 @@ import {
   type Job,
   type JobStatus,
   type LogLine,
-} from '../services/jobs';
-import LogTerminal from '../components/LogTerminal';
-import CopyButton from '../components/CopyButton';
-import StatusBadge from '../components/StatusBadge';
-import { ArrowLeft, Hammer, Loader2, Package, Rocket, MonitorPlay } from 'lucide-react';
+} from "../services/jobs";
+import LogTerminal from "../components/LogTerminal";
+import CopyButton from "../components/CopyButton";
+import StatusBadge from "../components/StatusBadge";
+import {
+  ArrowLeft,
+  Hammer,
+  Loader2,
+  Package,
+  Rocket,
+  MonitorPlay,
+} from "lucide-react";
 
 const BuildDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -19,7 +26,9 @@ const BuildDetails: React.FC = () => {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [liveStatus, setLiveStatus] = useState<JobStatus | undefined>(undefined);
+  const [liveStatus, setLiveStatus] = useState<JobStatus | undefined>(
+    undefined,
+  );
 
   useEffect(() => {
     if (!id) return;
@@ -36,7 +45,7 @@ const BuildDetails: React.FC = () => {
     let cancelled = false;
     let stopStream: (() => void) | undefined;
 
-    const isFinished = job.status === 'Completed' || job.status === 'Failed';
+    const isFinished = job.status === "Completed" || job.status === "Failed";
     const load = async () => {
       setLogs([]);
       if (isFinished) {
@@ -50,9 +59,9 @@ const BuildDetails: React.FC = () => {
         },
         onDone: (status) => {
           if (cancelled) return;
-          if (status === 'COMPLETED') setLiveStatus('Completed');
-          else if (status === 'FAILED') setLiveStatus('Failed');
-          else if (status === 'RETRY_NEEDED') setLiveStatus('Retrying');
+          if (status === "COMPLETED") setLiveStatus("Completed");
+          else if (status === "FAILED") setLiveStatus("Failed");
+          else if (status === "RETRY_NEEDED") setLiveStatus("Retrying");
         },
       });
     };
@@ -65,8 +74,15 @@ const BuildDetails: React.FC = () => {
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-        <Loader2 className="animate-spin text-blue-500" size={32} />
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "100%",
+        }}
+      >
+        <Loader2 className="animate-spin text-accent" size={32} />
       </div>
     );
   }
@@ -75,86 +91,200 @@ const BuildDetails: React.FC = () => {
     return (
       <div className="fade-in">
         <h2>Workspace not found</h2>
-        <button className="btn btn-secondary" onClick={() => navigate('/builds')}>
+        <button
+          className="btn btn-secondary"
+          onClick={() => navigate("/builds")}
+          aria-label="Back to image builds"
+        >
           Back to Builds
         </button>
       </div>
     );
   }
 
-  const interactiveOnly = job.trainingEligible === false || job.sourceKind === 'PACKAGES_ONLY';
-  const isReady = (liveStatus ?? job.status) === 'ImageReady';
+  const interactiveOnly =
+    job.trainingEligible === false || job.sourceKind === "PACKAGES_ONLY";
+  const isReady = (liveStatus ?? job.status) === "ImageReady";
 
   return (
-    <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ marginBottom: '2rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-        <button className="btn btn-secondary" style={{ padding: '0.5rem', borderRadius: '50%' }} onClick={() => navigate('/builds')}>
+    <div
+      className="fade-in"
+      style={{ display: "flex", flexDirection: "column", height: "100%" }}
+    >
+      <div className="detail-header">
+        <button
+          className="btn btn-secondary"
+          style={{ padding: "0.5rem", borderRadius: "50%" }}
+          onClick={() => navigate("/builds")}
+          aria-label="Back to image builds"
+        >
           <ArrowLeft size={20} />
         </button>
         <Hammer size={22} color="var(--accent-primary)" />
-        <h1 style={{ margin: 0 }}>Build: {job.name}</h1>
+        <h1 style={{ margin: 0 }}>{job.name}</h1>
         <StatusBadge status={liveStatus ?? job.status} />
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
-          <CopyButton value={job.id} label="Copy job id" title={`Copy job id ${job.id}`} />
+        <div className="detail-actions">
+          <CopyButton
+            value={job.id}
+            label="Copy job id"
+            title={`Copy job id ${job.id}`}
+          />
           {isReady && !interactiveOnly && (
-            <Link to={`/training?job=${encodeURIComponent(job.id)}`} className="btn btn-primary" style={{ textDecoration: 'none' }}>
+            <Link
+              to={`/training?job=${encodeURIComponent(job.id)}`}
+              className="btn btn-primary"
+              style={{ textDecoration: "none" }}
+            >
               <Rocket size={16} /> Start training
             </Link>
           )}
           {isReady && interactiveOnly && (
-            <Link to={`/interactive/new?job=${encodeURIComponent(job.id)}`} className="btn btn-primary" style={{ textDecoration: 'none' }}>
+            <Link
+              to={`/interactive/new?job=${encodeURIComponent(job.id)}`}
+              className="btn btn-primary"
+              style={{ textDecoration: "none" }}
+            >
               <MonitorPlay size={16} /> Use interactively
             </Link>
           )}
-          <Link to={`/jobs/${job.id}`} className="btn btn-secondary" style={{ textDecoration: 'none' }}>
+          <Link
+            to={`/jobs/${job.id}`}
+            className="btn btn-secondary"
+            style={{ textDecoration: "none" }}
+          >
             View training logs
           </Link>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '2rem', flex: 1, minHeight: 0 }}>
-        <div className="card" style={{ height: 'fit-content' }}>
+      <div className="detail-grid">
+        <div className="card" style={{ height: "fit-content" }}>
           <h3>Workspace</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "1rem",
+              marginTop: "1rem",
+            }}
+          >
             <div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>ID</div>
+              <div
+                style={{
+                  color: "var(--text-secondary)",
+                  fontSize: "0.75rem",
+                  textTransform: "uppercase",
+                }}
+              >
+                ID
+              </div>
               <div className="build-detail-id">
-                <span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{job.id}</span>
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {job.id}
+                </span>
                 <CopyButton value={job.id} title={`Copy job id ${job.id}`} />
               </div>
             </div>
             <div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Environment</div>
-              <div>PT {job.pytorchVersion} / CUDA {job.cudaVersion}</div>
+              <div
+                style={{
+                  color: "var(--text-secondary)",
+                  fontSize: "0.75rem",
+                  textTransform: "uppercase",
+                }}
+              >
+                Environment
+              </div>
+              <div>
+                PT {job.pytorchVersion} / CUDA {job.cudaVersion}
+              </div>
             </div>
             {job.packages && (
               <div>
-                <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}><Package size={12} /> Packages</span>
+                <div
+                  style={{
+                    color: "var(--text-secondary)",
+                    fontSize: "0.75rem",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.3rem",
+                    }}
+                  >
+                    <Package size={12} /> Packages
+                  </span>
                 </div>
-                <div style={{ fontSize: '0.85rem', wordBreak: 'break-word' }}>{job.packages}</div>
+                <div style={{ fontSize: "0.85rem", wordBreak: "break-word" }}>
+                  {job.packages}
+                </div>
               </div>
             )}
             <div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Status</div>
+              <div
+                style={{
+                  color: "var(--text-secondary)",
+                  fontSize: "0.75rem",
+                  textTransform: "uppercase",
+                }}
+              >
+                Status
+              </div>
               <div>{liveStatus ?? job.status}</div>
             </div>
             {interactiveOnly && (
               <div>
-                <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Capability</div>
-                <div>Interactive only · no workspace files. This image cannot be sent directly to training.</div>
+                <div
+                  style={{
+                    color: "var(--text-secondary)",
+                    fontSize: "0.75rem",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Capability
+                </div>
+                <div>
+                  Interactive only · no workspace files. This image cannot be
+                  sent directly to training.
+                </div>
               </div>
             )}
             <div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textTransform: 'uppercase' }}>Created</div>
+              <div
+                style={{
+                  color: "var(--text-secondary)",
+                  fontSize: "0.75rem",
+                  textTransform: "uppercase",
+                }}
+              >
+                Created
+              </div>
               <div>{new Date(job.submittedAt).toLocaleString()}</div>
             </div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', minHeight: '500px' }}>
-          <h3 style={{ marginBottom: '1rem' }}>Build log</h3>
-          <LogTerminal logs={logs} jobId={job.id} title={`build — workspace ${job.id}`} />
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            minHeight: "500px",
+          }}
+        >
+          <h3 style={{ marginBottom: "1rem" }}>Build log</h3>
+          <LogTerminal
+            logs={logs}
+            jobId={job.id}
+            title={`build — workspace ${job.id}`}
+          />
         </div>
       </div>
     </div>
