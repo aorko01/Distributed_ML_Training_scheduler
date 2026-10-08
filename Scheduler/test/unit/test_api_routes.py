@@ -558,6 +558,87 @@ class TestJobsRoutes:
             resp = client.get(f"/{job.id}/logs")
         assert resp.json()["content"] == "content"
 
+    def test_failed_estimation_returns_probe_log(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.FAILED,
+            vram_required=None,
+            failure_reason="CUDA out of memory",
+        )
+        client = self._client(db, user)
+        with (
+            patch.object(
+                jobs_route.log_service,
+                "fetch_training_log_from_object_store",
+                return_value="",
+            ),
+            patch.object(
+                jobs_route.log_service,
+                "fetch_vram_estimation_log_from_object_store",
+                return_value="probe traceback",
+            ),
+        ):
+            body = client.get(f"/{job.id}/logs").json()
+        assert body["source"] == "vram_estimation"
+        assert body["content"] == "probe traceback"
+
+    def test_successful_estimation_never_returns_old_probe_log(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.COMPLETED,
+            vram_required=4.0,
+        )
+        client = self._client(db, user)
+        with (
+            patch.object(
+                jobs_route.log_service,
+                "fetch_training_log_from_object_store",
+                return_value="epoch 1",
+            ),
+            patch.object(
+                jobs_route.log_service,
+                "fetch_vram_estimation_log_from_object_store",
+            ) as probe_log,
+            patch.object(
+                jobs_route.log_service,
+                "fetch_build_log_from_object_store",
+            ) as build_log,
+        ):
+            body = client.get(f"/{job.id}/logs").json()
+        assert body["source"] == "training"
+        assert body["content"] == "epoch 1"
+        probe_log.assert_not_called()
+        build_log.assert_not_called()
+
+    def test_successful_job_with_no_training_output_does_not_show_build_log(self, db):
+        user = make_user(db)
+        job = make_job(
+            db,
+            user.user_id,
+            status=JobStatus.COMPLETED,
+            vram_required=4.0,
+        )
+        client = self._client(db, user)
+        with (
+            patch.object(
+                jobs_route.log_service,
+                "fetch_training_log_from_object_store",
+                return_value="",
+            ),
+            patch.object(
+                jobs_route.log_service,
+                "fetch_build_log_from_object_store",
+            ) as build_log,
+        ):
+            body = client.get(f"/{job.id}/logs").json()
+        assert body["source"] == "training"
+        assert body["content"] == ""
+        build_log.assert_not_called()
+
     def test_get_job_build_logs(self, db):
         user = make_user(db)
         job = make_job(db, user.user_id)

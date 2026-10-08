@@ -18,6 +18,7 @@ TERMINAL_STATUSES = {"COMPLETED", "FAILED", "RETRY_NEEDED"}
 
 BUILD_LOG_OBJECT_KEY = "build.log"
 TRAINING_LOG_OBJECT_KEY = "training.log"
+VRAM_ESTIMATION_LOG_OBJECT_KEY = "vram-estimation.log"
 
 
 def _stream_key(job_id: str, stream: str = "training") -> str:
@@ -115,13 +116,20 @@ def fetch_build_log_from_object_store(job_id: str) -> str:
     return _fetch_log_object(job_id, BUILD_LOG_OBJECT_KEY)
 
 
-def fetch_training_log_from_object_store(job_id: str) -> str:
+def fetch_training_log_from_object_store(
+    job_id: str, *, fallback_to_build: bool = True
+) -> str:
     """Fetch the full {job_id}/training.log written by the worker.
 
     Older jobs stored training output appended to build.log; fall back to
     build.log when no dedicated training.log exists so history is not lost.
     """
     content = _fetch_log_object(job_id, TRAINING_LOG_OBJECT_KEY)
-    if content:
+    if content or not fallback_to_build:
         return content
     return _fetch_log_object(job_id, BUILD_LOG_OBJECT_KEY)
+
+
+def fetch_vram_estimation_log_from_object_store(job_id: str) -> str:
+    """Fetch diagnostics saved only when the VRAM probe failed."""
+    return _fetch_log_object(job_id, VRAM_ESTIMATION_LOG_OBJECT_KEY)

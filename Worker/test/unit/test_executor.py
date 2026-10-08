@@ -153,6 +153,11 @@ class TestParsePythonCommand:
 
 
 class TestHandleVramEstimation:
+    @pytest.fixture(autouse=True)
+    def _disable_object_store_network(self):
+        with patch.object(executor_module.ObjectStore, "upload_bytes", return_value=True):
+            yield
+
     def test_numeric_image_user_is_used_for_private_report_mount(self, executor, tmp_path):
         executor.docker_client.images.get.return_value.attrs = {
             "Config": {"User": "10001:10002"}
@@ -207,6 +212,28 @@ class TestHandleVramEstimation:
         ):
             executor.handle_vram_estimation("j1", "img", "python train.py")
         assert executor.api.mark_job_failed.call_args[0][1] == "user"
+
+    def test_nonzero_exit_persists_separate_probe_log(self, executor):
+        result = SimpleNamespace(
+            returncode=1,
+            stdout="loading model\n",
+            stderr="Traceback: CUDA out of memory\n",
+        )
+        executor.api.mark_job_failed = MagicMock()
+        with (
+            patch.object(JobExecutor, "_parse_python_command", return_value=["train.py"]),
+            patch.object(executor_module.subprocess, "run", return_value=result),
+            patch.object(JobExecutor, "_record_job"),
+            patch.object(executor_module.ObjectStore, "upload_bytes", return_value=True) as upload,
+        ):
+            executor.handle_vram_estimation("j1", "img", "python train.py")
+
+        object_key, payload, content_type = upload.call_args.args
+        assert object_key == "j1/vram-estimation.log"
+        assert content_type == "text/plain"
+        text = payload.decode()
+        assert "loading model" in text
+        assert "CUDA out of memory" in text
 
     def test_report_permission_error_is_system_failure(self, executor, caplog):
         stderr = "x" * 5000 + "\nPermissionError: [Errno 13] Permission denied: '/report/report.json'"
@@ -270,6 +297,8 @@ class TestHandleVramEstimation:
         ):
             executor.handle_vram_estimation("j1", "img", "python train.py")
         executor.api.save_vram_estimation.assert_called_once()
+        # Successful estimation output must never enter user-visible logs.
+        executor_module.ObjectStore.upload_bytes.assert_not_called()
 
     def test_report_dir_avoids_systemd_private_tmp(self, executor, tmp_path):
         """The report dir must not live under /tmp: with PrivateTmp=true the
@@ -519,6 +548,7 @@ class TestRestoreJobOutput:
         store.list_objects.return_value = [
             {"key": "j1/ckpt.pt", "size": 10},
             {"key": "j1/build.log", "size": 5},
+            {"key": "j1/vram-estimation.log", "size": 5},
             {"key": "j1/", "size": 0},
         ]
         store.download_to.return_value = True
@@ -750,6 +780,15 @@ class TestFlushAndAppendLogs:
             executor._append_build_log("j", store, ["l1"], force=True)
         assert store.download.call_args_list[0][0][0] == "j/training.log"
         assert "train-base" in store.upload_bytes.call_args[0][1].decode()
+
+    def test_append_never_copies_build_or_estimation_logs(self, executor):
+        store = MagicMock()
+        store.download.return_value = None
+        store.upload_bytes.return_value = True
+        with patch.object(executor_module.runtime_config, "get", return_value=60.0):
+            executor._append_build_log("j", store, ["epoch 1"], force=True)
+        store.download.assert_called_once_with("j/training.log")
+        assert store.upload_bytes.call_args.args[1].decode() == "epoch 1\n"
 
     def test_append_failure_keeps_last_upload_none(self, executor):
         store = MagicMock()

@@ -27,6 +27,7 @@ import runtime_config
 logger = logging.getLogger("executor")
 
 VRAM_LOG_TAIL_CHARS = 4000
+VRAM_FAILURE_LOG_OBJECT = "vram-estimation.log"
 
 
 class _JobLogState:
@@ -415,15 +416,48 @@ class JobExecutor:
         ))
         return report_reference and access_error
 
+    def _persist_vram_failure_log(
+        self,
+        job_id: str,
+        reason: str,
+        stdout: str | None = None,
+        stderr: str | None = None,
+    ) -> None:
+        """Persist probe diagnostics separately from the training log.
+
+        The scheduler only exposes this object while a job is failed before a
+        VRAM estimate exists. Keeping it separate prevents a successful probe
+        from being replayed in the later training log.
+        """
+        sections = [f"VRAM estimation failed: {reason.strip()}"]
+        stdout_tail = self._bounded_vram_output(stdout).strip()
+        stderr_tail = self._bounded_vram_output(stderr).strip()
+        if stdout_tail:
+            sections.extend(("", "stdout:", stdout_tail))
+        if stderr_tail:
+            sections.extend(("", "stderr:", stderr_tail))
+        content = "\n".join(sections).rstrip() + "\n"
+        try:
+            uploaded = ObjectStore().upload_bytes(
+                f"{job_id}/{VRAM_FAILURE_LOG_OBJECT}",
+                content.encode("utf-8", errors="replace"),
+                "text/plain",
+            )
+            if not uploaded:
+                logger.warning("Could not persist VRAM failure log for job %s", job_id)
+        except Exception as exc:
+            # Diagnostics must never hide or delay the actual job failure.
+            logger.warning("Could not persist VRAM failure log for job %s: %s", job_id, exc)
+
     def handle_vram_estimation(self, job_id: str, image_name: str, command: str):
         started_at = time.time()
         target_command = self._parse_python_command(command)
         if not target_command:
-            logger.error("Job %s needs a Python command for VRAM estimation.", job_id)
+            reason = "Job needs a Python command for VRAM estimation"
+            logger.error("%s: %s.", job_id, reason)
             self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
-            self.api.mark_job_failed(
-                job_id, "user", "Job needs a Python command for VRAM estimation"
-            )
+            self._persist_vram_failure_log(job_id, reason)
+            self.api.mark_job_failed(job_id, "user", reason)
             return
 
         with tempfile.TemporaryDirectory(
@@ -435,14 +469,14 @@ class JobExecutor:
                 report_uid, report_gid = self._image_effective_ids(image_name)
                 self._prepare_vram_report_dir(report_dir, report_uid, report_gid)
             except Exception as e:
+                reason = f"Failed to prepare VRAM report mount: {e}"
                 logger.error(
                     "Failed to prepare VRAM report mount for job %s: %s",
                     job_id, e, exc_info=True,
                 )
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
-                self.api.mark_job_failed(
-                    job_id, "system", f"Failed to prepare VRAM report mount: {e}"
-                )
+                self._persist_vram_failure_log(job_id, reason)
+                self.api.mark_job_failed(job_id, "system", reason)
                 return
             cmd = [
                 "docker", "run", "--rm", "--gpus", "all",
@@ -462,11 +496,11 @@ class JobExecutor:
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True)
             except Exception as e:
+                reason = f"Failed to run VRAM estimation container: {e}"
                 logger.error("Failed to run VRAM estimation for job %s: %s", job_id, e)
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
-                self.api.mark_job_failed(
-                    job_id, "system", f"Failed to run VRAM estimation container: {e}"
-                )
+                self._persist_vram_failure_log(job_id, reason)
+                self.api.mark_job_failed(job_id, "system", reason)
                 return
             
             if result.returncode != 0:
@@ -485,6 +519,7 @@ class JobExecutor:
                     job_id, result.returncode, failure_type, stdout_tail, stderr_tail,
                 )
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
+                self._persist_vram_failure_log(job_id, reason, result.stdout, result.stderr)
                 self.api.mark_job_failed(job_id, failure_type, reason)
                 return
             
@@ -492,6 +527,7 @@ class JobExecutor:
                 with open(report_path, encoding="utf-8") as report_file:
                     report = json.load(report_file)
             except (OSError, json.JSONDecodeError) as e:
+                reason = f"Invalid VRAM estimation report: {e}"
                 try:
                     dir_listing = sorted(os.listdir(report_dir))
                 except OSError as list_err:
@@ -508,15 +544,15 @@ class JobExecutor:
                     result.stderr[-2000:] if result.stderr else "",
                 )
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
-                self.api.mark_job_failed(
-                    job_id, "system", f"Invalid VRAM estimation report: {e}"
-                )
+                self._persist_vram_failure_log(job_id, reason, result.stdout, result.stderr)
+                self.api.mark_job_failed(job_id, "system", reason)
                 return
 
             if report.get("step_wall_time") is None:
                 reason = "No optimizer steps were observed"
                 logger.error("Invalid VRAM estimation report for job %s: %s", job_id, reason)
                 self._record_job(job_id, image_name, "vram_estimation", "failed", started_at)
+                self._persist_vram_failure_log(job_id, reason, result.stdout, result.stderr)
                 self.api.mark_job_failed(job_id, "user", reason)
                 return
 
@@ -729,7 +765,9 @@ class JobExecutor:
                 continue
             # build.log / training.log are log artifacts, not training state;
             # skip them when restoring checkpoints.
-            if os.path.basename(rel_path) in ("build.log", "training.log"):
+            if os.path.basename(rel_path) in (
+                "build.log", "training.log", VRAM_FAILURE_LOG_OBJECT
+            ):
                 continue
 
             dest = os.path.join(job_output_dir, rel_path)
@@ -920,10 +958,6 @@ class JobExecutor:
 
         if build_log_base is None:
             existing = store.download(f"{job_id}/training.log")
-            if existing is None:
-                # Jobs created before the log split appended training output
-                # to build.log; continue from there instead of truncating.
-                existing = store.download(f"{job_id}/build.log")
             build_log_base = (
                 existing.decode("utf-8", errors="replace") if existing else ""
             )

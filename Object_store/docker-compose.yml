@@ -1,29 +1,28 @@
 services:
-  minio:
-    image: minio/minio:latest
-    container_name: minio-store
+  s3:
+    image: chrislusf/seaweedfs:4.47
+    container_name: object-s3
     ports:
       # Localhost-only: public traffic enters via Caddy (object.zulfiker.xyz),
-      # never directly to MinIO from other VMs.
+      # never directly to the S3 service from other VMs.
       - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
     volumes:
-      - minio_data:/data
-    command: server /data --console-address ":9001"
+      - object_data:/data
+    command: server -dir=/data -ip=s3 -ip.bind=0.0.0.0 -s3 -s3.port=9000
     restart: always
 
   object-store:
     build: .
     container_name: object-store-api
     depends_on:
-      - minio
+      - s3
     env_file:
       - .env
     environment:
-      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT: s3:9000
       MINIO_SECURE: "false"
       # Routable S3 endpoint used for presigned URLs. Must NOT be
       # localhost/docker-internal: workers and browsers use these URLs.
@@ -40,4 +39,4 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8010
 
 volumes:
-  minio_data:
+  object_data:

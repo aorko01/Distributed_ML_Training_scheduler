@@ -192,13 +192,16 @@ fieldset {
   min-height: 100vh;
 }
 .sidebar {
-  position: sticky;
+  position: fixed;
+  left: 0;
   top: 0;
   display: flex;
   flex-direction: column;
   width: 248px;
   flex: 0 0 248px;
   height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
   padding: 32px 20px 20px;
   background: #151211;
   border-right: 1px solid var(--border-subtle);
@@ -390,6 +393,7 @@ fieldset {
 }
 .main-content {
   flex: 1;
+  margin-left: 248px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1871,6 +1875,9 @@ tr:last-child td {
   .page-content {
     padding-top: 55px;
   }
+  .main-content {
+    margin-left: 272px;
+  }
 }
 @media (max-height: 760px) and (min-width: 901px) {
   .sidebar-intro {
@@ -1890,6 +1897,9 @@ tr:last-child td {
   }
   .page-content {
     padding: 32px 28px 45px;
+  }
+  .main-content {
+    margin-left: 218px;
   }
   .top-header,
   .studio-footer {
@@ -1923,6 +1933,9 @@ tr:last-child td {
   }
 }
 @media (max-width: 900px) {
+  .main-content {
+    margin-left: 0;
+  }
   .sidebar {
     position: fixed;
     left: 0;

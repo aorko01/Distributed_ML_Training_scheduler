@@ -28,6 +28,9 @@ const JobDetails: React.FC = () => {
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [logSource, setLogSource] = useState<
+    "training" | "vram_estimation"
+  >("training");
   const [liveStatus, setLiveStatus] = useState<JobStatus | undefined>(
     undefined,
   );
@@ -111,16 +114,23 @@ const JobDetails: React.FC = () => {
     let cancelled = false;
     let stopStream: (() => void) | undefined;
 
-    const isFinished = job.status === "Completed" || job.status === "Failed";
+    const isFinished =
+      job.status === "Completed" ||
+      job.status === "Failed" ||
+      job.status === "Retrying";
 
     const load = async () => {
       setLogs([]);
+      setLogSource("training");
 
       if (isFinished) {
-        // Finished jobs: training logs come purely from the object store
-        // ({job_id}/training.log, with a build.log fallback for legacy jobs).
+        // Finished jobs load their persisted training log, or the separate
+        // VRAM diagnostic artifact when estimation itself failed.
         const stored = await fetchJobLogs(id);
-        if (!cancelled) setLogs(stored);
+        if (!cancelled) {
+          setLogs(stored.logs);
+          setLogSource(stored.source);
+        }
         return;
       }
 
@@ -469,11 +479,15 @@ const JobDetails: React.FC = () => {
             minHeight: "500px",
           }}
         >
-          <h3 style={{ marginBottom: "1rem" }}>Training logs</h3>
+          <h3 style={{ marginBottom: "1rem" }}>
+            {logSource === "vram_estimation"
+              ? "VRAM estimation logs"
+              : "Training logs"}
+          </h3>
           <LogTerminal
             logs={logs}
             jobId={job.id}
-            title={`training — job ${job.id}`}
+            title={`${logSource === "vram_estimation" ? "vram estimation" : "training"} — job ${job.id}`}
           />
         </div>
       </div>

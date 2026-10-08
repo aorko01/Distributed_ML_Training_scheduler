@@ -648,17 +648,36 @@ def get_job_logs(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Return the job's *training* logs from the object store.
+    """Return training logs, or VRAM diagnostics when estimation failed.
 
     Build output lives under ``/{job_id}/build-logs`` so the dashboard job
-    view shows training output only.
+    view does not mix build output into current jobs.
     """
     try:
         job = job_service.get_user_job_by_id(db, current_user.user_id, job_id)
         if job is None:
             return {"error": "Job not found"}
-        content = log_service.fetch_training_log_from_object_store(job_id)
-        return {"job_id": job_id, "status": job["status"], "content": content}
+        content = log_service.fetch_training_log_from_object_store(
+            job_id, fallback_to_build=False
+        )
+        source = "training"
+        estimation_failed = (
+            job["status"] in {"FAILED", "RETRY_NEEDED"}
+            and job.get("vram_required") is None
+        )
+        if not content and estimation_failed:
+            content = log_service.fetch_vram_estimation_log_from_object_store(job_id)
+            source = "vram_estimation"
+            if not content and job.get("failure_reason"):
+                # Preserve a useful UI diagnostic even if the worker could not
+                # reach object storage while reporting the probe failure.
+                content = f"VRAM estimation failed: {job['failure_reason']}\n"
+        return {
+            "job_id": job_id,
+            "status": job["status"],
+            "content": content,
+            "source": source,
+        }
     except HTTPException:
         raise
     except Exception as e:

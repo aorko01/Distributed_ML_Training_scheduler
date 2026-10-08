@@ -111,3 +111,19 @@ class TestSplitStreams:
 
         with patch.object(log_service.requests, "get", side_effect=_fake_get):
             assert log_service.fetch_training_log_from_object_store("j") == "legacy-mixed"
+
+    def test_training_log_can_skip_legacy_fallback(self):
+        with patch.object(
+            log_service.requests, "get", return_value=MagicMock(status_code=404)
+        ) as get:
+            assert log_service.fetch_training_log_from_object_store(
+                "j", fallback_to_build=False
+            ) == ""
+        assert get.call_count == 1
+
+    def test_vram_estimation_log_uses_separate_object(self):
+        with patch.object(
+            log_service, "_fetch_log_object", return_value="probe failed"
+        ) as fetch:
+            assert log_service.fetch_vram_estimation_log_from_object_store("j") == "probe failed"
+        fetch.assert_called_once_with("j", "vram-estimation.log")

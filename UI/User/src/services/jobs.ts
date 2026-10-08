@@ -339,22 +339,32 @@ const classifyLogLine = (text: string): LogLine['type'] => {
   return 'info';
 };
 
-export const fetchJobLogs = async (id: string): Promise<LogLine[]> => {
+export interface JobLogResult {
+  logs: LogLine[];
+  source: 'training' | 'vram_estimation';
+}
+
+export const fetchJobLogs = async (id: string): Promise<JobLogResult> => {
   try {
-    const data = await api.get<{ content?: string } | { error: string }>(
+    const data = await api.get<
+      { content?: string; source?: JobLogResult['source'] } | { error: string }
+    >(
       `/jobs/${id}/logs`,
     );
-    if (hasError(data)) return [];
+    if (hasError(data)) return { logs: [], source: 'training' };
     const content = (data.content ?? '').replace(/\r\n/g, '\n').trim();
-    if (!content) return [];
+    if (!content) return { logs: [], source: data.source ?? 'training' };
     const now = new Date().toISOString();
-    return content.split('\n').filter(Boolean).map((text) => ({
-      type: classifyLogLine(text),
-      text,
-      timestamp: now,
-    }));
+    return {
+      logs: content.split('\n').filter(Boolean).map((text) => ({
+        type: classifyLogLine(text),
+        text,
+        timestamp: now,
+      })),
+      source: data.source ?? 'training',
+    };
   } catch {
-    return [];
+    return { logs: [], source: 'training' };
   }
 };
 
